@@ -187,3 +187,54 @@ describe("app channel capability composition", () => {
     },
   );
 });
+
+it.each([
+  { allowed: ["Read", "Agent"], expected: { available: true, reason: "already-configured", active: true } },
+  { allowed: ["Read"], expected: { available: true, reason: "eligible", active: false } },
+  { allowed: ["*"], expected: { available: true, reason: "already-configured", active: true } },
+])("reports subagents loaded-state evidence from the host config (allowed=$allowed)", async ({ allowed, expected }) => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), "mono-channel-subagents-")));
+  fixtures.push(cwd);
+  const configReadPath = join(cwd, "mono-agent.config.json");
+  const config = {
+    runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
+    context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+    tools: { allowedTools: allowed, disallowedTools: [] },
+    subagents: { enabled: true, definitions: [{ name: "researcher", description: "A synthetic researcher.", prompt: "Synthetic instructions." }] },
+    artifacts: { dir: "./artifacts" },
+  };
+  await writeFile(configReadPath, JSON.stringify(config));
+  const durable = join(cwd, "durable.json");
+  await writeFile(durable, JSON.stringify(config));
+  await writeFile(join(cwd, "IDENTITY.md"), "# Synthetic Agent\n");
+  let captured: TuiAdapterOptions | undefined;
+  const driver = createTuiChannelDriver({
+    adapterFactory: async (options): Promise<TuiAdapterStartResult> => {
+      captured = options;
+      return { url: "http://127.0.0.1:0", baseUrl: "http://127.0.0.1:0/gui", infoUrl: "http://127.0.0.1:0/gui/v1/info", turnsUrl: "http://127.0.0.1:0/gui/v1/turns", host: "127.0.0.1", port: 0, stop: async () => undefined };
+    },
+    discoverModels: async () => [],
+    discoverProviders: async () => [],
+  });
+  const statuses = new Map<string, ChannelStatus>();
+  const controller: ChannelsControllerPort = {
+    env: {}, cwd, configReadPath, configPath: durable, logger: undefined,
+    drivers: [driver], driversById: new Map([[driver.id, driver]]), statuses,
+    running: new Map(), channelStartGenerations: new Map(), startsInFlight: new Map(),
+    stopped: false, traceabilityStatusValue: {} as never, processJobsService: undefined, processJobsDegradation: undefined,
+    restartAuthority: { verify: async () => ({ supported: true }), accept: () => ({ kind: "accepted", operationId: "fixture" }), processIdentity: () => ({ pid: 17, startedAt: "boot" }), beginStop: () => undefined },
+    setStatus(channelId, channelStatus) { statuses.set(channelId, channelStatus); return channelStatus; },
+    rememberSelectedSkills: () => undefined, ensureInteractionBridge: async () => undefined, ensureContinuationService: async () => undefined,
+    buildResponder: async () => ({ respond: async () => ({}) }),
+    notifyDestination: async () => ({ delivered: false }), listNotifyDestinations: async () => [],
+    observabilityContext: async () => ({}), refreshTraceSource: async () => undefined, activeTransports: () => [],
+  };
+  try {
+    await expect(startChannel(controller, driver, "test")).resolves.toMatchObject({ kind: "running" });
+    const actions = captured!.capabilityActions!;
+    const snapshot = await actions.read();
+    expect(snapshot.actions.find((item) => item.id === "subagents-enable")).toMatchObject(expected);
+  } finally {
+    await controller.running.get("tui")?.stop();
+  }
+});

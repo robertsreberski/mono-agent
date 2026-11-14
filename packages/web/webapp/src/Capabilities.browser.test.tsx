@@ -58,8 +58,12 @@ for (const width of [390, 1440]) describe(`Capabilities in console settings at $
     expect(screen.getByRole("button", { name: width === 390 ? "Back from agent settings" : "Close agent settings" })).toBeVisible();
     for (const status of ["Ready", "Waiting", "Disabled", "Needs attention"]) expect(screen.getAllByText(status, { exact: false }).length).toBeGreaterThan(0);
     await settleAndReveal(width);
-    expect(screen.getAllByRole("article")).toHaveLength(capabilitySnapshot.cards.length);
-    const cards = screen.getAllByRole("article");
+    // The catalog grid plus the standalone Subagents delegation card (the
+    // synthetic snapshot reports subagents unconfigured, so it stays a refusal).
+    expect(screen.getAllByRole("article")).toHaveLength(capabilitySnapshot.cards.length + 1);
+    expect(screen.getByRole("article", { name: "Subagents" })).toBeVisible();
+    const cards = within(document.querySelector(".capability-grid")!).getAllByRole("article");
+    expect(cards).toHaveLength(capabilitySnapshot.cards.length);
     const activeMemory = screen.getByRole("article", { name: "Memory" });
     expect(within(activeMemory).getAllByText(/Loaded at this start/)).toHaveLength(1);
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width));
@@ -121,7 +125,7 @@ for (const managed of [false, true]) it(`confirms/cancels typed saves and shows 
   await page.viewport(1440, 1100);
   vi.mocked(api.capabilitySetup).mockResolvedValue(eligibleCronSnapshot);
   vi.mocked(api.capabilityActions).mockResolvedValue(eligibleCronActions);
-  const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [{ field: "cron.operatorActions.enabled" as const, value: "true" }], normalizesFormatting: true as const, noOp: false };
+  const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [{ field: "cron.operatorActions.enabled" as const, value: "true" }], normalizesFormatting: true as const, exactBytes: false as const, noOp: false };
   vi.spyOn(api, "previewCapabilityAction").mockImplementation(async (sourceId, input) => { expect(sourceId).toBe("garden"); expect(input).toEqual({ action: preview.action, process: preview.process }); return preview; });
   const save = vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
     vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((action) => action.id === "cron-controls" ? { ...action, reason: "already-configured" as const } : action) });
@@ -159,7 +163,7 @@ it("refreshes on conflicts and requires another explicit preview instead of retr
   await page.viewport(390, 1000);
   vi.mocked(api.capabilitySetup).mockResolvedValue(eligibleCronSnapshot);
   vi.mocked(api.capabilityActions).mockResolvedValue(eligibleCronActions);
-  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: false });
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue({ action: "cron-controls", process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, exactBytes: false, noOp: false });
   const save = vi.spyOn(api, "saveCapabilityAction").mockRejectedValue(new ApiError("conflict", 409, "capability_action_conflict"));
   render(<Preview width={390} />);
   await userEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
@@ -173,7 +177,7 @@ it("leaves confirmed settings pending after a managed restart refusal, with no a
   await page.viewport(1440, 1100);
   vi.mocked(api.capabilitySetup).mockResolvedValue(eligibleCronSnapshot);
   vi.mocked(api.capabilityActions).mockResolvedValue(eligibleCronActions);
-  const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true as const, noOp: false };
+  const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true as const, exactBytes: false as const, noOp: false };
   vi.spyOn(api, "previewCapabilityAction").mockImplementation(async (sourceId, input) => { expect(sourceId).toBe("garden"); expect(input).toEqual({ action: preview.action, process: preview.process }); return preview; });
   const save = vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
     vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((action) => action.id === "cron-controls" ? { ...action, reason: "already-configured" as const } : action) });
@@ -210,7 +214,7 @@ for (const width of [390, 1440]) for (const managed of [true, false]) it(`captur
   vi.mocked(api.capabilityActions).mockResolvedValue(eligible);
   const lite = capabilitySnapshot.cards.find((card) => card.id === "memory")!.variants!.find((variant) => variant.id === "memory:lite")!;
   const example = JSON.parse(lite.steps.find((step) => step.trimStart().startsWith("{"))!) as { memory: unknown };
-  const preview = { action: "memory-lite" as const, process: eligible.process, expectedVersion: "a".repeat(64), changes: [{ field: "memory" as const, value: JSON.stringify(example.memory, null, 2) }], normalizesFormatting: true as const, noOp: false };
+  const preview = { action: "memory-lite" as const, process: eligible.process, expectedVersion: "a".repeat(64), changes: [{ field: "memory" as const, value: JSON.stringify(example.memory, null, 2) }], normalizesFormatting: true as const, exactBytes: false as const, noOp: false };
   vi.spyOn(api, "previewCapabilityAction").mockImplementation(async (sourceId, input) => { expect(sourceId).toBe("garden"); expect(input).toEqual({ action: preview.action, process: preview.process }); return preview; });
   const save = vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
     vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligible, actions: eligible.actions.map((action) => action.id === "memory-lite" ? { ...action, reason: "already-configured" as const } : action) });
@@ -334,4 +338,102 @@ for (const width of [390, 1440]) for (const card of ["a2a", "embeddings", "paral
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   section.scrollIntoView({ block: "center" });
   if (shots) await page.screenshot({ path: `${shots}/credentials-synthetic-${width}-${card}-${state}.png` });
+});
+
+const undoableActions = {
+  ...capabilityActions,
+  actions: capabilityActions.actions.map((item) => item.id === "config-undo" ? { ...item, available: true, reason: "eligible" as const } : item.id === "subagents-enable" ? { ...item, available: true, reason: "eligible" as const } : item),
+};
+const staleUndoActions = {
+  ...capabilityActions,
+  actions: capabilityActions.actions.map((item) => item.id === "config-undo" ? { ...item, available: false, reason: "undo-stale" as const } : item.id === "subagents-enable" ? { ...item, available: true, reason: "eligible" as const } : item),
+};
+const undoPreview = { action: "config-undo" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [{ field: "config" as const, value: "Restore the exact prior file, including its formatting. The one-level slot is consumed; dotenv credentials and memory data are untouched." }], normalizesFormatting: false as const, exactBytes: true as const, noOp: false };
+const subagentsPreview = { action: "subagents-enable" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [{ field: "subagents.enabled" as const, value: "true" }, { field: "tools.allowedTools" as const, value: "Append \"Agent\"; existing entries and deny rules are unchanged." }], normalizesFormatting: true as const, exactBytes: false as const, noOp: false };
+function mockE2Previews() {
+  vi.spyOn(api, "previewCapabilityAction").mockImplementation(async (_sourceId, input) => {
+    if (input.action === "config-undo") return undoPreview;
+    if (input.action === "subagents-enable") return subagentsPreview;
+    throw new ApiError("Unsupported synthetic action", 400);
+  });
+}
+
+for (const width of [390, 1440]) it(`offers one-level Undo and consumes the slot at ${width}px`, async () => {
+  await page.viewport(width, width === 390 ? 1900 : 1600);
+  vi.mocked(api.capabilitySetup).mockResolvedValue(capabilitySnapshot);
+  vi.mocked(api.capabilityActions).mockResolvedValue(undoableActions);
+  mockE2Previews();
+  const save = vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...undoableActions, actions: undoableActions.actions.map((item) => item.id === "config-undo" ? { ...item, available: false, reason: "undo-unavailable" as const } : item) });
+    return { action: "config-undo", process: capabilityActions.process, version: "b".repeat(64), changed: true };
+  });
+  render(<Preview width={width} />);
+  const recovery = await screen.findByRole("article", { name: "Configuration recovery" });
+  expect(within(recovery).getByText(/A console save is on record and Undo is available/)).toBeVisible();
+  if (shots) { recovery.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-undo-offered-${width}.png` }); }
+  await userEvent.click(within(recovery).getByRole("button", { name: "Undo last console save…" }));
+  expect(within(recovery).getByLabelText("Owned-field preview").textContent).toContain("exact prior file");
+  if (shots) { recovery.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-undo-preview-${width}.png` }); }
+  await userEvent.click(within(recovery).getByRole("button", { name: "Confirm Save" }));
+  expect(save).toHaveBeenCalledWith("garden", { action: "config-undo", process: undoPreview.process, expectedVersion: undoPreview.expectedVersion, confirmed: true });
+  await within(recovery).findByText("Saved; applies on next start");
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+});
+
+for (const width of [390, 1440]) it(`refuses Undo after a manual edit without offering a write at ${width}px`, async () => {
+  await page.viewport(width, width === 390 ? 1900 : 1600);
+  vi.mocked(api.capabilitySetup).mockResolvedValue(capabilitySnapshot);
+  vi.mocked(api.capabilityActions).mockResolvedValue(staleUndoActions);
+  mockE2Previews();
+  render(<Preview width={width} />);
+  const recovery = await screen.findByRole("article", { name: "Configuration recovery" });
+  expect(within(recovery).getByText(/changed since the last console save/)).toBeVisible();
+  expect(within(recovery).queryByRole("button", { name: "Undo last console save…" })).toBeNull();
+  expect(within(recovery).queryByRole("button", { name: "Confirm Save" })).toBeNull();
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  if (shots) { recovery.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-undo-refused-${width}.png` }); }
+});
+
+for (const width of [390, 1440]) it(`previews subagents Enable without touching profiles or denies at ${width}px`, async () => {
+  await page.viewport(width, width === 390 ? 1900 : 1600);
+  vi.mocked(api.capabilitySetup).mockResolvedValue(capabilitySnapshot);
+  vi.mocked(api.capabilityActions).mockResolvedValue(undoableActions);
+  mockE2Previews();
+  vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...undoableActions, actions: undoableActions.actions.map((item) => item.id === "subagents-enable" ? { ...item, reason: "already-configured" as const } : item) });
+    return { action: "subagents-enable", process: capabilityActions.process, version: "b".repeat(64), changed: true };
+  });
+  render(<Preview width={width} />);
+  const subagents = await screen.findByRole("article", { name: "Subagents" });
+  await userEvent.click(within(subagents).getByRole("button", { name: "Enable subagents…" }));
+  const previews = within(subagents).getAllByLabelText("Owned-field preview");
+  expect(previews.map((node) => node.textContent)).toEqual(["true", "Append \"Agent\"; existing entries and deny rules are unchanged."]);
+  for (const preview of previews) expect(preview.scrollWidth).toBeLessThanOrEqual(preview.clientWidth + 1);
+  expect(within(subagents).getByText("Only delegation is enabled. Profiles and deny rules are unchanged.")).toBeVisible();
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  if (shots) { subagents.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-subagents-preview-${width}.png` }); }
+  await userEvent.click(within(subagents).getByRole("button", { name: "Confirm Save" }));
+  await within(subagents).findByText("Saved; applies on next start");
+});
+
+for (const width of [390, 1440]) it(`reports saved-not-active after a new start without promising the next one at ${width}px`, async () => {
+  await page.viewport(width, width === 390 ? 1900 : 1600);
+  vi.mocked(api.capabilitySetup).mockResolvedValue(eligibleCronSnapshot);
+  vi.mocked(api.capabilityActions).mockResolvedValue(eligibleCronActions);
+  const preview = { action: "cron-controls" as const, process: capabilityActions.process, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true as const, exactBytes: false as const, noOp: false };
+  vi.spyOn(api, "previewCapabilityAction").mockResolvedValue(preview);
+  vi.spyOn(api, "saveCapabilityAction").mockImplementation(async () => {
+    vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((item) => item.id === "cron-controls" ? { ...item, reason: "already-configured" as const } : item) });
+    return { action: "cron-controls", process: capabilityActions.process, version: "b".repeat(64), changed: true };
+  });
+  render(<Preview width={width} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
+  await userEvent.click(screen.getByRole("button", { name: "Confirm Save" }));
+  await screen.findByText("Saved; applies on next start");
+  vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, process: { ...capabilityActions.process, startedAt: "2026-08-01T10:01:00Z" }, actions: eligibleCronActions.actions.map((item) => item.id === "cron-controls" ? { ...item, active: false, reason: "already-configured" as const } : item) });
+  await userEvent.click(screen.getByRole("button", { name: "Refresh capability status" }));
+  const cron = await screen.findByRole("article", { name: "Scheduled jobs (cron)" });
+  expect(within(cron).getByText("Saved, but not active at this start — check evidence")).toBeVisible();
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  if (shots) { cron.scrollIntoView({ block: "start" }); await page.screenshot({ path: `${shots}/e2-saved-not-active-${width}.png` }); }
 });

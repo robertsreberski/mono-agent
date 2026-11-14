@@ -495,6 +495,8 @@ SecretSafeLogSink
 SessionToolHistoryEventMetadata
 SessionToolHistoryTerminalState
 SettingsJson
+SettingsJsonBackup
+SettingsJsonBackupRead
 SettingsJsonError
 SettingsJsonValue
 agentAttachmentKindFromMimeType
@@ -542,6 +544,7 @@ listen
 markSilentTurnAlreadyVisible
 mergeAgentUpkeepAccounting
 mergeForwardedUpkeepAccounting
+mergeSettingsJsonPatch
 normalizeHostForBind
 normalizeOptionalString
 normalizeProcessJobSubagentUsage
@@ -564,6 +567,7 @@ parseProviderAuthSessionStartInput
 parseProviderAuthStatusSnapshot
 parseProviderUsageSnapshot
 peerQuestionStateLabel
+privateTemp
 processJobPublicError
 projectProviderUsage
 projectProviderUsageWindow
@@ -577,9 +581,11 @@ readRecord
 readRequired
 readSafeDataProperty
 readSettingsJson
+readSettingsJsonBackup
 readString
 redactedSecret
 registerNativeNotifyRequest
+restoreGuardedSettingsJson
 sanitizeInboundHttpHeaders
 sanitizeReplyPartDeliveryOutcomes
 sanitizeRestartProposalReason

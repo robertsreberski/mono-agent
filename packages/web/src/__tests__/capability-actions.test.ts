@@ -8,7 +8,7 @@ import { fakeDiscoveredAgent, temporaryRoot } from "./helpers.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const identity = { pid: process.pid, startedAt: "2026-08-01T09:00:00Z" };
-const preview = { action: "memory-lite" as const, process: identity, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, noOp: true };
+const preview = { action: "memory-lite" as const, process: identity, expectedVersion: "a".repeat(64), changes: [], normalizesFormatting: true, exactBytes: false, noOp: true };
 it("detects preview and save separately from read-only discovery, failing closed on older or malformed claims", async () => {
   for (const claim of [undefined, {}, { version: 1, preview: true }, { version: 2, preview: true, save: true }, { version: 1, preview: true, save: true }]) {
     const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: async () => Response.json({ schema: 1, capabilities: { capabilityActions: claim, capabilitySetup: { version: 1, read: true } } }) });
@@ -27,14 +27,14 @@ for (const operation of ["read", "preview", "save"] as const) it.each([false, tr
     await vi.waitFor(() => expect(release).toBeTypeOf("function"));
     discovered = { ...discovered, source: { ...discovered.source, updatedAt: "2026-08-01T12:00:00Z", ...(restarted ? { pid: process.pid + 1, startedAt: "2026-08-01T12:00:00Z" } : {}) } };
     await service.refreshAgents();
-    const result = operation === "read" ? { version: 1, process: identity, actions: [{ id: "memory-lite", available: true, active: false, reason: "eligible" }, { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" }] } : operation === "preview" ? preview : { action: preview.action, process: identity, version: preview.expectedVersion, changed: false };
+    const result = operation === "read" ? { version: 1, process: identity, actions: [{ id: "memory-lite", available: true, active: false, reason: "eligible" }, { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" }, { id: "subagents-enable", available: true, active: false, reason: "eligible" }, { id: "config-undo", available: true, active: false, reason: "eligible" }] } : operation === "preview" ? preview : { action: preview.action, process: identity, version: preview.expectedVersion, changed: false };
     release(Response.json(result));
     if (restarted) await expect(work).rejects.toMatchObject({ code: "agent_generation_changed" }); else await expect(work).resolves.toEqual(result);
   } finally { await service.stop(); }
 });
 
 it("never forwards diagnostic prose from upstream action failures or transport errors", async () => {
-  for (const [code, status] of [["capability_action_conflict", 409], ["capability_action_unavailable", 409], ["capability_action_failed", 503], ["capability_actions_unsupported", 501], ["unknown", 500]] as const) {
+  for (const [code, status] of [["capability_action_conflict", 409], ["capability_action_unavailable", 409], ["capability_action_invalid", 409], ["capability_action_failed", 503], ["capability_actions_unsupported", 501], ["unknown", 500]] as const) {
     const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: async () => Response.json({ error: { code, message: "fictional-private-diagnostic" } }, { status }) });
     await expect(client.capabilityActions("read")).rejects.toMatchObject({ status: code === "unknown" ? 502 : status, message: expect.not.stringContaining("fictional-private-diagnostic") });
   }
@@ -60,7 +60,7 @@ it("preserves fixed action failures without forwarding upstream prose or details
   const base = `${web.url}api/v1/agents/agent-one/capability-actions`;
   const headers = { Origin: new URL(web.url).origin, "Content-Type": "application/json" };
   try {
-    for (const [code, status] of [["capability_action_conflict", 409], ["capability_action_unavailable", 409], ["capability_action_failed", 503], ["capability_actions_unsupported", 501], ["unknown", 500]] as const) {
+    for (const [code, status] of [["capability_action_conflict", 409], ["capability_action_unavailable", 409], ["capability_action_invalid", 409], ["capability_action_failed", 503], ["capability_actions_unsupported", 501], ["unknown", 500]] as const) {
       failure = { code, status };
       for (const operation of ["read", "preview", "save"] as const) {
         const body = { action: preview.action, process: identity, ...(operation === "save" ? { expectedVersion: preview.expectedVersion, confirmed: true } : {}) };
@@ -92,7 +92,7 @@ it("rejects a read snapshot from a different start even when the PID is unchange
   const initial = fakeDiscoveredAgent();
   let discovered = { ...initial, source: { ...initial.source, ...identity } };
   const service = await WebService.create({ stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [discovered],
-    fetchImpl: (async (url) => String(url).endsWith("/info") ? Response.json({ schema: 1, pid: identity.pid, capabilities: { capabilityActions: { version: 1, preview: true, save: true } } }) : Response.json({ version: 1, process: { ...identity, startedAt: "2026-08-01T10:00:00Z" }, actions: [{ id: "memory-lite", available: true, active: false, reason: "eligible" }, { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" }] })) as typeof fetch });
+    fetchImpl: (async (url) => String(url).endsWith("/info") ? Response.json({ schema: 1, pid: identity.pid, capabilities: { capabilityActions: { version: 1, preview: true, save: true } } }) : Response.json({ version: 1, process: { ...identity, startedAt: "2026-08-01T10:00:00Z" }, actions: [{ id: "memory-lite", available: true, active: false, reason: "eligible" }, { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" }, { id: "subagents-enable", available: true, active: false, reason: "eligible" }, { id: "config-undo", available: true, active: false, reason: "eligible" }] })) as typeof fetch });
   try {
     await expect(service.capabilityActions("agent-one", "read")).rejects.toMatchObject({ code: "agent_generation_changed" });
     discovered = { ...discovered, source: { ...discovered.source, startedAt: "2026-08-01T10:00:00Z" } };

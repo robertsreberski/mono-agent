@@ -392,6 +392,7 @@ export class OperatorClient {
     const failures: Readonly<Record<string, { readonly status: number; readonly message: string }>> = {
       capability_action_conflict: { status: 409, message: "Settings or process changed; refresh and review a new preview." },
       capability_action_unavailable: { status: 409, message: "This action is unavailable; use manual setup guidance." },
+      capability_action_invalid: { status: 409, message: "The configuration this would write is no longer valid. Run mono-agent validate in the owner terminal." },
       capability_action_failed: { status: 503, message: "Settings could not be confirmed; inspect them before retrying." },
       capability_actions_unsupported: { status: 501, message: "Update the agent to enable features from the console." },
     };

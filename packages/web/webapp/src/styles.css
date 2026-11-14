@@ -2822,6 +2822,8 @@ html.keyboard-viewport .skill-browser-popup {
 .capability-details > summary { min-height: 32px; align-content: center; }
 .capability-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .capability-heading h3 { margin: 0; font-size: 1rem; }
+.capability-action pre { margin: 8px 0; padding: 10px 12px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 8px; font-family: var(--font-mono); font-size: .8rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+.capability-action pre code { font: inherit; overflow-wrap: inherit; }
 .capability-card h4 { margin: 14px 0 4px; font-size: .85rem; }
 .capability-card p, .capability-card li { font-size: .875rem; line-height: 1.5; }
 .capability-card ul { padding-inline-start: 20px; margin-block: 6px; }

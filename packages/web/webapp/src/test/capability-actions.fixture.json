@@ -16,6 +16,18 @@
       "available": false,
       "active": false,
       "reason": "no-valid-jobs"
+    },
+    {
+      "id": "subagents-enable",
+      "available": false,
+      "active": false,
+      "reason": "subagents-unconfigured"
+    },
+    {
+      "id": "config-undo",
+      "available": false,
+      "active": false,
+      "reason": "undo-unavailable"
     }
   ]
 }

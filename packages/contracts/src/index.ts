@@ -194,7 +194,8 @@ export { bearerTokensEqual, generateBearerToken, readAuthorizationBearer } from 
 
 export { sanitizeInboundHttpHeaders } from "./http-headers.js";
 
-export { readSettingsJson, SettingsJsonError, writeSettingsJson } from "./json-source.js";
+export { readSettingsJson, SettingsJsonError, mergeSettingsJsonPatch, writeSettingsJson } from "./json-source.js";
+export { privateTemp } from "./settings-json-files.js";
 
 export type { SettingsJson, SettingsJsonValue } from "./types.js";
 
@@ -359,4 +360,5 @@ export type { AgentUpkeepAccounting } from "./upkeep-accounting.js";
 export { deriveUpkeepAccounting, forwardUpkeepAccounting, parseForwardedUpkeepAccounting, mergeForwardedUpkeepAccounting } from "./upkeep-accounting.js";
 export type { ForwardedUpkeepAccounting } from "./upkeep-accounting.js";
 
-export type { GuardedSettingsJsonWrite } from "./guarded-json-source.js";
+export type { GuardedSettingsJsonWrite, SettingsJsonBackup, SettingsJsonBackupRead } from "./guarded-json-source.js";
+export { readSettingsJsonBackup, restoreGuardedSettingsJson } from "./guarded-json-source.js";

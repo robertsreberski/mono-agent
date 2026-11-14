@@ -27,6 +27,8 @@ const actions = {
     { id: "memory-lite", available: true, active: true, reason: "already-configured" },
     // The synthetic cron card has no jobs, unlike the separate eligible-job flow fixtures.
     { id: "cron-controls", available: false, active: false, reason: "no-valid-jobs" },
+    { id: "subagents-enable", available: false, active: false, reason: "subagents-unconfigured" },
+    { id: "config-undo", available: false, active: false, reason: "undo-unavailable" },
   ],
 };
 await writeFile(new URL("../../web/webapp/src/test/capability-actions.fixture.json", import.meta.url), JSON.stringify(actions, null, 2) + "\n");

@@ -16,7 +16,7 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { isRememberToolAllowed, isRememberToolPolicyName } from "../memory/memory-remember.js";
 import { isMemoryJournalToolAllowed, isMemoryJournalToolPolicyName } from "../memory/memory-journal.js";
 import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "../delivery/send-tools/adapter-send-tools.js";
-import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, renamedToolMessage, renamedToolName, suggestToolName } from "../tools/known-tools.js";
+import { canonicalToolName, isAgentToolAllowed, isAllowAllTools, isKnownToolName, isMcpToolName, renamedToolMessage, renamedToolName, suggestToolName } from "../tools/known-tools.js";
 import { formatInteractionBridgeUrl, loadInteractionSettings } from "../mcp/interaction-bridge.js";
 import type { ValidationSection, ValidationStatus } from "./doctor-types.js";
 import type { ValidateMonoAgentFolderOptions } from "./options.js";
@@ -183,7 +183,7 @@ export async function toolsSection(config: MonoAgentConfig, input: ValidateMonoA
   // Subagents: the Agent tool is registered only when BOTH the capability is
   // enabled and the tool is allowed, so surface either half being missing.
   const subagents = config.subagents;
-  const agentAllowed = (allowAll || allowedTools.includes("Agent")) && !config.tools.disallowedTools.includes("Agent");
+  const agentAllowed = isAgentToolAllowed(allowedTools, config.tools.disallowedTools);
   if (subagents?.enabled === true) {
     if (subagents.instances?.enabled !== false && !persistentSubagentsEnabled(config)) {
       details.push("Persistent subagents unavailable: effective tool policy must expose both Agent and AgentManage; Agent remains stateless when allowed.");
