@@ -272,11 +272,36 @@ Open **Agent settings → Capabilities** to see memory (Lite, Journal or BuJo),
 webhook, Telegram, Slack, OpenAI-compatible API, cron, sandbox, MCP/tools and
 built-in tracing. A compact responsive grid shows purpose, status (text and icon)
 and the primary next step; expand a card for requirements, qualitative usage/cost,
-`ok`/`waiting`/`disabled`/`error` evidence and exact manual setup steps. Inspecting a memory tier does not select it for the agent. There is
-no credential form. On agents advertising separate Enable support, eligible cards
+`ok`/`waiting`/`disabled`/`error` evidence and exact manual setup steps. Inspecting a memory tier does not select it for the agent. On agents advertising separate Enable support, eligible cards
 have **Enable Memory Lite…** or **Enable cron controls…**. Older agents keep manual
 setup guidance; read-only discovery alone does not imply write support. Tracing
 is already enabled; removed external exporters cannot be enabled here.
+
+Supporting agents also advertise write-only credential entry for Telegram, Slack
+and the OpenAI-compatible channel’s **client bearer**, not model-provider auth.
+Telegram/Slack need allowlists or an existing explicit allow-all setting; the
+console never sets allow-all flags. Blank credential fields preserve saved values. **Confirm Save credentials** first prevalidates local prerequisites,
+then writes the selected owner-only dotenv and guarded config. It never changes
+the running environment. Embedded hosts without an explicitly supplied reloadable
+`dotenvPath` report unavailable. Shell-shadowed credentials require owner-terminal
+resolution. Noncredential environment overrides are non-blocking: a note explains
+that Save does not change overridden settings. Other credential types retain
+manual setup.
+
+Status exposes only set/not-set, not values or lengths. Fields clear before
+request dispatch, on failure and on navigation; no credentials enter web storage,
+conversation history or retry queues. Browser/request memory still necessarily
+exists. A confirmed dotenv save with a failed config write shows **Saved; config
+pending** and offers **Retry configuration only**, without re-entering credentials.
+An uncertain dotenv outcome is different: inspect actual status and durable files
+before another explicit replacement; there is no automatic replay. The warning
+survives generation-driven card remounts. An explicit status refresh adds current
+set/not-set presence with a dismissible uncertainty note; presence cannot identify
+which value was saved. Fields are limited to 4096 UTF-8 bytes before dispatch
+and on the server. Reload reads
+actual saved config and credential presence, not inferred pending intent.
+Use the existing Restart confirmation when available; foreground saves apply only
+at the next owner-controlled start. A failed restart never rolls back the save.
 
 Enable first previews only owned fields and the expected config version. Review
 and **Confirm Save** (or Cancel). JSON formatting normalizes to two-space
@@ -310,7 +335,7 @@ Memory Lite is offered only when memory is unconfigured and the standard root is
 absent/empty or verified Lite; already-configured Lite is a no-op. No memory data
 is migrated or deleted. Cron controls only saves
 `cron.operatorActions.enabled: true` when valid jobs already exist; it never enables jobs or schedules. Tools,
-webhook and every other card remain guidance-only.
+webhook and other cards remain guidance-only, except the credential fields described above.
 
 **Saved** is not **Active**. Managed agents reuse the existing Restart confirmation
 and durable tracking; activation needs a fresh startup's loaded-state evidence.

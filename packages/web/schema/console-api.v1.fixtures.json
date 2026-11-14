@@ -2,6 +2,89 @@
   "version": 1,
   "fixtures": [
     {
+      "name": "credentials-status",
+      "type": "ApiCredentials",
+      "value": {
+        "version": 1,
+        "process": {
+          "pid": 42,
+          "startedAt": "2030-01-02T12:00:00.000Z"
+        },
+        "fence": "12345678-1234-1234-1234-123456789012",
+        "cards": [
+          {
+            "id": "telegram",
+            "available": true,
+            "reason": "ready",
+            "fields": [
+              {
+                "id": "bot",
+                "state": "not-set"
+              }
+            ],
+            "configReady": false,
+            "configPending": false
+          },
+          {
+            "id": "slack",
+            "available": true,
+            "reason": "ready",
+            "fields": [
+              {
+                "id": "bot",
+                "state": "set"
+              },
+              {
+                "id": "app",
+                "state": "not-set"
+              }
+            ],
+            "configReady": false,
+            "configPending": true
+          },
+          {
+            "id": "openai-api",
+            "available": true,
+            "reason": "ready",
+            "environmentOverrides": true,
+            "fields": [
+              {
+                "id": "bearer",
+                "state": "set"
+              }
+            ],
+            "configReady": true,
+            "configPending": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "credentials-config-retry",
+      "type": "ApiCredentialRetry",
+      "value": {
+        "card": "slack",
+        "process": {
+          "pid": 42,
+          "startedAt": "2030-01-02T12:00:00.000Z"
+        },
+        "fence": "12345678-1234-1234-1234-123456789012",
+        "confirmed": true
+      }
+    },
+    {
+      "name": "credentials-saved",
+      "type": "ApiCredentialSaved",
+      "value": {
+        "card": "slack",
+        "process": {
+          "pid": 42,
+          "startedAt": "2030-01-02T12:00:00.000Z"
+        },
+        "outcome": "saved-config-pending"
+      }
+    },
+    {
       "name": "capability-actions",
       "type": "ApiCapabilityActions",
       "value": {

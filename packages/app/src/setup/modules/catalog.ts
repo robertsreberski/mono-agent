@@ -1,3 +1,4 @@
+import { resolveCredentialEnvironmentName } from "../credential-names.js";
 import type { MonoAgentConfigJson, MonoAgentMemoryEmbeddingsJson } from "@mono-agent/config";
 import { validateCronExpression } from "@mono-agent/trigger-cron";
 
@@ -96,7 +97,7 @@ const channelTelegram: CapabilityModule = {
       label: "Telegram bot token",
       description: "BotFather token. Saved to .env; .env.example contains only a placeholder. Never written into JSON.",
       secret: true,
-      envVar: "MONO_AGENT_TELEGRAM_BOT_TOKEN",
+      envVar: resolveCredentialEnvironmentName("telegram-bot"),
       required: true,
     },
   ],
@@ -142,7 +143,7 @@ const channelSlack: CapabilityModule = {
       label: "Slack bot token",
       description: "xoxb-… token. Saved to .env; .env.example contains only a placeholder.",
       secret: true,
-      envVar: "MONO_AGENT_SLACK_BOT_TOKEN",
+      envVar: resolveCredentialEnvironmentName("slack-bot"),
       required: true,
     },
     {
@@ -150,7 +151,7 @@ const channelSlack: CapabilityModule = {
       label: "Slack app token",
       description: "xapp-… connections:write token for Socket Mode. Saved to .env only.",
       secret: true,
-      envVar: "MONO_AGENT_SLACK_APP_TOKEN",
+      envVar: resolveCredentialEnvironmentName("slack-app"),
       required: true,
     },
   ],
@@ -199,7 +200,7 @@ const channelOpenaiApi: CapabilityModule = {
       label: "Client bearer key",
       description: "Optional bearer clients must present (sk-…). Saved to .env; .env.example contains only a placeholder.",
       secret: true,
-      envVar: "MONO_AGENT_OPENAI_API_KEY",
+      envVar: resolveCredentialEnvironmentName("openai-client"),
       required: false,
     },
   ],
@@ -280,7 +281,7 @@ const channelA2a: CapabilityModule = {
       label: "A2A bearer token",
       description: "Bearer required from A2A consumers when requireBearer is set. Saved to .env; never written into JSON.",
       secret: true,
-      envVar: "MONO_AGENT_A2A_BEARER_TOKEN",
+      envVar: resolveCredentialEnvironmentName("a2a-bearer"),
       required: false,
     },
   ],
@@ -346,7 +347,8 @@ function managedMemoryEmbeddings(values: Readonly<Record<string, string | undefi
   const dim = Number.isSafeInteger(parsedDimension) && parsedDimension > 0
     ? parsedDimension
     : Number(DEFAULT_MEMORY_EMBEDDING_DIMENSION);
-  const apiKeyEnv = values.embeddingApiKeyEnv?.trim();
+  const configuredName = values.embeddingApiKeyEnv?.trim();
+  const apiKeyEnv = configuredName ? resolveCredentialEnvironmentName("embeddings", configuredName) : undefined;
   return {
     provider,
     endpoint,
@@ -357,7 +359,8 @@ function managedMemoryEmbeddings(values: Readonly<Record<string, string | undefi
 }
 
 function managedMemoryEnvExampleLines(values: Readonly<Record<string, string | undefined>>): readonly string[] {
-  const apiKeyEnv = values.embeddingApiKeyEnv?.trim();
+  const configuredName = values.embeddingApiKeyEnv?.trim();
+  const apiKeyEnv = configuredName ? resolveCredentialEnvironmentName("embeddings", configuredName) : undefined;
   return apiKeyEnv === undefined || apiKeyEnv.length === 0
     ? []
     : ["# Optional local embedding service bearer token", `${apiKeyEnv}=`];
@@ -377,9 +380,8 @@ function validatePositiveInteger(value: string | undefined): string | undefined 
 
 function validateOptionalEnvironmentName(value: string | undefined): string | undefined {
   const trimmed = value?.trim() ?? "";
-  return trimmed.length === 0 || /^[A-Za-z_][A-Za-z0-9_]*$/u.test(trimmed)
-    ? undefined
-    : "Use an environment-variable name such as LM_STUDIO_API_KEY.";
+  try { if (trimmed) resolveCredentialEnvironmentName("embeddings", trimmed); return undefined; }
+  catch { return "Use a non-reserved environment-variable name such as LM_STUDIO_API_KEY."; }
 }
 
 const memoryLite: CapabilityModule = {

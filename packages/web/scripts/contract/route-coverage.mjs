@@ -26,21 +26,22 @@ export function discoverRoutes(source) {
   const host = ts.createCompilerHost(options);
   host.getSourceFile = (name) => name === "server.ts" ? file : undefined;
   const checker = ts.createProgram(["server.ts"], options, host).getTypeChecker();
-  function isCapabilityRegistrar(identifier) {
+  function registrarPath(identifier) {
     const declaration = checker.getSymbolAtLocation(identifier)?.declarations?.[0];
     if (!declaration || !ts.isImportSpecifier(declaration) || declaration.isTypeOnly
-      || (declaration.propertyName ?? declaration.name).text !== "registerCapabilityActionRoutes") return false;
+      || !["registerCapabilityActionRoutes", "registerCredentialRoutes"].includes((declaration.propertyName ?? declaration.name).text)) return undefined;
     const clause = declaration.parent.parent;
-    return !clause.isTypeOnly && ts.isImportDeclaration(clause.parent)
-      && ts.isStringLiteral(clause.parent.moduleSpecifier)
-      && clause.parent.moduleSpecifier.text === "./capability-action-routes.js";
+    if (clause.isTypeOnly || !ts.isImportDeclaration(clause.parent) || !ts.isStringLiteral(clause.parent.moduleSpecifier)) return undefined;
+    const name = (declaration.propertyName ?? declaration.name).text;
+    const expected = name === "registerCredentialRoutes" ? "credential-routes" : "capability-action-routes";
+    return clause.parent.moduleSpecifier.text === `./${expected}.js` ? expected : undefined;
   }
   const routes = [];
   const verbs = new Set(["get", "post", "put", "patch", "delete", "head", "options", "all"]);
   function visit(node) {
     // This imported registration owner uses literal routes and the same origin callback.
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && isCapabilityRegistrar(node.expression)) {
-      routes.push(...discoverRoutes(readFileSync(new URL("../../src/capability-action-routes.ts", import.meta.url), "utf8")));
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && registrarPath(node.expression)) {
+      routes.push(...discoverRoutes(readFileSync(new URL(`../../src/${registrarPath(node.expression)}.ts`, import.meta.url), "utf8")));
     }
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
       && node.expression.expression.getText(file) === "app" && verbs.has(node.expression.name.text)) {

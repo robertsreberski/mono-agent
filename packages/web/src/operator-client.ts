@@ -1,3 +1,4 @@
+import { parseCredentialSnapshot, parseCredentialSaved, type CredentialSaveRequest, type CredentialRequest } from "@mono-agent/channel-operator/client";
 import { parseCapabilityActionsSnapshot, parseCapabilityActionPreview, parseCapabilityActionSaved, MAX_CAPABILITY_ACTION_BYTES, type CapabilityActionInput, type CapabilityActionSaveInput } from "@mono-agent/channel-operator/client";
 import { parseCapabilitySetupSnapshot, MAX_CAPABILITY_SETUP_BYTES, type CapabilitySetupSnapshot } from "@mono-agent/channel-operator/client";
 import { isAgentCompactionAccounting, parseProviderUsageSnapshot, type ProviderUsageId, type ProviderUsageSnapshot } from "@mono-agent/contracts";
@@ -154,6 +155,7 @@ export interface OperatorInfo {
   readonly restart: OperatorRestartSupport;
   readonly supportsCapabilitySetup?: true;
   readonly supportsCapabilityActions?: true;
+  readonly supportsCredentialSetup?: true;
   readonly schema: number;
   readonly pid?: number;
   readonly label?: string;
@@ -313,6 +315,7 @@ export class OperatorClient {
       ...(replyAttachments === undefined ? {} : { replyAttachments }),
       ...(mcpApps === undefined ? {} : { mcpApps }),
       ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
+      ...(record(capabilities?.credentialSetup)?.version === 1 && record(capabilities?.credentialSetup)?.save === true ? { supportsCredentialSetup: true as const } : {}),
       ...(capabilities?.jobs === true ? { supportsJobs: true } : {}),
       ...(record(capabilities?.capabilityActions)?.version === 1 && record(capabilities?.capabilityActions)?.preview === true && record(capabilities?.capabilityActions)?.save === true ? { supportsCapabilityActions: true as const } : {}),
       ...(record(capabilities?.capabilitySetup)?.version === 1
@@ -367,6 +370,21 @@ export class OperatorClient {
       return { kind: "refused", reason: boundedRestartReason(error?.message) };
     }
     throw new WebConsoleError("restart_unconfirmed", "The restart response could not be confirmed.", 502);
+  }
+
+  async credentials(operation: "read" | "save" | "retry", input?: CredentialSaveRequest | CredentialRequest) {
+    try {
+      const errors = new Map([["credential_invalid", 400], ["credential_conflict", 409], ["credential_unavailable", 409], ["credential_outcome_unknown", 503]]);
+      const response = await this.request(`${this.baseUrl}/v1/credentials${operation === "read" ? "" : `/${operation}`}`, {
+        method: operation === "read" ? "GET" : "POST", headers: this.headers(operation !== "read"),
+        ...(input === undefined ? {} : { body: JSON.stringify(input) }), signal: AbortSignal.timeout(35_000),
+      }, errors);
+      const value: unknown = JSON.parse(await readBoundedBody(response, 16 * 1024, "credential_outcome_unknown"));
+      return operation === "read" ? parseCredentialSnapshot(value) : parseCredentialSaved(value);
+    } catch (error) {
+      const code = error instanceof WebConsoleError && ["credential_invalid", "credential_conflict", "credential_unavailable"].includes(error.code) ? error.code : "credential_outcome_unknown";
+      throw new WebConsoleError(code, "Credential operation could not be confirmed. Refresh status; never automatically replay a save.", code === "credential_invalid" ? 400 : code === "credential_outcome_unknown" ? 502 : 409);
+    }
   }
 
   async capabilityActions(...args: [operation: "read"] | [operation: "preview", input: CapabilityActionInput] | [operation: "save", input: CapabilityActionSaveInput]) {

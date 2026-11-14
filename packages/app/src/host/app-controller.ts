@@ -90,6 +90,8 @@ export interface MonoAgentAppOptions {
   readonly cwd?: string;
   /** Path to mono-agent.config.json; defaults to <cwd>/mono-agent.config.json. */
   readonly configPath?: string;
+  /** Trusted reloadable dotenv destination. Omit when the embedding host cannot reload it. */
+  readonly dotenvPath?: string;
   /**
    * Optional immutable read source for managed workers. The public app and
    * trace metadata continue to identify `configPath`; every runtime/channel
@@ -203,6 +205,7 @@ async function startMonoAgentAppInternal(
       ...(options.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
       ...(options.traceDefaults === undefined ? {} : { traceDefaults: options.traceDefaults }),
       ...(options.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: options.backgroundSnapshot }),
+      ...(options.dotenvPath === undefined ? {} : { dotenvPath: resolve(cwd, options.dotenvPath) }),
       ...(options.memoryHealthWorkerUrl === undefined ? {} : { memoryHealthWorkerUrl: options.memoryHealthWorkerUrl }),
       ...(options.memoryHealthWorkerTimeoutMs === undefined ? {} : { memoryHealthWorkerTimeoutMs: options.memoryHealthWorkerTimeoutMs }),
       ...(options.activityTracker === undefined ? {} : { activityTracker: options.activityTracker }),
@@ -266,6 +269,7 @@ interface MonoAgentAppControllerInput {
   readonly cwd: string;
   readonly agentRootOwnership: AgentRootOwnership;
   readonly configPath: string;
+  readonly dotenvPath?: string;
   readonly configReadPath: string;
   readonly privateRuntimePaths?: PrivateBackgroundRuntimePaths;
   readonly env: Record<string, string | undefined>;
@@ -298,6 +302,7 @@ const MIN_MEMORY_HEALTH_REFRESH_INTERVAL_MS = 30_000;
 
 export class MonoAgentAppController implements MonoAgentApp {
   readonly configPath: string;
+  readonly dotenvPath: string | undefined;
   readonly cwd: string;
   readonly configReadPath: string;
   readonly privateRuntimePaths?: PrivateBackgroundRuntimePaths | undefined;
@@ -422,6 +427,10 @@ export class MonoAgentAppController implements MonoAgentApp {
     this.cwd = input.cwd;
     this.agentRootOwnership = input.agentRootOwnership;
     this.configPath = input.configPath;
+    this.dotenvPath = input.dotenvPath === undefined ? undefined : resolve(input.cwd, input.dotenvPath);
+    if (this.dotenvPath !== undefined && input.backgroundSnapshot !== undefined && this.dotenvPath !== input.backgroundSnapshot.dotenvPath) {
+      throw new Error("Reloadable dotenv destination conflicts with the managed startup snapshot.");
+    }
     this.configReadPath = input.configReadPath;
     this.privateRuntimePaths = input.privateRuntimePaths;
     this.env = input.env;

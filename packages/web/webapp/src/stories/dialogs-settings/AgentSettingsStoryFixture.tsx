@@ -13,7 +13,7 @@ const select = (variant: Variant, onPinFailure: () => void) => {
     setAgentPinned: variant === "pin-pending" ? () => new Promise<void>(() => undefined) : variant === "pin-failed" ? async () => { onPinFailure(); throw new Error("Example pin unavailable"); } : defaultPin,
     catalogByProvider: variant === "loading" ? { atlas: { status: "loading", models: [] } } : {} });
   const sourceId = `atlas-story-settings-${variant}`;
-  Object.assign(storyStore, { selectedAgent: { ...atlas, sourceId, status: variant === "offline" ? "offline" : "online", supportsCapabilitySetup: variant === "capabilities" ? true : undefined, supportsCapabilityActions: variant === "capabilities" ? true : undefined, pinned: variant !== "unpinned",
+  Object.assign(storyStore, { selectedAgent: { ...atlas, sourceId, status: variant === "offline" ? "offline" : "online", supportsCapabilitySetup: variant === "capabilities" ? true : undefined, supportsCapabilityActions: variant === "capabilities" ? true : undefined, supportsCredentialSetup: variant === "capabilities" ? true : undefined, pinned: variant !== "unpinned",
     supportsProviderUsageRefresh: variant !== "no-usage" ? true : undefined, supportsProviderAuthChecks: variant !== "usage-only" ? true : undefined,
     restart: variant === "unsupported" ? { supported: false, reason: "Restart is unavailable for this example agent." } : { supported: true },
     supportsProviderAuth: !["usage-only", "provider-unsupported"].includes(variant) ? true : undefined, supportsProviderUsage: !["no-usage", "provider-unsupported"].includes(variant) ? true : undefined, providers: [{ id: "atlas", label: "Atlas Cloud", configured: true }, { id: "grove", label: "Grove Research Cloud", configured: true }],

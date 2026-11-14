@@ -19,3 +19,13 @@ export const eligibleCronActions: WebCapabilityActionsSnapshot = {
   ...capabilityActions,
   actions: capabilityActions.actions.map((action) => action.id === "cron-controls" ? { ...action, available: true, reason: "eligible" } : action),
 };
+
+/** Presence-only synthetic credential setup for the isolated settings story. */
+export const credentialSnapshot: import("../types").WebCredentialSnapshot = {
+  version: 1, process: capabilitySnapshot.process, fence: "12345678-1234-1234-1234-123456789012",
+  cards: [
+    { id: "telegram", available: true, reason: "ready", fields: [{ id: "bot", state: "not-set" }], configReady: false, configPending: false },
+    { id: "slack", available: true, reason: "ready", fields: [{ id: "bot", state: "not-set" }, { id: "app", state: "not-set" }], configReady: false, configPending: false },
+    { id: "openai-api", available: true, reason: "ready", fields: [{ id: "bearer", state: "not-set" }], configReady: false, configPending: false },
+  ],
+};

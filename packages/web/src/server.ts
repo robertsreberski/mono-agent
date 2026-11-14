@@ -1,3 +1,4 @@
+import { registerCredentialRoutes } from "./credential-routes.js";
 import { registerCapabilityActionRoutes } from "./capability-action-routes.js";
 import { voiceFormat, WEB_VOICE_LIMITS } from "./transcription.js";
 import { readVoiceUpload } from "./voice-upload.js";
@@ -313,6 +314,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     } catch (error) { next(error); }
   });
 
+  registerCredentialRoutes(app, service, activeOperations, exactRequestOrigin);
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
 
   app.get("/healthz", (_req, res) => {

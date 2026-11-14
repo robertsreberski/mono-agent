@@ -2828,6 +2828,8 @@ html.keyboard-viewport .skill-browser-popup {
 .capability-card details { margin-top: 12px; }
 .capability-card summary { cursor: pointer; font-size: .875rem; }
 .capability-choice { display: grid; gap: 6px; font-size: .875rem; }
+.credential-form { display: grid; gap: 12px; }
+.credential-form input { width: 100%; min-width: 0; min-height: 44px; padding: 8px; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 16px; }
 .capability-choice select { width: 100%; min-width: 0; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
 .capability-status { font-size: .75rem; font-weight: 600; white-space: nowrap; }
 .capability-status.is-error { color: var(--danger); }

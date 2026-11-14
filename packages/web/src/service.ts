@@ -1,3 +1,4 @@
+import { parseCredentialRequest, parseCredentialSaveRequest, type CredentialRequest, type CredentialSaveRequest } from "@mono-agent/channel-operator/client";
 import { parseCapabilityActionInput, parseCapabilityActionSaveInput, type CapabilityActionInput, type CapabilityActionSaveInput } from "@mono-agent/channel-operator/client";
 import type { CapabilitySetupSnapshot } from "@mono-agent/channel-operator/client";
 import { constants as pdfFsConstants } from "node:fs";
@@ -946,6 +947,7 @@ export class WebService {
       ...(providerAuth ? { supportsProviderAuth: true as const } : {}),
       ...(connection?.info.supportsManualCompaction === true ? { supportsManualCompaction: true as const } : {}),
       ...(capabilitySetup ? { supportsCapabilitySetup: true as const } : {}),
+      ...(connection?.info.supportsCredentialSetup === true ? { supportsCredentialSetup: true as const } : {}),
       ...(connection?.info.supportsCapabilityActions === true ? { supportsCapabilityActions: true as const } : {}),
       ...(providerUsage ? { supportsProviderUsage: true as const } : {}),
       ...(providerUsage && connection?.info.supportsProviderUsageRefresh === true ? { supportsProviderUsageRefresh: true as const } : {}),
@@ -962,6 +964,7 @@ export class WebService {
     return [
       JSON.stringify(projected.restart),
       projected.supportsCapabilitySetup === true ? "capabilitySetup" : "",
+      projected.supportsCredentialSetup === true ? "credentialSetup" : "",
       projected.supportsCapabilityActions === true ? "capabilityActions" : "",
       projected.supportsProviderUsage === true ? "providerUsage" : "",
       projected.supportsProviderUsageRefresh === true ? "providerUsageRefresh" : "",
@@ -2146,6 +2149,17 @@ export class WebService {
     // unconditionally. Generation 1's ladder then judged generation 2's turns.
     this.admitModelPage(sourceId, generation, page);
     return page;
+  }
+
+  async credentials(sourceId: string, operation: "read" | "save" | "retry", raw?: CredentialSaveRequest | CredentialRequest) {
+    if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined || connection.info.supportsCredentialSetup !== true) throw new WebConsoleError("credential_unavailable", "Credential entry is unavailable.", 409);
+    const input = operation === "read" ? undefined : operation === "save" ? parseCredentialSaveRequest(raw) : parseCredentialRequest(raw);
+    if (connection.pid === undefined || connection.info.pid !== connection.pid || (input !== undefined && (input.process.pid !== connection.pid || input.process.startedAt !== connection.startedAt))) throw new WebConsoleError("credential_conflict", "Agent process changed; reopen settings.", 409);
+    const result = await connection.client.credentials(operation, input);
+    if (result.process.pid !== connection.pid || result.process.startedAt !== connection.startedAt || (input !== undefined && (!("card" in result) || result.card !== input.card)) || this.connections.get(sourceId)?.generation !== connection.generation || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) throw new WebConsoleError("credential_outcome_unknown", "Agent process changed; the save outcome is unknown. Do not automatically replay it.", 502);
+    return result;
   }
 
   async capabilityActions(sourceId: string, operation: "read" | "preview" | "save", raw?: CapabilityActionInput | CapabilityActionSaveInput) {

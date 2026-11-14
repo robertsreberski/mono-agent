@@ -96,6 +96,39 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/agents/:id/credentials",
+      "requestType": "NoBody",
+      "responseType": "ApiCredentials",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agents/:id/credentials/save",
+      "requestType": "ApiCredentialSave",
+      "responseType": "ApiCredentialSaved",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agents/:id/credentials/retry",
+      "requestType": "ApiCredentialRetry",
+      "responseType": "ApiCredentialSaved",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/agents/:id/capability-actions",
       "requestType": "NoBody",
       "responseType": "ApiCapabilityActions",
