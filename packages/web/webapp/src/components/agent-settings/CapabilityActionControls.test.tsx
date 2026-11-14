@@ -119,7 +119,7 @@ it("labels subagents and undo actions with their own confirm copy", async () => 
   await screen.findByText(/dotenv credentials and memory data are untouched/);
 });
 
-it.each([["subagents-denied", "The tool policy denies Agent"], ["subagents-unconfigured", "Subagents are not configured"], ["undo-stale", "changed since the last console save"], ["undo-unavailable", "No console save is available"], ["candidate-invalid", "no longer valid"]] as const)("explains a %s refusal without offering a write", (reason, copy) => {
+it.each([["subagents-denied", "The tool policy denies Agent"], ["subagents-unconfigured", "No subagents block is configured. Add one to the config first; profiles are optional"], ["undo-stale", "changed since the last console save"], ["undo-unavailable", "No console save is available"], ["candidate-invalid", "no longer valid"]] as const)("explains a %s refusal without offering a write", (reason, copy) => {
   function Variant({ target }: { readonly target: (typeof eligibleCronActions.actions)[number] }) {
     const [saved, setSaved] = useState<CapabilitySavedState | null>(null);
     return <CapabilityActionControls agent={agent("garden", { restart: { supported: false } })} action={target} process={eligibleCronActions.process} restart={null} refresh={refresh} saved={saved} setSaved={setSaved} />;

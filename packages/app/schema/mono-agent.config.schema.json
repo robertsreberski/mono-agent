@@ -2911,7 +2911,7 @@
           "additionalProperties": false,
           "properties": {
             "enabled": {
-              "description": "Allows API-key-authenticated, explicitly confirmed run-now and runtime enable/disable actions. Defaults off and never rewrites cron config sources.",
+              "description": "Allows explicitly confirmed run-now and runtime enable/disable actions through the agent operator endpoint. Defaults off and never rewrites cron config sources.",
               "examples": [
                 true
               ],

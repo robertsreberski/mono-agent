@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix stale setup copy: `mono-agent init --help` now says Capabilities can
+  enable supported features with a previewed save that applies on the next
+  start, the console Subagents card asks for a `subagents` config block
+  (profiles are optional), and the `cron.operatorActions.enabled` schema and
+  config reference no longer mention a removed operator API key.
+
 - Add one-level console configuration Undo with a recovery panel. Undo restores the exact prior file, including its formatting, only
   while the saved configuration still matches the backup's recorded result,
   then consumes the slot so a second Undo is refused; dotenv credentials and

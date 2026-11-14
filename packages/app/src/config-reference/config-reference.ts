@@ -1776,7 +1776,7 @@ function descriptionFor(id: string): string {
     return "Extra roots for managed Write and Edit while sandbox.mode is off; writable roots are also readable. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled.";
   }
   if (id === "cron.operatorActions.enabled") {
-    return "Allows API-key-authenticated, explicitly confirmed run-now and runtime enable/disable actions. Defaults off and never rewrites cron config sources.";
+    return "Allows explicitly confirmed run-now and runtime enable/disable actions through the agent operator endpoint. Defaults off and never rewrites cron config sources.";
   }
   if (id === "cron.preflight") {
     return "Explicit argv evaluated before the model responder. `{\"run\":false}` ends the firing as skipped_gate with no model turn; `{\"run\":true,\"input\":\"…\"}` runs the job with the input appended to its prompt. Any failure (non-zero exit, signal, timeout, malformed verdict) fails open with the plain prompt. Never a shell line.";
