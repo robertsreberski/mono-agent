@@ -787,13 +787,22 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
     // transcript, so prior messages are skipped; a fresh run AND a create-on-miss
     // (requestedSessionId set but the durable session was just created empty)
     // both seed, since their on-disk transcript is empty.
-    let retainedSeed: { candidate: import("../../contracts/retained-summary.js").RuntimeRetainedSummaryCandidate; message: any; entryId?: string } | undefined;
+    let retainedSeed: { candidate: import("../../contracts/retained-summary.js").RuntimeRetainedSummaryCandidate | { binding: import("../../contracts/retained-summary.js").RuntimeRetainedSummaryBinding }; message: any; entryId?: string } | undefined;
+    let reseedAnchor: string | undefined;
+    let reseedBinding: import("../../contracts/retained-summary.js").RuntimeRetainedSummaryBinding | undefined;
     let { priorMessages, promptText, promptImages } = options.manualCompaction === true
       ? { priorMessages: toAgentMessages(options.messages || [], runtime.model), promptText: "", promptImages: [] }
       : splitPromptMessages(options.messages, runtime.model);
     runState.sessionBaselineCount = (await runState.session!.buildContext()).messages.length;
     if (!options.nativeSessionProjection && (!requestedSessionId || runState.createdOnMiss
       || control && options.nativeSessionAuthority && runState.sessionBaselineCount === 0)) {
+      // Late, owner-held lookup after actual fresh/create-on-miss resolution,
+      // independent of pack configuration and prepared-message projection.
+      try { reseedBinding = await options.retainedSummaryAccess?.eligibleForReseed?.(); }
+      catch {
+        onEvent({ type: "runtime_warning", warning_kind: "retained_summary_admission_skipped",
+          message: "Optional retained summary admission skipped; continuing with legacy context." });
+      }
       // Resolve optional continuity only after the real creation decision. The
       // resulting messages are persisted with the seed and included in ordinary
       // provider usage/context accounting, never appended on a true resume.
@@ -838,6 +847,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
       }
       for (const message of [...evidence, ...priorMessages]) {
         const entryId = await harness.appendMessage(message);
+        reseedAnchor ??= entryId;
         if (retainedSeed && retainedSeed.message === message) retainedSeed.entryId = entryId;
         runState.sessionBaselineCount += 1;
       }
@@ -861,6 +871,9 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
     const descriptor = options.sessionTurn;
     await harness.beginTurn(descriptor?.turnId ?? (options.manualCompaction ? undefined : hasHostIdentity ? recoveryIdentity.runId : undefined),
       options.manualCompaction ? "synthetic" : descriptor?.kind ?? (hasHostIdentity ? "host" : "synthetic"), descriptor);
+    if (!retainedSeed && reseedBinding && reseedAnchor) {
+      retainedSeed = { candidate: { binding: reseedBinding }, message: undefined, entryId: reseedAnchor };
+    }
     if (retainedSeed?.entryId && descriptor?.kind === "host") {
       await harness.admitRetainedSummary(retainedSeed.candidate, retainedSeed.entryId);
     }

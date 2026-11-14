@@ -29,10 +29,13 @@ export interface RetainedSummaryReceipt extends RetainedSummaryCandidate {
   readonly destination: { readonly logicalConversationId: string; readonly conversationId: string; readonly epoch: string; readonly handleId: string; readonly journalId: string };
   readonly seed: { readonly entryId: string; readonly messageDigest: string };
 }
+/** Independent reseed carry: no assertion that the seed quotes the source. */
+export type ReseedPredecessorReceipt = Omit<RetainedSummaryReceipt, "selection">;
 /** Positive canonical-owner capability, not request/plugin supplied. An absent
  * source is revocation, not permission to recover native/original source bytes. */
 export interface RetainedSummaryAccess {
   readonly destination: Omit<RetainedSummaryReceipt["destination"], "journalId">;
+  eligibleForReseed?(): Promise<RetainedSummaryBinding | undefined>;
   assertCurrent(): Promise<void>;
   resolve(binding: RetainedSummaryBinding): Promise<{ readonly text: string } | undefined>;
 }

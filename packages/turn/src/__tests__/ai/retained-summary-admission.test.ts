@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JsonlSessionRepo } from "../../engine/session-store.js";
 import { createHash } from "node:crypto";
-import { createModels, fauxProvider } from "@earendil-works/pi-ai";
+import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { generateEngineTurnResponse } from "../../execution/pi/run.js";
 import { nativeSessionRegistry } from "../../engine/session-lifecycle.js";
 import { expect, it, vi } from "vitest";
@@ -109,7 +109,7 @@ it("uses branch-local successor coverage, stops source resolution, and reactivat
   await raw.close();
 });
 
-it.each(["seed", "turn_start", "receipt_write"] as const)("SIGKILL at admission boundary %s never promotes an orphan or partial receipt", async stage => {
+it.each(["seed", "turn_start", "receipt_write"].flatMap(stage => [false, true].map(carry => ({ stage, carry }))))("SIGKILL at admission boundary $stage carry=$carry never promotes an orphan or partial receipt", async ({ stage, carry }) => {
   const root = await mkdtemp(join(tmpdir(), "retained-admission-crash-"));
   const repo = new JsonlSessionRepo({ sessionsRoot: root });
   try {
@@ -124,12 +124,12 @@ it.each(["seed", "turn_start", "receipt_write"] as const)("SIGKILL at admission 
       if (${JSON.stringify(stage)} === "seed") stop();
       const begin = raw.beginTurn.bind(raw), write = raw.write.bind(raw);
       raw.beginTurn = async (...args) => { const result = await begin(...args); if (${JSON.stringify(stage)} === "turn_start" && args[0] === "host-turn") stop(); return result; };
-      raw.write = async (kind, ...args) => { const result = await write(kind, ...args); if (${JSON.stringify(stage)} === "receipt_write" && kind === "retained_summary_admitted") stop(); return result; };
+      raw.write = async (kind, ...args) => { const result = await write(kind, ...args); if (${JSON.stringify(stage)} === "receipt_write" && ["retained_summary_admitted", "reseed_predecessor_admitted"].includes(kind)) stop(); return result; };
       const access = { destination: { logicalConversationId: "fiction", conversationId: "fiction:bucket", epoch: "destination-epoch", handleId: "fiction-handle" },
         assertCurrent: async () => {}, resolve: async () => ({ text: ${JSON.stringify(text)} }) };
       const driver = createRunDriver(raw, { model: ${JSON.stringify(model)}, retainedSummaryAccess: access });
       await driver.beginTurn("host-turn", "host", { kind: "host", ownerKey: "fiction", historyBucket: "fiction:bucket", handleId: "fiction-handle", turnId: "host-turn", baseRevision: 0 });
-      await driver.admitRetainedSummary(${JSON.stringify(candidate)}, seed);
+      await driver.admitRetainedSummary(${JSON.stringify(carry ? { binding } : candidate)}, seed);
       throw Error("Crash boundary not reached");
     `;
     const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
@@ -140,7 +140,7 @@ it.each(["seed", "turn_start", "receipt_write"] as const)("SIGKILL at admission 
       assertCurrent: async () => {}, resolve: async () => ({ text }) };
     const raw = await repo.open(metadata, { repair: false, validateSession: async (raw: any) => { await resolveRetainedSummaryAdmission(raw, access); } });
     const predecessor = await resolveRetainedSummaryAdmission(raw, access);
-    if (stage === "receipt_write") { expect(predecessor?.text).toBe(text); expect(validRetainedSummaryReceipt(raw.validator.retainedSummaryAdmission.payload)).toBe(true); }
+    if (stage === "receipt_write") { expect(predecessor?.text).toBe(text); expect(validRetainedSummaryReceipt(raw.validator.retainedSummaryAdmission.payload, carry)).toBe(true); }
     else { expect(raw.validator.retainedSummaryAdmission).toBeNull(); expect(predecessor).toBeUndefined(); }
     await raw.close();
   } finally { await repo.close(); await rm(root, { recursive: true, force: true }); }
@@ -174,14 +174,14 @@ it("accepts source IDs through the shared 4096-byte identity limit", async () =>
   expect(f.raw.validator.retainedSummaryAdmission.payload.binding.sourceEpoch).toHaveLength(4096);
   await f.driver.endTurn("completed"); await f.raw.close();
 });
-it("awaits the receipt sync barrier before compaction or dispatch can proceed", async () => {
+it.each([false, true])("awaits the receipt sync barrier before compaction or dispatch can proceed (carry=%s)", async carry => {
   const f = await fixture(); await f.driver.beginTurn("host-turn", "host", f.descriptor);
   const order: string[] = []; let release!: () => void;
   const blocked = new Promise<void>(resolve => { release = resolve; });
   const sync = f.raw.sync.bind(f.raw);
   vi.spyOn(f.raw, "sync").mockImplementation(async () => { order.push("sync-start"); await blocked; await sync(); order.push("synced"); });
   f.driver.hooks.on("before_compaction", () => { order.push("compaction"); return undefined; });
-  const admitted = f.driver.admitRetainedSummary(candidate, f.seed).then(async () => {
+  const admitted = f.driver.admitRetainedSummary(carry ? { binding } : candidate, f.seed).then(async () => {
     await expect(f.driver.compact()).rejects.toThrow("compaction cancelled");
     order.push("dispatch-eligible");
   });
@@ -241,7 +241,7 @@ it("preflights actual store authority without writing or advancing validator sta
   await f.driver.endTurn("completed"); await f.raw.close();
 });
 
-it.each(["write", "barrier"] as const)("propagates a real journal %s failure instead of skipping admission", async stage => {
+it.each(["write", "barrier"].flatMap(stage => [false, true].map(carry => ({ stage, carry }))))("propagates a real journal $stage failure instead of skipping admission (carry=$carry)", async ({ stage, carry }) => {
   const root = await mkdtemp(join(tmpdir(), "retained-admission-io-"));
   const repo = new JsonlSessionRepo({ sessionsRoot: root });
   const f = await fixture(false, repo);
@@ -250,7 +250,7 @@ it.each(["write", "barrier"] as const)("propagates a real journal %s failure ins
     const warnings: any[] = []; f.driver.subscribe((event: any) => warnings.push(event));
     const fault = Object.assign(new Error("Fictional journal I/O failure"), { code: "EIO" });
     vi.spyOn(f.raw.io, stage === "write" ? "append" : "sync").mockRejectedValueOnce(fault);
-    await expect(f.driver.admitRetainedSummary(candidate, f.seed)).rejects.toMatchObject({ name: "JournalStorageError", code: "EIO", cause: fault });
+    await expect(f.driver.admitRetainedSummary(carry ? { binding } : candidate, f.seed)).rejects.toMatchObject({ name: "JournalStorageError", code: "EIO", cause: fault });
     expect(f.raw.failure).toMatchObject({ cause: fault });
     expect(Boolean(f.raw.validator.retainedSummaryAdmission)).toBe(stage === "barrier");
     expect(warnings.filter(event => event.code === "retained_summary_admission_skipped")).toHaveLength(0);
@@ -259,18 +259,18 @@ it.each(["write", "barrier"] as const)("propagates a real journal %s failure ins
   }
 });
 
-it.each(["journalId", "malformed"])("refuses on-disk receipt %s damage before source resolution and preserves the public refusal", async damage => {
+it.each(["journalId", "malformed"].flatMap(damage => [false, true].map(carry => ({ damage, carry }))))("refuses on-disk receipt $damage damage before source resolution (carry=$carry)", async ({ damage, carry }) => {
   const root = await mkdtemp(join(tmpdir(), "retained-admission-journal-"));
   const repo = new JsonlSessionRepo({ sessionsRoot: root });
   const f = await fixture(false, repo);
   try {
     await f.driver.beginTurn("host-turn", "host", f.descriptor);
-    await f.driver.admitRetainedSummary(candidate, f.seed); await f.driver.endTurn("completed"); await f.raw.close();
+    await f.driver.admitRetainedSummary(carry ? { binding } : candidate, f.seed); await f.driver.endTurn("completed"); await f.raw.close();
     const records = (await readFile(f.raw.metadata.path, "utf8")).trimEnd().split("\n").map(line => JSON.parse(line));
-    const receipt = records.find(record => record.kind === "retained_summary_admitted");
+    const receipt = records.find(record => record.kind === (carry ? "reseed_predecessor_admitted" : "retained_summary_admitted"));
     if (damage === "journalId") receipt.payload.destination.journalId = "mismatched-journal";
     else receipt.payload.extra = "unknown-field";
-    expect(validRetainedSummaryReceipt(receipt.payload)).toBe(damage === "journalId");
+    expect(validRetainedSummaryReceipt(receipt.payload, carry)).toBe(damage === "journalId");
     const damaged = records.map(record => JSON.stringify(record)).join("\n") + "\n";
     await writeFile(f.raw.metadata.path, damaged);
     f.resolve.mockClear();
@@ -301,4 +301,60 @@ it("warns when an uncovered seed is excluded by the active branch, without consu
   expect(warn).toHaveBeenCalledOnce(); expect(f.resolve).not.toHaveBeenCalled(); expect(f.access.assertCurrent).not.toHaveBeenCalled();
   expect(await resolveRetainedSummaryAdmission(f.raw, undefined, () => { throw new Error("Fictional diagnostic failure"); })).toBeUndefined();
   await f.driver.endTurn("completed"); await f.raw.close();
+});
+
+it("keeps one admission authority across both closed kinds, with no fabricated quotation", async () => {
+  for (const carryFirst of [false, true]) {
+    const f = await fixture();
+    await f.driver.beginTurn("host-turn", "host", f.descriptor);
+    await f.driver.admitRetainedSummary(carryFirst ? { binding } : candidate, f.seed);
+    await f.driver.admitRetainedSummary(carryFirst ? candidate : { binding }, f.seed);
+    const receipts = f.raw.records!.filter((r: any) => ["retained_summary_admitted", "reseed_predecessor_admitted"].includes(r.kind));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.kind).toBe(carryFirst ? "reseed_predecessor_admitted" : "retained_summary_admitted");
+    if (carryFirst) expect(receipts[0]!.payload).not.toHaveProperty("selection");
+    expect(await resolveRetainedSummaryAdmission(f.raw, f.access)).toEqual({ admissionId: receipts[0]!.id, text });
+    await f.driver.endTurn("completed"); await f.raw.close();
+  }
+});
+it.each(["access", "purge", "owner", "digest"])("keeps active carry available on optional %s loss, but rejects persisted seed damage", async loss => {
+  const f = await fixture(); await f.driver.beginTurn("host-turn", "host", f.descriptor);
+  await f.driver.admitRetainedSummary({ binding }, f.seed);
+  const warning = vi.fn();
+  if (loss === "purge") f.resolve.mockResolvedValue(undefined);
+  if (loss === "digest") f.resolve.mockResolvedValue({ text: "Changed retained bytes" });
+  if (loss === "owner") f.access.assertCurrent = async () => { throw Error("Fictional revoked owner"); };
+  expect(await resolveRetainedSummaryAdmission(f.raw, loss === "access" ? undefined : f.access, warning)).toBeUndefined();
+  expect(warning).toHaveBeenCalledOnce();
+  f.raw.validator.retainedSummaryAdmission.payload.seed.messageDigest = hash("tampered");
+  await expect(resolveRetainedSummaryAdmission(f.raw, f.access)).rejects.toMatchObject({ code: "ERR_RETAINED_SUMMARY_AUTHORITY" });
+  await f.driver.endTurn("completed"); await f.raw.close();
+});
+
+it.each([true, false])("looks up carry only after cold resolution, never warm resume, with seed=%s", async hasSeed => {
+  const root = await mkdtemp(join(tmpdir(), "retained-cold-trigger-"));
+  const handle = `fictional-trigger-${hasSeed}`;
+  const faux = fauxProvider({ models: [{ id: "fixture" }], tokensPerSecond: 1000000 });
+  const models = createModels(); models.setProvider(faux.provider);
+  faux.setResponses([fauxAssistantMessage([fauxText("Fictional first answer.")]), fauxAssistantMessage([fauxText("Fictional second answer.")])]);
+  const eligibleForReseed = vi.fn(async () => binding);
+  const access = { destination: { logicalConversationId: "fiction", conversationId: "fiction:bucket", epoch: "destination", handleId: handle },
+    assertCurrent: async () => {}, resolve: async () => ({ text }), eligibleForReseed };
+  const options = { model: { provider: "faux", model: "fixture", reference: "faux:fixture" }, piResolvedModel: faux.getModel(), piResolvedModels: models,
+    effort: "none", allowedTools: [], sessionId: handle, sessionsRoot: root, sessionKeepAlive: true, compaction: { enabled: false }, retainedSummaryAccess: access };
+  try {
+    const first = await generateEngineTurnResponse("Fictional rules", { ...options,
+      sessionTurn: { kind: "host", ownerKey: "fiction", historyBucket: "fiction:bucket", handleId: handle, turnId: "first", baseRevision: 0 },
+      messages: [...(hasSeed ? [{ role: "user", content: "Fictional canonical seed." }, { role: "assistant", content: "Ready." }] : []), { role: "user", content: "Continue." }] });
+    expect(first.error).toBeNull(); expect(eligibleForReseed).toHaveBeenCalledOnce();
+    const second = await generateEngineTurnResponse("Fictional rules", { ...options,
+      sessionTurn: { kind: "host", ownerKey: "fiction", historyBucket: "fiction:bucket", handleId: handle, turnId: "second", baseRevision: 1 },
+      messages: [{ role: "user", content: "Continue again." }] });
+    expect(second.error).toBeNull(); expect(eligibleForReseed).toHaveBeenCalledOnce();
+    const repo = new JsonlSessionRepo({ sessionsRoot: root });
+    const raw = await repo.open(await repo.find(handle));
+    expect(Boolean(raw.validator.retainedSummaryAdmission)).toBe(hasSeed);
+    if (hasSeed) expect(raw.validator.retainedSummaryAdmission.kind).toBe("reseed_predecessor_admitted");
+    await raw.close(); await repo.close();
+  } finally { nativeSessionRegistry.delete(handle); await rm(root, { recursive: true, force: true }); }
 });

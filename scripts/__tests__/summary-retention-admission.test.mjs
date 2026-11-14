@@ -58,3 +58,19 @@ it.each(["oversizedCandidate", "purgeBeforeAdmit"])("keeps cold admission option
 it("keeps a cold-admitted current journal protected through prepared configured wake", async () => {
   expect(await runTrialHostAdmission(summary, { automaticRefusal: true, preparedWake: true })).toEqual({ realPreTurnProtectedRefused: true, runtimeCalls: 3, preparedCurrentJournalProtected: true });
 }, 60000);
+
+// Whole quotation exceeds even the planned 16k presentation ceiling; only the
+// small protected section belongs in the bounded successor output.
+const largeSummary = `## Goal
+${"Fictional background detail. ".repeat(2300)}
+
+${summary}`;
+it.each([{}, { packDisabled: true }, { preparedCold: true }])("carries an omitted >16k quotation through real cold trigger %j and same-destination restart", async options => {
+  const result = await runTrialHostAdmission(largeSummary, { ...options, exactSummary: summary });
+  expect(Buffer.byteLength(result.retainedText)).toBeGreaterThan(48000);
+  expect(result.admissionProof).toMatchObject({ kind: "reseed_predecessor_admitted", protectedTupleCount: 31,
+    guardedCalls: 2, lossyRefused: true, exactCommitted: true, unchangedRefusalSuppressed: true,
+    coveredRestartAfterPurge: true, rewindPresentProtected: true, rewindPurgedLegacy: true });
+  expect(result.admissionProof.receiptBytes).toBeLessThanOrEqual(8192);
+  if (options.preparedCold) expect(result.admissionProof.preparedRuns).toBeGreaterThanOrEqual(2);
+}, 60000);

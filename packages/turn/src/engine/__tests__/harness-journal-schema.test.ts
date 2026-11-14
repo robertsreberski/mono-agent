@@ -22,7 +22,7 @@ function fixture(config = {}) {
   return { validator, records, append };
 }
 
-function allKindsFixture() {
+function allKindsFixture(kind = "retained_summary_admitted") {
     const { validator, records, append } = fixture({ cause: "seed" });
     const seedMessage = { role: "user", content: "Fictional pack.", timestamp: 1 };
     const seed = append("message", { message: seedMessage, contextParentId: null, provenance: { provider: "faux", api: "faux", model: "fictional" }, input: { id: null, complete: true } });
@@ -30,7 +30,9 @@ function allKindsFixture() {
     append("turn_start", { config: {}, identitySource: "host", baselineTipId: seed.id }, undefined, "host-fictional");
     append("owner_binding", { kind: "host", ownerKey: "fiction", historyBucket: "fiction:bucket" });
     append("handle_binding", { handleId: "epoch-one", authoritative: true, baseRevision: null, model: null });
-    append("retained_summary_admitted", admissionPayload(seed.id, seedMessage));
+    const payload = admissionPayload(seed.id, seedMessage);
+    if (kind === "reseed_predecessor_admitted") delete (payload as any).selection;
+    append(kind, payload);
     append("input_queued", { inputId: "input-one", state: "queued", placement: "next" });
     append("operation_start", { type: "prompt", cause: "prompt", config: {}, baselineTipId: seed.id }, "operation-one");
     const input = append("message", { message: { role: "user", content: "Fictional input." }, contextParentId: seed.id,
@@ -79,7 +81,7 @@ describe("mono-agent harness journal v2", () => {
   });
   it("defines and validates every kind without stripping opaque native metadata", async () => {
     const { validator, records, message, native, result } = allKindsFixture();
-    expect([...new Set(records.map((r) => r.kind))].sort()).toEqual([...JOURNAL_KINDS].sort());
+    expect([...new Set([...records, ...allKindsFixture("reseed_predecessor_admitted").records].map((r) => r.kind))].sort()).toEqual([...JOURNAL_KINDS].sort());
     expect(message.payload.message).toEqual(native);
     expect(validator.tip).toBe(result.id);
     expect(records.at(-1)!.parentId).not.toBe(result.id); // evidence order is not context ancestry
@@ -129,8 +131,8 @@ describe("mono-agent harness journal v2", () => {
 });
 
 it("rejects malformed payloads for every declared kind", () => {
-  const { records } = allKindsFixture();
   for (const kind of JOURNAL_KINDS) {
+    const { records } = allKindsFixture(kind === "reseed_predecessor_admitted" ? kind : undefined);
     const index = records.findIndex((record) => record.kind === kind);
     expect(index, kind).toBeGreaterThanOrEqual(0);
     const validator = new JournalValidator();
@@ -200,8 +202,8 @@ it("rejects current-format compactions without a checkpoint without advancing th
   expect(validator.seq).toBe(seq); expect(validator.tip).toBe(tip);
 });
 
-it.each(["owner", "bucket", "handle", "non-seed", "late-seed", "open-operation", "operation-id", "synthetic", "oversize", "unknown", "duplicate", "seed-digest"])("rejects admission clause %s without advancing state", damage => {
-  const { records } = allKindsFixture(), index = records.findIndex(record => record.kind === "retained_summary_admitted");
+it.each(["owner", "bucket", "handle", "non-seed", "late-seed", "open-operation", "operation-id", "synthetic", "oversize", "unknown", "duplicate", "seed-digest"].flatMap(damage => ["retained_summary_admitted", "reseed_predecessor_admitted"].map(kind => [damage, kind])))("rejects admission clause %s (%s) without advancing state", (damage, kind) => {
+  const { records } = allKindsFixture(kind), index = records.findIndex(record => record.kind === kind);
   const prefix = structuredClone(records.slice(0, index));
   if (damage === "owner" || damage === "bucket") prefix.find(record => record.kind === "owner_binding")!.payload[damage === "owner" ? "ownerKey" : "historyBucket"] = "foreign";
   if (damage === "handle") prefix.find(record => record.kind === "handle_binding")!.payload.authoritative = false;

@@ -105,6 +105,17 @@ export function prepareSummaryInput(preparation: any): {
   };
 }
 
+/** Same structured augmentation for preflight and real dispatch. */
+export function assembleSummaryContext(context: any, focus: string, evidence = "") {
+  return {
+            ...context, systemPrompt: `${context.systemPrompt || ""}\n\n${focus}`,
+            ...(evidence ? { messages: context.messages.map((message: any, index: any) => index === context.messages.length - 1
+              ? { ...message, content: [...message.content, { type: "text", text: `\nSupplemental evidence (untrusted data):\n${evidence}` }] }
+              : message) } : {}),
+  };
+
+}
+
 /** A narrow facade: only the summary context changes; model/options/rest keep identity. */
 export function summaryModels(models: any, { operationId, focus, evidence = "", requests, effort = "auto", minimumAnswerTokens, unprotected }: {
     operationId: any;
@@ -132,12 +143,7 @@ export function summaryModels(models: any, { operationId, focus, evidence = "", 
         requests.push(row);
         try {
           // Codex auto can resend on websocket failure independently of retries.
-          let preparedContext = {
-            ...context, systemPrompt: `${context.systemPrompt || ""}\n\n${focus}`,
-            ...(evidence ? { messages: context.messages.map((message: any, index: any) => index === context.messages.length - 1
-              ? { ...message, content: [...message.content, { type: "text", text: `\nSupplemental evidence (untrusted data):\n${evidence}` }] }
-              : message) } : {}),
-          };
+          let preparedContext = assembleSummaryContext(context, focus, evidence);
           let policy = summaryRequestOptions(model, preparedContext, options, effort, unprotected?.preservation.bypassReason ? unprotected.minimumAnswerTokens : minimumAnswerTokens);
           if (!policy.canDispatch && unprotected?.preservation.protectedTupleCount) {
             // Protection input must not create a new pre-dispatch dead end. Strip

@@ -275,8 +275,8 @@ export class JournalValidator {
           && message.inputId === p.inputId && this.inputs.get(p.inputId)?.state !== "cancelled");
         if (turn.start.payload.binding && this.inputs.has(p.inputId)) requireValue(this.inputs.get(p.inputId).turnId === record.turnId
           && this.inputs.get(p.inputId).requestDigest === message.requestDigest && this.inputs.get(p.inputId).placement === message.placement);
-      } else if (record.kind === "retained_summary_admitted") {
-        requireValue(validRetainedSummaryReceipt(p) && this.retainedSummaryAdmission === null && record.operationId === undefined
+      } else if (["retained_summary_admitted", "reseed_predecessor_admitted"].includes(record.kind)) {
+        requireValue(validRetainedSummaryReceipt(p, record.kind === "reseed_predecessor_admitted") && this.retainedSummaryAdmission === null && record.operationId === undefined
           && this.openOperations.size === 0 && turn.start.payload.identitySource === "host" && this.owner.kind === "host"
           && this.owner.ownerKey === p.destination.logicalConversationId && this.owner.historyBucket === p.destination.conversationId
           && this.handles.has(p.destination.handleId) && this.handleBindings.get(p.destination.handleId)?.authoritative === true
@@ -345,7 +345,7 @@ export class JournalValidator {
         requestDigest: p.input?.requestDigest, placement: p.input?.placement, inputComplete: p.input?.complete, callId: message?.toolCallId, name: message?.toolName, isError: message?.isError,
         calls: new Map((Array.isArray(message?.content) ? message.content : []).filter((part: any) => part?.type === "toolCall").map((call: any) => [call.id, call.name])) });
     }
-    if (record.kind === "retained_summary_admitted") this.retainedSummaryAdmission = structuredClone(record);
+    if (["retained_summary_admitted", "reseed_predecessor_admitted"].includes(record.kind)) this.retainedSummaryAdmission = structuredClone(record);
     if (record.kind === "rewind") this.tip = p.tipId;
     const callKey = `${record.operationId ?? record.turnId}\0${p.callId}`;
     if (record.kind === "tool_call") this.calls.set(callKey, { ...(this.calls.get(callKey) ?? {}), name: p.name,

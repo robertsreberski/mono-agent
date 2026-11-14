@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Breaking:** Keep an authenticated retained compaction predecessor across cold
+  reseeds even when its whole quotation cannot fit the continuity pack, including
+  prepared missing-session reconstruction and pack-disabled replay. Bind one
+  metadata-only `reseed_predecessor_admitted` receipt to the owned persisted seed;
+  older readers reject this new journal kind. If the whole predecessor cannot fit
+  the destination summary request, omit it and its protection frame before dispatch,
+  warn without content, and commit no retained coverage. Keep existing limits,
+  quotation receipt semantics and source-loss availability fallback unchanged.
+
 - Keep protected historical blocks standalone in compaction prompts, preserving
   framing and occurrence counts, including repeated provenance and quotations.
   Exact comparison remains unchanged; live-model compliance is not guaranteed.
@@ -13,6 +22,7 @@
   before creation. Keep uncertain Enable saves visible across agent changes,
   reconcile saved controls with fresh availability, and distinguish existing
   configuration from a console Save.
+
 
 - Keep protected historical blocks literal in compaction summary instructions:
   require unchanged copies before new events, not rewritten or merged history.

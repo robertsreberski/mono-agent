@@ -395,10 +395,9 @@ async function requestSummary(request: () => Promise<any>, protecting: boolean) 
     }
 }
 
-/** Generate one summary through a caller-owned one-request boundary. */
-export async function generateSummaryWithRequest(currentMessages: any, options: any, request: any, context: any) {
-    const { model, reserveTokens, customInstructions, previousSummary, thinkingLevel } = options;
-    const maxTokens = Math.min(options.textTargetTokens ?? Math.floor(0.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+/** Internal request assembly shared by generation and destination preflight. */
+export function createHistorySummaryContext(currentMessages: any, options: any) {
+    const { previousSummary, customInstructions } = options;
     let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
     if (customInstructions) {
         basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
@@ -417,10 +416,19 @@ export async function generateSummaryWithRequest(currentMessages: any, options: 
             timestamp: Date.now(),
         },
     ];
+    return { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
+}
+
+/** Generate one summary through a caller-owned one-request boundary. */
+export async function generateSummaryWithRequest(currentMessages: any, options: any, request: any, context: any) {
+    const { model, reserveTokens, customInstructions, previousSummary, thinkingLevel } = options;
+    const maxTokens = Math.min(options.textTargetTokens ?? Math.floor(0.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+    const tuples = options.protectHistory === false ? [] : historicalTuples(previousSummary);
+    const summaryContext = createHistorySummaryContext(currentMessages, { previousSummary, customInstructions, protectHistory: options.protectHistory });
     const completionOptions = model.reasoning && thinkingLevel && thinkingLevel !== "off"
         ? { maxTokens, reasoning: thinkingLevel }
         : { maxTokens };
-    const requested = await requestSummary(() => request({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, createSummaryRequestOptions(completionOptions, context), context), tuples.length > 0);
+    const requested = await requestSummary(() => request(summaryContext, createSummaryRequestOptions(completionOptions, context), context), tuples.length > 0);
     if (!requested.ok) return requested;
     const response = requested.value;
     if (response.stopReason === "aborted") {
@@ -659,8 +667,8 @@ export async function compactWithRequest(preparation: any, options: any, request
     return ok({ summary, tokensBefore, usage: summaryUsage, retainedTail, details: { readFiles, modifiedFiles } });
 }
 
-async function generateTurnPrefixSummary(messages: any, model: any, reserveTokens: any, thinkingLevel: any, request: any, context: any, textTargetTokens?: number, protecting = false) {
-    const maxTokens = Math.min(textTargetTokens ?? Math.floor(0.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+/** Internal prefix assembly shared by generation and destination preflight. */
+export function createPrefixSummaryContext(messages: any) {
     const { text: conversationText, metadata } = serializeSummaryConversation(messages);
     const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${metadata}${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
     const summarizationMessages = [
@@ -670,10 +678,16 @@ async function generateTurnPrefixSummary(messages: any, model: any, reserveToken
             timestamp: Date.now(),
         },
     ];
+    return { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
+}
+
+async function generateTurnPrefixSummary(messages: any, model: any, reserveTokens: any, thinkingLevel: any, request: any, context: any, textTargetTokens?: number, protecting = false) {
+    const maxTokens = Math.min(textTargetTokens ?? Math.floor(0.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+    const summaryContext = createPrefixSummaryContext(messages);
     const completionOptions = model.reasoning && thinkingLevel && thinkingLevel !== "off"
         ? { maxTokens, reasoning: thinkingLevel }
         : { maxTokens };
-    const requested = await requestSummary(() => request({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, createSummaryRequestOptions(completionOptions, context), context), protecting);
+    const requested = await requestSummary(() => request(summaryContext, createSummaryRequestOptions(completionOptions, context), context), protecting);
     if (!requested.ok) return requested;
     const response = requested.value;
     if (response.stopReason === "aborted") {

@@ -12,7 +12,7 @@ const need = (condition, message) => { if (!condition) throw Error(message); };
  * durable runtime. Reopen it through another host/runtime to prove restart. The
  * summary is caller-generated text; the lane never consults a fixture oracle.
  */
-export async function runTrialHostReseed(summary, { authenticated = false, omitDestinationEpoch = false, rollover = false, omitResolverOnRestart = false, purgeBeforeRestart = false, automaticRefusal = false, preparedWake = false, excludeOnRestart = false, purgeBeforeAdmit = false, oversizedCandidate = false } = {}) {
+export async function runTrialHostReseed(summary, { authenticated = false, omitDestinationEpoch = false, rollover = false, omitResolverOnRestart = false, purgeBeforeRestart = false, automaticRefusal = false, preparedWake = false, excludeOnRestart = false, purgeBeforeAdmit = false, oversizedCandidate = false, packDisabled = false, preparedCold = false, exactSummary } = {}) {
   const [conversation, engine, host, ai] = await Promise.all([
     built("conversation/dist/index.js"), import("@mono-agent/turn/engine"), import("@mono-agent/turn/host"),
     built("turn/node_modules/@earendil-works/pi-ai/dist/index.js"),
@@ -29,10 +29,11 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
     runtime = host.createMonoRuntime({ workspace: root });
     const continuity = conversation.createContinuityParticipant({ writer, reader, logicalConversationId: value => value === coldId ? id : value,
       protectedConversations: () => reader.protectedContinuityConversations() });
-    const native = preparedWake ? (await import("@mono-agent/turn/ai")).createManagedNativeJournalStorage({ sessionsRoot }) : undefined;
+    const native = preparedWake || preparedCold ? (await import("@mono-agent/turn/ai")).createManagedNativeJournalStorage({ sessionsRoot }) : undefined;
     const store = conversation.createDurableHistoryStore({ root: historyRoot, continuity, ...(native ? { nativeJournalStorage: native } : {}), retireProviderSession: async () => {},
       reconcileProviderSessionTurn: async request => runtime.reconcileSessionTurn({ sessionsRoot, descriptor: request.descriptor,
         purpose: request.purpose, ...(request.includeContinuity ? { includeContinuity: true } : {}), expectedModel: { provider: "faux", id: request.modelKey.split(":").at(-1) }, expectedInputs: request.expectedInputs }) });
+    if (preparedCold) await store.append(coldId, [{ role: "user", content: "Continue the fictional record." }, { role: "assistant", content: "Ready." }]);
     if (authenticated) {
       // Establish a real canonical source epoch before publication. The text-copy
       // control keeps its historical legacy/missing-provenance path unchanged.
@@ -51,16 +52,19 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
       summary, tokens_before: 10000, first_kept_entry_id: null, status: "succeeded", created_at: 1 });
     await driver.endTurn("completed", { text: null, error: null, failureKind: null, cancelled: false, stopReason: "endTurn" });
     await raw.sync(); await raw.close(); raw = undefined;
-    const beforeColdJournals = new Set((await repo.list()).map(entry => entry.journalId));
+    const sourceJournals = await repo.list();
+    const beforeColdJournals = new Set(sourceJournals.map(entry => entry.journalId));
     await repo.close(); repo = undefined;
     await (await turn.prepareCommit([], { providerSessionSynced: true })).commit(); turn = undefined;
     const scope = { logicalConversationId: id, currentConversationId: id, currentRunId: "fictional-read" };
     const retained = reader.snapshotContinuity(scope).records.find(record => record.kind === "summary");
     need(retained, "Published summary unavailable");
-    await store.append(coldId, [{ role: "user", content: "Continue the fictional record." }, { role: "assistant", content: "Ready." }]);
+    if (!preparedCold) await store.append(coldId, [{ role: "user", content: "Continue the fictional record." }, { role: "assistant", content: "Ready." }]);
     // A different model key forces a clean native session, not a warm read of
     // the unsanitized checkpoint. The host selects the retained pack itself.
-    const faux = ai.fauxProvider({ models: [{ id: "cold", contextWindow: 100000, maxTokens: 10000 }], tokensPerSecond: 1000000 });
+    if (preparedCold) for (const entry of sourceJournals) await rm(entry.path);
+    const targetId = preparedCold ? "retention" : "cold", targetKey = `faux:${targetId}`;
+    const faux = ai.fauxProvider({ models: [{ id: targetId, contextWindow: 100000, maxTokens: 10000 }], tokensPerSecond: 1000000 });
     const models = ai.createModels(); models.setProvider(faux.provider);
     const contexts = [], events = [];
     faux.setResponses([context => { contexts.push(structuredClone(context)); return ai.fauxAssistantMessage([ai.fauxText("Fictional resumed answer.")]); },
@@ -74,7 +78,7 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
       };
       const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
     } }) : store;
-    let automaticCompaction = false, usePrepared = false, preparedRuns = 0, excludeSource = false;
+    let automaticCompaction = false, usePrepared = preparedCold, preparedRuns = 0, excludeSource = false;
     // Scope the real reader at the capability seam; ordinary continuation harness
     // requests are intentionally detached and do not reopen this native journal.
     const scopedReader = excludeOnRestart ? new Proxy(reader, { get(target, key) {
@@ -103,8 +107,8 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
         };
       }
       const options = { identityPath, cwd: root, historyStore: harnessStore, runtime, sessionsRoot,
-        model: { provider: "faux", model: "cold", reference: "faux:cold" }, session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true },
-        toolHistory: { writer, reader: scopedReader, continuityEnabled: true, logicalConversationId: value => value === coldId ? id : value },
+        model: { provider: "faux", model: targetId, reference: targetKey }, session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true },
+        toolHistory: { writer, reader: scopedReader, continuityEnabled: true, packEnabled: !packDisabled, logicalConversationId: value => value === coldId ? id : value },
         runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", compaction: automaticCompaction ? { enabled: true, maxInputTokens: 2000, summaryMaxTokens: 3000, keepRecentTokens: 1000, minSavingsTokens: 0 } : { enabled: false } } };
       if (!usePrepared) return conversation.createConversationHarness(options);
       const { ConversationHarnessImpl } = await built("conversation/dist/harness/index.js");
@@ -113,6 +117,7 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
     harness = await makeHarness();
     const result = await harness.run({ conversationId: coldId, userMessage: automaticRefusal ? "Fictional progress. ".repeat(3000) : "Resume fictional work.", abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
     need(!result.failure, `Host cold seed failed: ${JSON.stringify(result.failure)}`);
+    if (preparedCold) need(events.some(event => event.type === "runtime_warning" && event.warning_kind === "degraded_native_context"), "Prepared control did not reconstruct a missing journal");
     await harness.dispose(); harness = undefined; await runtime.disposeAllSessions();
     // Inspect only the journal created by this cold run. Summary text is
     // untrusted data and can contain the same markers as a rendered seed.
@@ -126,11 +131,11 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
     if (omitDestinationEpoch) need(!coldAdmission, "Missing canonical epoch wrote an admission receipt");
     await raw.close(); raw = undefined;
     // Validate the retained carrier only after selecting by journal identity.
-    need(seedMessages?.length && (rollover ? !JSON.stringify(seedMessages).includes(retained.sha256) : JSON.stringify(seedMessages).includes(retained.sha256)),
+    need(seedMessages?.length && (packDisabled || coldAdmission?.kind === "reseed_predecessor_admitted" || (rollover ? !JSON.stringify(seedMessages).includes(retained.sha256) : JSON.stringify(seedMessages).includes(retained.sha256))),
       rollover ? "Rollover crossed physical summary scope" : "Runtime did not persist the retained cold pack seed");
     await repo.close(); repo = undefined;
     automaticCompaction = automaticRefusal;
-    usePrepared = preparedWake; excludeSource = excludeOnRestart;
+    usePrepared = preparedWake || preparedCold; excludeSource = excludeOnRestart;
     if (omitResolverOnRestart) withholdEpoch = true;
     if (purgeBeforeRestart) await writer.resetConversation(id);
     runtime = host.createMonoRuntime({ workspace: root }); harness = await makeHarness();
@@ -162,7 +167,7 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
       const [{ tryCompact }, { resolveRetainedSummaryAdmission }] = await Promise.all([
         built("turn/dist/execution/pi/compaction/compaction-driver.js"), built("turn/dist/engine/retained-summary.js"),
       ]);
-      turn = await store.beginProviderSessionTurn(id, "fictional-guarded-successor", { modelKey: "faux:cold", reconciliation: { purpose: "compaction", ownerKey: id } });
+      turn = await store.beginProviderSessionTurn(id, "fictional-guarded-successor", { modelKey: targetKey, reconciliation: { purpose: "compaction", ownerKey: id } });
       let sourceResolutions = 0;
       const access = {
         destination: { logicalConversationId: id, conversationId: id, epoch: turn.providerSessionEpoch, handleId: turn.providerSessionId },
@@ -182,7 +187,7 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
       const guardedDriver = engine.createRunDriver(raw, { model: currentModel, systemPrompt: "Fictional", tools: [], retainedSummaryAccess: access });
       const guardedHarness = { models: { completeSimple: async (_model, context) => {
           guardedRequests.push(structuredClone(context));
-          return ai.fauxAssistantMessage([ai.fauxText(exact ? retained.text : "Lossy fictional summary.")]);
+          return ai.fauxAssistantMessage([ai.fauxText(exact ? exactSummary ?? retained.text : "Lossy fictional summary.")]);
         } }, compactionFailureKey: root, getModel: () => currentModel,
         waitForIdle: () => guardedDriver.waitForIdle(), setCompactionSettings: settings => guardedDriver.setCompactionSettings(settings),
         subscribe: listener => guardedDriver.subscribe(listener), on: (_type, handler) => guardedDriver.hooks.on("before_compaction", handler),
@@ -217,7 +222,7 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
       runtime = host.createMonoRuntime({ workspace: root }); harness = await makeHarness();
       const coveredRestart = await harness.run({ conversationId: id, userMessage: "Continue covered fictional session.", abortSignal: new AbortController().signal });
       need(!coveredRestart.failure && contexts.length === 3, "Covered restart after source purge unavailable");
-      admissionProof = { receiptBytes: Buffer.byteLength(JSON.stringify(admission.payload)), admissionId: admission.id, seedDigest: admission.payload.seed.messageDigest,
+      admissionProof = { kind: admission.kind, preparedRuns, receiptBytes: Buffer.byteLength(JSON.stringify(admission.payload)), admissionId: admission.id, seedDigest: admission.payload.seed.messageDigest,
         predecessorSha256: hash(active.text), successorAdmissionId: successor.checkpoint.retainedSummaryCoverage.admissionId,
         guardedCalls: guardedRequests.length, protectedTupleCount: guardedEvents.find(event => event.accounting?.preservation)?.accounting.preservation.protectedTupleCount,
         lossyRefused: true, exactCommitted: true, unchangedRefusalSuppressed: true, coveredRestartAfterPurge: true,
