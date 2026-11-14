@@ -1,8 +1,11 @@
 // Key-blind local inference only; four alternatives are not four paid runs.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, rm, access } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, readFile, writeFile, rm, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { registrationTrace } from "./fixtures/continuity-e2-registration.mjs";
 import * as sizingModels from "../lib/continuity-e2-models.mjs";
 import { e2SizingIdentity, assertE2SizingIdentity } from "../lib/continuity-e2-sizing-identity.mjs";
@@ -35,12 +38,14 @@ it("compares every source, code, build and runtime identity component", () => {
   for (const key of Object.keys(identity)) expect(() => assertE2SizingIdentity(identity, { ...identity, [key]: key === "sourceDirty" ? true : "different" })).toThrow("E2_PROTECTED_SIZING_INVALID");
 });
 describe.sequential("four replay alternatives", () => {
-  const records = []; let root, source, protocol;
+  const records = []; let root, source, protocol, input;
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), "e2-protected-sizing-")); roots.push(root); vi.stubEnv("HOME", root);
     const snapshots = join(root, "snapshots"); await mkdir(snapshots);
     ({ source, protocol } = await registrationTrace(snapshots)); protocol.probeLookupRounds = 3;
     for (const branch of protocol.branches) { branch.limits.probeRequests = 64; branch.exclusions.coverage = source.coverage.flatMap((gap, i) => gap.tier === "replay" ? [i] : []); }
+    input = join(root, "input"); await mkdir(input);
+    await writeFile(join(input, "source.json"), JSON.stringify(source)); await writeFile(join(input, "protocol.json"), JSON.stringify(protocol));
     // Source tooling is existing loopback-only replay; fetch must never leave it.
     const nativeFetch = globalThis.fetch;
     vi.stubGlobal("fetch", (url, ...args) => { const u = new URL(typeof url === "string" ? url : url.url ?? url); if (u.hostname !== "127.0.0.1") throw Error("External network forbidden"); return nativeFetch(url, ...args); });
@@ -48,7 +53,12 @@ describe.sequential("four replay alternatives", () => {
   // Separate bounded cases keep a long sequence from timing out under the full
   // suite's parallel CPU load; no timeout or product retry allowance is raised.
   it.each(E2_REPLAY_SCENARIOS)("produces %s through local shipping paths", async summary => {
-    records.push(await runE2Sizing({ source, protocol, output: join(root, summary), summary }));
+    // Qualification is measured in a genuine fresh CLI realm, never inherited
+    // from this test process's already imported product modules/estimators.
+    const output = join(root, summary);
+    await promisify(execFile)(process.execPath, ["scripts/continuity-e2.mjs", "size", "--source", input, "--protocol", join(input, "protocol.json"), "--output", output, "--summary", summary],
+      { cwd: ROOT, env: { ...process.env, HOME: root, NODE_OPTIONS: "" }, maxBuffer: 1024 * 1024 });
+    records.push(JSON.parse(await readFile(join(output, "sizing.json"), "utf8")));
   }, 180000);
   it("funds the count/size union within eight files", async () => {
     expect(records.map(r => r.summary)).toEqual(E2_REPLAY_SCENARIOS);
@@ -121,3 +131,30 @@ describe.sequential("four replay alternatives", () => {
   }, 180000);
 
 });
+
+it("marks warm estimator and product caches non-qualifying before the first capture", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "e2-warm-sizing-"))); roots.push(root);
+  const snapshots = join(root, "snapshots"); await mkdir(snapshots);
+  const { source, protocol } = await registrationTrace(snapshots);
+  protocol.probeLookupRounds = 3;
+  for (const branch of protocol.branches) { branch.limits.probeRequests = 64; branch.exclusions.coverage = source.coverage.flatMap((gap, i) => gap.tier === "replay" ? [i] : []); }
+  const input = join(root, "input.json"); await writeFile(input, JSON.stringify({ source, protocol }));
+  const url = name => pathToFileURL(join(ROOT, "scripts/lib", name)).href;
+  // A separate process proves these loads precede its FIRST identity capture,
+  // not merely a later sizing invocation in Vitest's existing module cache.
+  const code = `
+    import {readFile} from "node:fs/promises";
+    import {loadE2Estimators} from ${JSON.stringify(url("continuity-e2-models.mjs"))};
+    import {productionModules} from ${JSON.stringify(url("continuity-runner.mjs"))};
+    await loadE2Estimators(); await productionModules(${JSON.stringify(ROOT)});
+    const nativeFetch = globalThis.fetch;
+    globalThis.fetch = (url, ...args) => { if (new URL(typeof url === "string" ? url : url.url ?? url).hostname !== "127.0.0.1") throw Error("External network forbidden"); return nativeFetch(url, ...args); };
+    const {runE2Sizing} = await import(${JSON.stringify(url("continuity-e2-replay.mjs"))});
+    const input = JSON.parse(await readFile(${JSON.stringify(input)}, "utf8"));
+    await runE2Sizing({...input, output:${JSON.stringify(join(root, "warm"))}, summary:"faux-short"});
+  `;
+  await promisify(execFile)(process.execPath, ["--input-type=module", "-e", code], { cwd: ROOT, env: { ...process.env, HOME: root }, maxBuffer: 1024 * 1024 });
+  const record = JSON.parse(await readFile(join(root, "warm/sizing.json"), "utf8"));
+  expect(record.qualification).toBe(false);
+  expect(() => requireProtectedE2Sizing([record])).toThrow("E2_ESTIMATE_INVALID");
+}, 180000);

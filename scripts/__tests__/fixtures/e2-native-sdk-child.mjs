@@ -84,7 +84,7 @@ try {
     await actor.flush(); await actor.stream(models, model, context, opts, "probe").result();
   } else if (profile.scenario.startsWith("retained-")) {
     const { rehearseE2Protected } = await import("../../lib/continuity-e2-protected.mjs");
-    const carrier = profile.scenario.includes("-carry-") ? "carry" : "quotation", split = /-(split|drop)$/u.test(profile.scenario);
+    const carrier = profile.scenario.includes("-carry-") ? "carry" : "quotation", split = /-(split|drop|newline|whitespace)$/u.test(profile.scenario);
     let original, sourceOperationId, seedId, droppedCheckpoint;
     await rehearseE2Protected({ work, model, carrier, sourceBackgroundRepeats: split ? 100 : undefined,
       onPublicationPreparing: async ({ summary, raw }) => {
@@ -124,6 +124,8 @@ try {
         if (external === native) throw Error("Fictional operation IDs unexpectedly correlated");
         await writeFile(join(work, "operation-correlation.json"), JSON.stringify({ external, native }), { mode: 0o600 });
         const request = structuredClone(ctx);
+        if (profile.scenario.endsWith("-newline")) request.messages[0].content[0].text += "\n";
+        if (profile.scenario.endsWith("-whitespace")) request.messages[0].content[0].text = request.messages[0].content[0].text.replace("## Original Request", "##  Original Request");
         if (profile.scenario.endsWith("-original")) {
           let changed = false;
           for (const message of request.messages) for (const part of typeof message.content === "string" ? [message] : message.content) {

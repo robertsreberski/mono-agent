@@ -14,6 +14,7 @@ import { e2PhaseWork, e2PhaseBase, validateE2Checkpoint } from "./continuity-e2-
 import { e2FailureCause, e2ProviderCause, e2CandidateCause, E2_NONRETRY_PROVIDER_CLASSES, registerE2CauseObserver } from "./continuity-e2-cause.mjs";
 import { effectiveE2Summaries, E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
 import { e2ReplayArm, e2ProbeRequestCount, assertE2ReplayBinding } from "./continuity-e2-protocol.mjs";
+import { readE2Journal } from "./continuity-e2-journals.mjs";
 import { isE2ProtectionRefusal } from "./continuity-e2-compaction.mjs";
 const need = (ok, code = "e2_permit_invalid") => { if (!ok) throw Object.assign(Error(code), { code }); };
 const core = () => guardedState("e2-validation"), artifacts = () => guardedAuthorization("e2-validation");
@@ -80,10 +81,10 @@ export async function createE2PaidModels(a, safety) {
     const state = await core().readPrivate(core().statePath(a.outputRoot)), slot = state.slots[a.index];
     const branch = a.slot.kind === "replay" ? receipt.position.branch : undefined, work = e2PhaseWork(a.outputRoot, a.slot, branch);
     const names = await readdir(join(work, "sessions", "journals")); need(names.length <= 8192, "e2_summary_receipt_invalid");
-    const summaries = effectiveE2Summaries(slot.holds).filter(h => h.operationDigest === receipt.operationDigest), candidates = [];
+    const summaries = effectiveE2Summaries(slot.holds).filter(h => h.operationDigest === receipt.operationDigest), candidates = [], budget = { bytes: 0 };
     for (const name of names.filter(n => /^[A-Za-z0-9_-]+\.jsonl$/u.test(n))) {
-      const bytes = await artifacts().readArtifact(join(work, "sessions", "journals", name), "e2_summary_receipt_invalid", 128 * 1024 * 1024);
-      const rows = bytes.toString("utf8").trimEnd().split("\n").map(line => JSON.parse(line)), record = rows.filter(r => r.kind === "compaction").at(-1);
+      const { records } = await readE2Journal(work, name.slice(0, -6), artifacts().readArtifact, budget);
+      const record = records.filter(r => r.kind === "compaction").at(-1);
       if (!record) continue;
       const reference = { journalId: name.slice(0, -6), checkpointId: record.id, checkpoint: receipt.checkpoint };
       try {

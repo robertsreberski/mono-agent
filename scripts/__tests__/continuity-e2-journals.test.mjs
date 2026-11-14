@@ -134,7 +134,7 @@ it.each(["opened", "completed", "checkpoint"])("refuses a newly %s compaction in
   };
   await expect(checkpoint(f, reader)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" }); expect(reads).toBe(2);
 });
-it.each(["prefix", "inode", "symlink", "truncated", "invalid-record", "during-proof", "membership", "two-appends"])("refuses checkpoint append ambiguity: %s", async kind => {
+it.each(["prefix", "inode", "symlink", "truncated", "invalid-record", "during-proof", "membership", "two-appends", "rewind", "new-turn", "message"])("refuses checkpoint append ambiguity: %s", async kind => {
   const f = await completedFixture(); let reads = 0;
   const reader = async (path, ...args) => {
     const bytes = await read(path, ...args);
@@ -152,6 +152,9 @@ it.each(["prefix", "inode", "symlink", "truncated", "invalid-record", "during-pr
         if (kind === "truncated") await writeFile(path, full.subarray(0, -2), { mode: 0o600 });
         if (kind === "invalid-record") await writeFile(path, Buffer.concat([full, Buffer.from('{"kind":"fictional-invalid"}\n')]), { mode: 0o600 });
         if (kind === "membership") await writeFile(join(f.work, "sessions/journals/fictional-new.jsonl"), full, { mode: 0o600 });
+        if (kind === "rewind") { await f.raw.moveTo(null); await f.raw.sync(); }
+        if (kind === "new-turn") { await f.raw.beginTurn("fictional-new-turn"); await f.raw.sync(); }
+        if (kind === "message") { await f.raw.appendMessage({ role: "user", content: "Fictional new branch input.", timestamp: 2 }); await f.raw.sync(); }
         if (kind === "two-appends") { await f.sessions[1].beginTurn("fictional-second-append"); await f.sessions[1].sync(); }
       } else if (reads === 2 && kind === "during-proof") {
         await f.raw.beginTurn("fictional-later-turn"); await f.raw.sync();

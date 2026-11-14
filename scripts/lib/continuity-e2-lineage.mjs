@@ -64,7 +64,7 @@ async function readCheckpoint(root, planned, reference, readArtifact, bindings) 
     version: 1, ownerKey: owner.ownerKey, historyBucket: owner.historyBucket, handleId: header.id,
     sourceDigest: evidenceDigest({ journalId: header.journalId, coverage: value.checkpoint.coverage }),
   } : null;
-  return { summary: value.summary, details: value.details, model: value.checkpoint.model, seq: record.seq, operationId: record.operationId, provenance };
+  return { summary: value.summary, details: value.details, model: value.checkpoint.model, seq: record.seq, operationId: record.operationId, retainedSummaryCoverage: value.checkpoint.retainedSummaryCoverage, provenance };
 }
 // The child may discover a candidate, but only the controller calls bind/write.
 export async function validateE2Checkpoint({ root, state, planned, slot, summaries, reference, readPrivate, readArtifact }) {
@@ -82,8 +82,10 @@ export async function validateE2Checkpoint({ root, state, planned, slot, summari
     need(`${checkpoint.model?.provider}:${checkpoint.model?.id}` === hold.model); texts.push(responseText(result.message));
   }
   const retainedHolds = summaries.filter(h => h.retainedPredecessor);
-  need(retainedHolds.every(h => ["summary", "split-prefix"].includes(h.retainedPredecessor.assembly) && h.retainedPredecessor.operationDigest === h.operationDigest && h.retainedPredecessor.nativeOperationDigest === digest(checkpoint.operationId)
-    && h.retainedPredecessor.payloadDigest === h.payloadDigest && h.retainedPredecessor.journalId === reference.journalId));
+  need(retainedHolds.every(h => ["summary", "split-prefix", "legacy-fallback"].includes(h.retainedPredecessor.assembly) && h.retainedPredecessor.operationDigest === h.operationDigest && h.retainedPredecessor.nativeOperationDigest === digest(checkpoint.operationId)
+    && h.retainedPredecessor.payloadDigest === h.payloadDigest && h.retainedPredecessor.journalId === reference.journalId
+    && (h.retainedPredecessor.assembly === "legacy-fallback" ? checkpoint.retainedSummaryCoverage === undefined
+      : checkpoint.retainedSummaryCoverage?.admissionId === h.retainedPredecessor.admissionId)));
   const suffix = fileSuffix(checkpoint.details);
   let matches = (texts.length === 2 ? texts.join(split) : texts[0]) + suffix === checkpoint.summary;
   if (texts.length === 1) {
@@ -93,7 +95,8 @@ export async function validateE2Checkpoint({ root, state, planned, slot, summari
     if (!retainedHolds.length) matches ||= "No prior history." + split + texts[0] + suffix === checkpoint.summary;
     if (retainedHolds.length) {
       const binding = retainedHolds[0].retainedPredecessor;
-      need(["summary", "split-prefix"].includes(binding.assembly));
+      need(["summary", "split-prefix", "legacy-fallback"].includes(binding.assembly));
+      if (binding.assembly === "legacy-fallback") need(matches);
       if (binding.assembly === "split-prefix") matches = false;
       need(retainedHolds.every(h => h.retainedPredecessor.textSha256 === binding.textSha256 && h.retainedPredecessor.assembly === binding.assembly));
       let source = prior;
@@ -326,38 +329,39 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
       && !spans.some(s => s.source === r.source && s.start < r.offset && r.offset < s.end));
     const unresolved = predecessors.filter(r => !verified.has(found.indexOf(r)));
     const pending = state.slots[assignment.index].compaction;
-    let retainedRequest = false, prefixOnly = false;
-    if (hold.paidRole === "summary" && hash(hold.operationDigest)) {
-      // A prefix-only split request does not contain previous-summary. Recognize
-      // the shipping prefix template only to decide whether to authenticate a
-      // possible reuse; template text itself grants no authority. A begin-time
-      // snapshot is not sufficient: the scoped directory may have changed since.
-      const { createPrefixSummaryContext } = await import(new URL("../../packages/turn/dist/engine/compaction-kit/compaction.js", import.meta.url).href);
-      const template = createPrefixSummaryContext([]).messages[0].content[0].text.split("</request-local-positions>\n\n")[1];
-      need(template);
-      prefixOnly = (JSON.parse(bytes).input ?? []).some(item =>
-        (typeof item.content === "string" ? [item.content] : (item.content ?? []).map(p => p.text)).some(text => typeof text === "string" && text.endsWith(template)));
-      retainedRequest = predecessors.length > 0 || prefixOnly;
-    }
-    if (unresolved.length || retainedRequest) {
-      need(hold.paidRole === "summary" && hash(hold.payloadDigest) && digest(bytes) === hold.payloadDigest);
+    // Retained status is controller state, never a property of the submitted
+    // prompt. Authenticate it even when no payload representation was recognized.
+    let authenticated;
+    if (hold.paidRole === "summary" && native) {
+      need(hash(hold.payloadDigest) && digest(bytes) === hold.payloadDigest);
       need(pending?.operationDigest === hold.operationDigest && pending.checkpoint === hold.checkpoint);
-      const authenticated = await authenticateRetainedPredecessor(assignment.outputRoot, state, assignment.index, scope, hold, readArtifact, native);
-      need(!unresolved.length || authenticated);
-      // Active retained authority overrides archive-original equality for every
-      // non-opaque predecessor frame, not just previously unresolved frames.
-      for (const r of authenticated ? predecessors : unresolved) {
+      authenticated = await authenticateRetainedPredecessor(assignment.outputRoot, state, assignment.index, scope, hold, readArtifact, native);
+    }
+    need(!unresolved.length || authenticated);
+    if (authenticated) {
+      const { createPrefixSummaryContext, createHistorySummaryContext } = await import(new URL("../../packages/turn/dist/engine/compaction-kit/compaction.js", import.meta.url).href);
+      const template = context => context.messages[0].content[0].text.split("</request-local-positions>\n\n")[1];
+      const prefixTemplate = template(createPrefixSummaryContext([])), fallbackTemplate = template(createHistorySummaryContext([], {}));
+      need(prefixTemplate && fallbackTemplate);
+      const prompts = (JSON.parse(bytes).input ?? []).filter(item => item.role === "user").flatMap(item =>
+        typeof item.content === "string" ? [item.content] : (item.content ?? []).filter(p => p.type === "input_text").map(p => p.text))
+        .filter(text => typeof text === "string" && text.includes("</request-local-positions>\n\n"));
+      const prefixOnly = prompts.length === 1 && prompts[0].endsWith(prefixTemplate);
+      const legacyFallback = !predecessors.length && prompts.length === 1 && prompts[0].endsWith(fallbackTemplate);
+      need(predecessors.length > 0 || prefixOnly || legacyFallback);
+      // Active retained authority overrides archive-original equality, including
+      // otherwise recognized original frames. Unknown/perturbed prefix templates
+      // never turn a retained operation into an ordinary generated-only cut.
+      for (const r of predecessors) {
         need(r.source.startsWith(r.prefix + authenticated.text + r.suffix, r.offset));
         const i = found.indexOf(r); verified.add(i);
         spans.push({ source: r.source, start: r.offset, end: r.offset + r.prefix.length + authenticated.text.length + r.suffix.length });
       }
-      if (authenticated) {
-        const { text: _text, ...predecessor } = authenticated;
-        const binding = { ...predecessor, assembly: prefixOnly ? "split-prefix" : "summary" };
-        if (hold.retainedPredecessor) need(canonicalDigest(hold.retainedPredecessor) === canonicalDigest(binding));
-        hold.retainedPredecessor = binding;
-      }
-    }
+      const { text: _text, ...predecessor } = authenticated;
+      const binding = { ...predecessor, assembly: prefixOnly ? "split-prefix" : legacyFallback ? "legacy-fallback" : "summary" };
+      if (hold.retainedPredecessor) need(canonicalDigest(hold.retainedPredecessor) === canonicalDigest(binding));
+      hold.retainedPredecessor = binding;
+    } else need(!hold.retainedPredecessor);
     const opaque = new Set();
     for (const [i, r] of found.entries()) if (r.source && spans.some(s => s.source === r.source && s.start < r.offset && r.offset < s.end)) { verified.add(i); opaque.add(i); }
     const expanded = new Map();

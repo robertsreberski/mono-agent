@@ -6,7 +6,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-const live = vi.hoisted(() => ({ root: null, state: null }));
+const live = vi.hoisted(() => ({ root: null, state: null, discoveryRead: null }));
 vi.mock("@mono-agent/turn", async original => ({ ...await original(), createPiOAuthApiKeyResolver: () => ({ readCredential: async () => ({ type: "oauth", access: "fictional-credential" }) }) }));
 vi.mock("../lib/continuity-e2-runtime.mjs", () => ({ assertE2PhaseAdapter() {}, assertE2Safety() {} }));
 vi.mock("../lib/continuity-guarded-state.mjs", async original => {
@@ -14,6 +14,13 @@ vi.mock("../lib/continuity-guarded-state.mjs", async original => {
   return { ...module, guardedState: name => {
     const core = module.guardedState(name);
     return { ...core, readPrivate: path => live.root && path === core.statePath(live.root) ? Promise.resolve(live.state) : core.readPrivate(path) };
+  } };
+});
+vi.mock("../lib/continuity-guarded-authorization.mjs", async original => {
+  const module = await original();
+  return { ...module, guardedAuthorization: name => {
+    const core = module.guardedAuthorization(name);
+    return { ...core, readArtifact: (...args) => live.discoveryRead?.(...args) ?? core.readArtifact(...args) };
   } };
 });
 import { lineageFixture } from "./fixtures/e2-lineage-fixture.mjs";
@@ -37,7 +44,7 @@ import { reportGuardedCompactionOutcome } from "../../packages/turn/dist/executi
 const accounting = guardedAccounting("e2-validation"), readPrivate = (...args) => guardedState("e2-validation").readPrivate(...args);
 const history = "## Historical events and corrections\n" + Array.from({ length: 12 }, (_, i) => `- Fictional parcel ${i}; m${i}; previously 18; corrected to 16; current 16; resolved.`).join("\n") + "\n\n## Pending items\n- None.";
 const roots = [], closers = [];
-afterEach(async () => { live.root = live.state = null; for (const close of closers.splice(0)) await close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); vi.unstubAllGlobals(); });
+afterEach(async () => { live.root = live.state = live.discoveryRead = null; for (const close of closers.splice(0)) await close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); vi.unstubAllGlobals(); });
 async function setup({ retryFirst = false, length = false, replay = false, compactionLimit = 10 } = {}) {
   vi.stubGlobal("fetch", vi.fn(() => { throw Error("network_forbidden"); }));
   const f = await lineageFixture([history], undefined, undefined, replay ? { kind: "replay", branch: 0 } : {}); roots.push(f.root); live.root = f.root;
@@ -328,4 +335,26 @@ it("pins the closed refusal reasons to the shipping summary_refused paths", asyn
   reasons.push(...[...source.slice(source.indexOf("const validate ="), source.indexOf("let historyText =")).matchAll(/"([a-z_]+)"/gu)].map(m => m[1]));
   expect([...new Set(reasons)].sort()).toEqual([...E2_PROTECTION_REFUSALS, "output_truncated"].sort());
   expect(E2_PROTECTION_REFUSALS).not.toContain("output_truncated");
+});
+
+it("bounds the child's preliminary discovery across two 80 MiB journals before the second full read", async () => {
+  const f = await setup(); f.route.observe(f.event("running")); await f.request(); await f.append(history);
+  await rm(f.journalPath);
+  const repo = new JsonlSessionRepo({ sessionsRoot: join(f.work, "sessions") });
+  try {
+    for (let i = 0; i < 2; i++) {
+      const session = await repo.create({ id: `fictional-discovery-${i}`, cwd: f.work });
+      await session.beginTurn(`fictional-discovery-turn-${i}`); await session.endTurn(`fictional-discovery-turn-${i}`, "completed"); await session.sync(); await session.close();
+    }
+  } finally { await repo.close(); }
+  const limits = []; let fullReads = 0;
+  live.discoveryRead = async (path, code, maximum) => {
+    expect(path.endsWith(".jsonl")).toBe(true); limits.push(maximum);
+    if (80 * 1024 * 1024 > maximum) throw Object.assign(Error(code), { code });
+    const bytes = await readFile(path); fullReads++;
+    return { length: 80 * 1024 * 1024, toString: (...args) => bytes.toString(...args) };
+  };
+  f.route.observe(f.event("succeeded"));
+  await expect(f.actor.flush()).rejects.toThrow("e2_summary_receipt_invalid");
+  expect(limits).toEqual([128, 48].map(n => n * 1024 * 1024)); expect(fullReads).toBe(1);
 });

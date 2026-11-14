@@ -97,7 +97,12 @@ export async function scanE2CheckpointJournals(work, readArtifact) {
   const suffixLines = next.bytes.subarray(change.previousSize).toString("utf8").split("\n");
   need(suffixLines.pop() === "");
   const suffix = suffixLines.map(line => JSON.parse(line));
-  need(suffix.length > 0 && suffix.every(r => r.kind !== "compaction" && next.validator.operations.get(r.operationId)?.start.payload.type !== "compaction"));
+  // Shipping endTurn only cancels already queued input offers and seals its
+  // existing turn. Never admit branch/input/owner/admission changes here.
+  const lifecycleKinds = new Set(["turn_end", "input_queued"]);
+  need(suffix.length > 0 && suffix.every(r => lifecycleKinds.has(r.kind) && prior.validator.turns.has(r.turnId)
+    && (r.kind !== "input_queued" || r.payload.state === "cancelled")) && next.validator.tip === prior.validator.tip
+    && next.validator.retainedSummaryAdmission?.id === prior.validator.retainedSummaryAdmission?.id);
   await scope.assertStable(change);
   journals[index] = { ...next, identity: prior.identity };
   return journals;

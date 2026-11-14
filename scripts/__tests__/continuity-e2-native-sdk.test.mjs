@@ -183,11 +183,11 @@ it("binds ordinary shipping tryCompact event and native journal IDs without requ
   expect(hold.nativeCompaction.nativeOperationDigest).not.toBe(hold.operationDigest); expect(hold.summaryReceipt.durable).toBe(true);
   expect(hold.retainedPredecessor).toBeUndefined();
 }, E2_NATIVE_TEST_TIMEOUT_MS);
-it.each(["quotation", "carry"].flatMap(carrier => ["exact", "original", "split", "drop"].map(kind => [carrier, kind])))("authenticates retained %s %s through IPC consumption and native send", async (carrier, kind) => {
+it.each(["quotation", "carry"].flatMap(carrier => ["exact", "original", "split", "drop", "newline", "whitespace"].map(kind => [carrier, kind])))("authenticates retained %s %s through IPC consumption and native send", async (carrier, kind) => {
   const result = await run({ scenario: `retained-${carrier}-${kind}`, rows: [{ role: "summary", model: "openai-codex:gpt-6-luna" }, { role: "summary", model: SOL }, { role: "probe", model: SOL }] });
-  const refused = ["original", "drop"].includes(kind);
+  const preSendRefusal = ["original", "newline", "whitespace"].includes(kind), refused = preSendRefusal || kind === "drop";
   expect(result.report.stop, JSON.stringify(result.report)).toBe(refused ? "e2_summary_receipt_invalid" : "completed");
-  expect(result.received).toHaveLength(kind === "original" ? 1 : kind === "drop" ? 2 : 3);
+  expect(result.received).toHaveLength(preSendRefusal ? 1 : kind === "drop" ? 2 : 3);
   expect(result.report.phases[0].calls.verifiedSummaries).toBe(refused ? 1 : 2);
   const state = JSON.parse(await readFile(join(result.root, "output", "e2-validation-controller.json"), "utf8"));
   const holds = state.slots[0].holds;
@@ -196,7 +196,7 @@ it.each(["quotation", "carry"].flatMap(carrier => ["exact", "original", "split",
   // liability but must never reach the native backend.
   expect(holds[1].consumed).toBe(true);
   expect(holds[1].nativeCompaction.nativeOperationDigest).not.toBe(holds[1].operationDigest);
-  if (kind === "original") expect(holds[1].retainedPredecessor).toBeUndefined();
+  if (preSendRefusal) expect(holds[1].retainedPredecessor).toBeUndefined();
   else {
     expect(holds[1].consumed).toBe(true);
     expect(holds[1].retainedPredecessor.assembly).toBe(["split", "drop"].includes(kind) ? "split-prefix" : "summary");

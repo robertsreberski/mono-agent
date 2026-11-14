@@ -84,6 +84,12 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
         diagnosticPath = privateOutput(args.diagnostics, [sourceFile, protocolFile]);
         if (diagnosticPath === output) { diagnosticPath = undefined; fail("E2_DIAGNOSTICS_REFUSED"); }
       }
+      // Capture before importing the replay/runner graph (including its pure
+      // product-source helpers), not only before dynamic estimator loading.
+      if (e2ReplayArm(args["replay-arm"]) !== "baseline") {
+        const { e2SizingIdentity, pinE2SizingLoadIdentity } = await import("./lib/continuity-e2-sizing-identity.mjs");
+        pinE2SizingLoadIdentity(await e2SizingIdentity(), false);
+      }
       const { runE2Sizing } = await import("./lib/continuity-e2-replay.mjs");
       const report = await runE2Sizing({ source: readJSON(sourceFile), protocol: readJSON(protocolFile), output, summary: args.summary, replayArm: args["replay-arm"], onDiagnostic: value => { diagnostic = diagnosticRecord(value); } });
       stdout(`${JSON.stringify({ schema: report.schema, branches: report.branches.length, checkpoints: report.branches.reduce((n, b) => n + b.checkpoints.length, 0), summaryRequests: report.branches.reduce((n, b) => n + b.summaryRequests.length, 0) })}\n`);

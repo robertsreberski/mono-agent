@@ -34,7 +34,7 @@ export async function measureE2ControllerCapacity(root) {
           const hold = { paidRole: "summary", checkpoint: 0, operationDigest, lineageScope: "proof", lineage: slot.lineages.proof, payloadDigest: digest(bytes) };
           hold.nativeCompaction = await bindE2NativeCompaction(e2PhaseWork(base, planned), operationDigest, hold.payloadDigest, readArtifact);
           await verifyE2NativeLineage(bytes, hold, state, { outputRoot: base, index: 0 }, readArtifact);
-          if (fallback ? hold.retainedPredecessor !== undefined : hold.retainedPredecessor?.textSha256 !== digest(active.text)) throw Error("controller_capacity_lineage_failed");
+          if (fallback ? hold.retainedPredecessor?.assembly !== "legacy-fallback" : hold.retainedPredecessor?.textSha256 !== digest(active.text)) throw Error("controller_capacity_lineage_failed");
           const m = process.memoryUsage(); heap = Math.max(heap, m.heapUsed); rss = Math.max(rss, m.rss);
         }
         const elapsedMs = performance.now() - started; global.gc();

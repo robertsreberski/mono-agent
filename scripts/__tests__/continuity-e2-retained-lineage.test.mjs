@@ -116,7 +116,7 @@ it.each(["retained", "absent", "dropped"])("binds single-response split reuse on
     const generatedAndSuffix = result.value.summary.slice(result.value.summary.lastIndexOf(E2_PROTECTED_TEXT));
     expect(generatedAndSuffix).toContain("<read-files>");
     const summary = kind === "retained" ? result.value.summary : kind === "dropped" ? generatedAndSuffix : "No prior history.\n\n---\n\n**Turn Context (split turn):**\n\n" + generatedAndSuffix;
-    const checkpointId = await raw.appendCompaction({ summary, retainedTail: [], tokensBefore: 10000, details: result.value.details });
+    const checkpointId = await raw.appendCompaction({ summary, retainedTail: [], tokensBefore: 10000, details: result.value.details }, undefined, { sourceTipId: raw.tip, sourceSeq: raw.seq }, { version: 1, admissionId: admission.id });
     await raw.closeOperation("fictional-split-operation", "completed"); await raw.endTurn("fictional-split", "completed"); await raw.sync();
     const options = { root: f.root, state: f.state, planned: f.planned, slot: f.slot, summaries: holds, reference: { journalId: raw.metadata.journalId, checkpointId, checkpoint: 0 }, readArtifact: f.readArtifact, readPrivate: f.readPrivate };
     if (kind !== "retained") {
@@ -138,3 +138,18 @@ it.each(["retained", "absent", "dropped"])("binds single-response split reuse on
     throw complete;
   } })).rejects.toBe(complete);
 }, 60000);
+
+it.each(["newline", "whitespace", "reordered"])("refuses a retained split-prefix %s perturbation before inference", async mutation => {
+  const done = Object.assign(Error("Fictional perturbed split checked"), { code: "FICTIONAL_SPLIT_COMPLETE" }); let inferred = 0;
+  await expect(fixture("quotation", { onAdmission: async (f, { raw, active }) => {
+    await raw.beginTurn("fictional-perturbed-prefix", {}, "synthetic"); await raw.openOperation("fictional-perturbed-operation", { model }, "compaction", "continuity:manual");
+    const context = createPrefixSummaryContext([{ role: "user", content: "Fictional prefix.", timestamp: 1 }]);
+    const part = context.messages[0].content[0];
+    if (mutation === "newline") part.text += "\n";
+    if (mutation === "whitespace") part.text = part.text.replace("## Original Request", "##  Original Request");
+    if (mutation === "reordered") part.text = part.text.replace("## Original Request", "## Early Progress").replace("## Early Progress\n-", "## Original Request\n-");
+    await expect(f.gate(raw, context)).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
+    expect((await raw.getEntries()).some(e => e.type === "compaction")).toBe(false);
+    expect(inferred).toBe(0); throw done;
+  }, onSummary: async () => { inferred++; } })).rejects.toBe(done);
+});
