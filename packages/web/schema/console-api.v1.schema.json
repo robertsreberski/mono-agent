@@ -1953,7 +1953,12 @@
       "enum": [
         "telegram",
         "slack",
-        "openai-api"
+        "openai-api",
+        "a2a",
+        "embeddings",
+        "parallel-search",
+        "parallel-fetch",
+        "ollama-search"
       ]
     },
     "CredentialCardStatus": {
@@ -1971,7 +1976,13 @@
             "ready",
             "no-reloadable-source",
             "prerequisites",
-            "env-shadowed"
+            "env-shadowed",
+            "plugin-required",
+            "endpoint-required",
+            "memory-required",
+            "tool-policy",
+            "invalid-destination",
+            "keyless"
           ]
         },
         "fields": {
@@ -2273,7 +2284,8 @@
       "enum": [
         "bot",
         "app",
-        "bearer"
+        "bearer",
+        "credential"
       ]
     },
     "Exclude<ProcessJobState,(\"queued\"|\"starting\"|\"running\")>": {
@@ -2597,6 +2609,9 @@
           "type": "string"
         },
         "bearer": {
+          "type": "string"
+        },
+        "credential": {
           "type": "string"
         },
         "allowedIds": {

@@ -58,7 +58,7 @@ for (const width of [390, 1440]) describe(`Capabilities in console settings at $
     expect(screen.getByRole("button", { name: width === 390 ? "Back from agent settings" : "Close agent settings" })).toBeVisible();
     for (const status of ["Ready", "Waiting", "Disabled", "Needs attention"]) expect(screen.getAllByText(status, { exact: false }).length).toBeGreaterThan(0);
     await settleAndReveal(width);
-    expect(screen.getAllByRole("article")).toHaveLength(9);
+    expect(screen.getAllByRole("article")).toHaveLength(capabilitySnapshot.cards.length);
     const cards = screen.getAllByRole("article");
     const activeMemory = screen.getByRole("article", { name: "Memory" });
     expect(within(activeMemory).getAllByText(/Loaded at this start/)).toHaveLength(1);
@@ -298,4 +298,40 @@ for (const width of [390, 1440]) for (const state of ["empty", "set-status", "co
   const fresh = await screen.findByRole("article", { name: "Telegram" });
   await waitFor(() => expect((within(fresh).getByLabelText("Bot credential") as HTMLInputElement).value).toBe(""));
   expect(save).toHaveBeenCalledTimes(["empty", "set-status"].includes(state) ? 0 : 1);
+});
+
+for (const width of [390, 1440]) for (const card of ["a2a", "embeddings", "parallel-search", "parallel-fetch", "ollama-search"] as const) for (const state of ["not-set", "set", "pending"] as const) it(`captures synthetic S2b ${card} ${state} at ${width}px`, async () => {
+  const { credentialSnapshot } = await import("./test/capability-fixtures");
+  vi.mocked(api.capabilitySetup).mockResolvedValue({ ...capabilitySnapshot, cards: capabilitySnapshot.cards.map((item) => {
+    if (item.id !== "memory") return item;
+    const journal = item.variants!.find((variant) => variant.id === "memory:journal")!;
+    return { ...item, ...journal, id: "memory", status: "ok" as const, selectedVariant: "memory:journal" };
+  }) });
+  vi.mocked(api.capabilityActions).mockResolvedValue({ ...capabilityActions, actions: capabilityActions.actions.map((action) => action.id === "memory-lite" ? { ...action, active: false, available: false, reason: "already-configured" as const } : action) });
+  await page.viewport(width, width === 390 ? 1900 : 1600);
+  const fieldLabel = card === "a2a" ? "Provider bearer" : card === "embeddings" ? "Journal / BuJo embeddings key" : card === "parallel-search" ? "Parallel search key" : card === "parallel-fetch" ? "Parallel fetch key" : "Hosted Ollama search key";
+  const view = { ...credentialSnapshot, cards: credentialSnapshot.cards.map((item) => item.id === card ? { ...item, fields: item.fields.map((field) => ({ ...field, state: state === "set" ? "set" as const : "not-set" as const })) } : item) };
+  vi.spyOn(api, "credentials").mockResolvedValue(view);
+  const plantedValue = ["fictional", "s2b", "literal"].join("-");
+  const save = vi.spyOn(api, "saveCredentials").mockImplementation(async () => {
+    expect(Array.from(document.querySelectorAll<HTMLInputElement>('input[type="password"]')).every((field) => field.value === "")).toBe(true);
+    vi.mocked(api.credentials).mockResolvedValue({ ...view, cards: view.cards.map((item) => item.id === card ? { ...item, fields: item.fields.map((field) => ({ ...field, state: "set" as const })), configPending: true } : item) });
+    return { card, process: view.process, outcome: "saved-config-pending" };
+  });
+  render(<Preview width={width} credentials />);
+  const input = await screen.findByLabelText(fieldLabel) as HTMLInputElement;
+  const section = input.closest(".capability-action") as HTMLElement;
+  const controls = within(section);
+  await waitFor(() => expect(controls.getByRole("button", { name: "Confirm Save credentials" })).toBeEnabled());
+  if (state === "pending") {
+    await userEvent.type(input, plantedValue);
+    await userEvent.click(controls.getByRole("button", { name: "Confirm Save credentials" }));
+    await controls.findByText("Saved; config pending."); await controls.findByText(`${fieldLabel}: set`);
+    await waitFor(() => expect(controls.getByRole("button", { name: "Refresh credential status" })).toBeEnabled());
+    expect(save).toHaveBeenCalledTimes(1); expect(save.mock.calls[0]![1]).toMatchObject({ card, fields: card === "a2a" ? { bearer: plantedValue } : { credential: plantedValue } });
+  } else expect(save).not.toHaveBeenCalled();
+  expect(document.body.textContent).not.toContain(plantedValue); expect(JSON.stringify(localStorage)).not.toContain(plantedValue); expect(JSON.stringify(sessionStorage)).not.toContain(plantedValue);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  section.scrollIntoView({ block: "center" });
+  if (shots) await page.screenshot({ path: `${shots}/credentials-synthetic-${width}-${card}-${state}.png` });
 });

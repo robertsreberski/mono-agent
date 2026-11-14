@@ -1,5 +1,5 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
-import { CredentialSetupError, parseCredentialSaveRequest, parseCredentialRequest, parseCredentialSnapshot, parseCredentialSaved, type CredentialSetupService } from "../credential-setup.js";
+import { LEGACY_CREDENTIAL_CARDS, CredentialSetupError, parseCredentialSaveRequest, parseCredentialRequest, parseCredentialSnapshot, parseCredentialSaved, type CredentialSetupService } from "../credential-setup.js";
 
 /** Terminal, isolated parsing/error boundary: request bytes and exception prose never reach diagnostics. */
 export function registerCredentialRoutes(app: Express, basePath: string, service: CredentialSetupService | undefined): void {
@@ -15,7 +15,13 @@ export function registerCredentialRoutes(app: Express, basePath: string, service
     try { work = operation === "read" ? service.read() : operation === "save" ? service.save(parseCredentialSaveRequest(req.body)) : service.retry(parseCredentialRequest(req.body)); }
     catch { res.status(400).json({ error: { code: "credential_invalid", message: "Invalid credential request." } }); return; }
     finally { req.body = undefined; }
-    void work.then((result) => res.json(operation === "read" ? parseCredentialSnapshot(result) : parseCredentialSaved(result))).catch((error: unknown) => {
+    void work.then((result) => {
+      if (operation !== "read") { res.json(parseCredentialSaved(result)); return; }
+      const snapshot = parseCredentialSnapshot(result);
+      res.vary("X-Mono-Agent-Credential-Inventory");
+      // Older v1 proxies strictly decode exactly the original three cards.
+      res.json(req.get("X-Mono-Agent-Credential-Inventory") === "extended" ? snapshot : { ...snapshot, cards: snapshot.cards.filter((card) => (LEGACY_CREDENTIAL_CARDS as readonly string[]).includes(card.id)) });
+    }).catch((error: unknown) => {
       const code = error instanceof CredentialSetupError && ["credential_invalid", "credential_conflict", "credential_unavailable", "credential_outcome_unknown"].includes(error.code) ? error.code : "credential_outcome_unknown";
       res.status(code === "credential_invalid" ? 400 : code === "credential_outcome_unknown" ? 503 : 409).json({ error: { code, message: "Credential operation could not be completed. Refresh status; never replay an unconfirmed save automatically." } });
     });

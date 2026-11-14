@@ -114,3 +114,18 @@ it.each(["saved", "saved-config-pending"] as const)("does not carry a confirmed 
   expect(screen.queryByText("Saved; applies on next start.")).toBeNull(); expect(screen.queryByRole("button", { name: "Retry configuration only" })).toBeNull();
   expect(screen.queryByText(/Save outcome uncertain/)).toBeNull(); expect(save).toHaveBeenCalledTimes(1);
 });
+
+it("retains a Parallel submission's uncertainty across a generation remount without replay", async () => {
+  const { credentialSnapshot } = await import("../../test/capability-fixtures");
+  vi.spyOn(api, "capabilitySetup").mockResolvedValue(capabilitySnapshot); vi.spyOn(api, "credentials").mockResolvedValue(credentialSnapshot);
+  let reject!: (reason: Error) => void;
+  const save = vi.spyOn(api, "saveCredentials").mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
+  const selected = agent("fictional", { generation: "one", supportsCapabilitySetup: true, supportsCredentialSetup: true });
+  const rendered = render(<CapabilitiesSection agent={selected} />);
+  const target = await screen.findByRole("form", { name: "Save parallel-search credentials" }); await waitFor(() => expect(target.querySelector("button")).toBeEnabled());
+  const plantedValue = ["fictional", "parallel", "value"].join("-"); fireEvent.change(within(target).getByLabelText("Parallel search key"), { target: { value: plantedValue } }); fireEvent.submit(target);
+  rendered.rerender(<CapabilitiesSection agent={{ ...selected, generation: "two" }} />);
+  await act(async () => reject(new ApiError("Unknown", 502, "credential_outcome_unknown")));
+  await screen.findByRole("form", { name: "Save parallel-search credentials" }); expect(screen.getByText(/Save outcome uncertain/)).toBeVisible();
+  expect((screen.getByLabelText("Parallel search key") as HTMLInputElement).value).toBe(""); expect(document.body.textContent).not.toContain(plantedValue); expect(save).toHaveBeenCalledTimes(1);
+});

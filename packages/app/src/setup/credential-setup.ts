@@ -1,3 +1,4 @@
+import { extraCredentialDefinition, extraCredentialPatch, extraCredentialPrerequisite, extraCredentialReady, isExtraCredentialCard, validateExtraCredential } from "./credential-extra-targets.js";
 import { resolveCredentialEnvironmentName } from "./credential-names.js";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
@@ -13,14 +14,15 @@ import { readVerifiedFile } from "../durable-state/secure-file-replace.js";
 import { mergeSecretEnvFile } from "./secret-env.js";
 import { validateMonoAgentFolder } from "../doctor/doctor.js";
 
-const definitions = {
+const channelDefinitions = {
   telegram: { section: "telegram", prefix: "MONO_AGENT_TELEGRAM_", keys: { bot: resolveCredentialEnvironmentName("telegram-bot") }, allow: "allowedChatIds", allowEnv: "MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS", allowAll: "allowAllChats", allowAllEnv: "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS" },
   slack: { section: "slack", prefix: "MONO_AGENT_SLACK_", keys: { bot: resolveCredentialEnvironmentName("slack-bot"), app: resolveCredentialEnvironmentName("slack-app") }, allow: "allowedChannelIds", allowEnv: "MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS", allowAll: "allowAllChannels", allowAllEnv: "MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS" },
   "openai-api": { section: "openaiApi", prefix: "MONO_AGENT_OPENAI_API_", keys: { bearer: resolveCredentialEnvironmentName("openai-client") }, allow: undefined, allowEnv: undefined, allowAll: undefined, allowAllEnv: undefined },
 } as const;
+const definition = (id: CredentialCardId, json: SettingsJson) => isExtraCredentialCard(id) ? extraCredentialDefinition(id, json) : channelDefinitions[id];
 function fail(code: "credential_conflict" | "credential_unavailable" | "credential_invalid" = "credential_unavailable"): never { throw new CredentialSetupError(code, code === "credential_invalid" ? 400 : 409); }
 const object = (value: unknown): Record<string, SettingsJsonValue> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, SettingsJsonValue> : {};
-type Pending = { readonly card: CredentialCardId; readonly allowedIds?: string };
+type Pending = { readonly card: CredentialCardId; readonly allowedIds?: string; readonly destination?: string };
 
 /** App-owned, write-only two-file workflow. No values, paths or exception prose leave this service. */
 export function createCredentialSetupService(input: {
@@ -34,7 +36,7 @@ export function createCredentialSetupService(input: {
   const pending = new Map<CredentialCardId, Pending>();
   let issued: { signature: string; fence: string } | undefined;
   let busy = false;
-  let shadowed: Set<string> | undefined;
+  const shadowed = new Map<string, boolean>();
   const merge = dependencies.merge ?? mergeSecretEnvFile;
   const safe = async <T>(work: () => Promise<T>): Promise<T> => {
     try { return await work(); } catch (error) { if (error instanceof CredentialSetupError) throw error; throw new CredentialSetupError("credential_unavailable", 409); }
@@ -54,34 +56,36 @@ export function createCredentialSetupService(input: {
       }))?.contents;
     }
     const env = parseEnv(bytes?.toString("utf8") ?? "");
-    shadowed ??= new Set(Object.values(definitions).flatMap((d) => Object.values(d.keys)).filter((name) => Boolean(input.env[name]?.trim()) && input.env[name] !== env[name]));
+    for (const id of CREDENTIAL_CARDS) for (const name of Object.values(definition(id, config.json).keys)) if (!shadowed.has(name)) shadowed.set(name, Boolean(input.env[name]?.trim()) && input.env[name] !== env[name]);
     // The digest is private, used solely to rotate an unrelated random fence.
     const signature = createHash("sha256").update(config.version).update(bytes ?? "missing").digest("hex");
     if (issued?.signature !== signature) issued = { signature, fence: randomUUID() };
     return { config, bytes, env, fence: issued.fence };
   };
-  const reason = (id: CredentialCardId, json: SettingsJson) => {
+  const reason = async (id: CredentialCardId, json: SettingsJson, env: Record<string, string | undefined>) => {
     if (input.dotenvPath === undefined) return "no-reloadable-source" as const;
-    const d = definitions[id];
+    const d = definition(id, json);
+    if (isExtraCredentialCard(id) && !extraCredentialDefinition(id, json).valid) return "invalid-destination" as const;
     const section = object(json[d.section]);
     if (["apiKey", "botToken", "appToken"].some((key) => section[key] !== undefined)) return "prerequisites" as const;
     const names: readonly string[] = Object.values(d.keys);
-    if (names.some((name) => shadowed?.has(name))) return "env-shadowed" as const;
-    return "ready" as const;
+    if (names.some((name) => shadowed.get(name))) return "env-shadowed" as const;
+    return isExtraCredentialCard(id) ? await extraCredentialPrerequisite(id, json, { ...input, env }) : "ready" as const;
   };
   const effectiveEnv = (dotenv: Record<string, string | undefined>, values: Record<string, string> = {}) => {
     const env = { ...dotenv, ...input.env };
     // Startup dotenv credentials must not shadow subsequent durable replacements.
-    for (const d of Object.values(definitions)) for (const name of Object.values(d.keys)) if (!shadowed?.has(name)) env[name] = dotenv[name];
+    for (const [name, blocked] of shadowed) if (!blocked) env[name] = dotenv[name];
     return { ...env, ...values };
   };
   const overridden = (env: Record<string, string | undefined>, name: string) => Boolean(env[name]?.trim());
-  const environmentOverrides = (id: CredentialCardId, env: Record<string, string | undefined>) => {
-    const d = definitions[id], names: readonly string[] = Object.values(d.keys);
-    return Object.entries(env).some(([name, value]) => value?.trim() && name.startsWith(d.prefix) && !names.includes(name));
+  const environmentOverrides = (id: CredentialCardId, json: SettingsJson, env: Record<string, string | undefined>) => {
+    const d = definition(id, json), names: readonly string[] = Object.values(d.keys);
+    return Object.entries(env).some(([name, value]) => value?.trim() && d.prefix !== undefined && name.startsWith(d.prefix) && !names.includes(name));
   };
   const patch = (intent: Pending, json: SettingsJson, env: Record<string, string | undefined>): SettingsJson => {
-    const d = definitions[intent.card];
+    if (isExtraCredentialCard(intent.card)) return extraCredentialPatch(intent.card, json, env);
+    const d = channelDefinitions[intent.card];
     const section = object(json[d.section]);
     const changes: Record<string, SettingsJsonValue> = overridden(env, `${d.prefix}ENABLED`) ? {} : { enabled: true };
     if (d.allow !== undefined) {
@@ -93,41 +97,58 @@ export function createCredentialSetupService(input: {
     // Never set allow-all flags or claim to replace environment-owned settings.
     return { [d.section]: changes };
   };
-  const validate = async (id: CredentialCardId, json: SettingsJson, env: Record<string, string | undefined>) => {
-    const options = { json, env: { ...env, [`${definitions[id].prefix}ENABLED`]: "true" } };
+  const validate = async (id: CredentialCardId, json: SettingsJson, env: Record<string, string | undefined>, configPath = input.configPath) => {
+    if (isExtraCredentialCard(id)) { await validateExtraCredential(id, json, { ...input, configPath, env }); if (Object.values(definition(id, json).keys).some((name) => !env[name]?.trim())) fail("credential_invalid"); return; }
+    const options = { json, env: { ...env, [`${channelDefinitions[id].prefix}ENABLED`]: "true" } };
     const result = id === "telegram" ? await loadTelegramAdapterConfig(options) : id === "slack" ? await loadSlackAdapterConfig(options) : await loadOpenAIApiAdapterConfig(options);
     if (!result.enabled) fail();
-    if (Object.values(definitions[id].keys).some((name) => !env[name]?.trim())) fail("credential_invalid");
+    if (Object.values(channelDefinitions[id].keys).some((name) => !env[name]?.trim())) fail("credential_invalid");
   };
   const validateUnchangedPrerequisites = async (env: Record<string, string | undefined>): Promise<void> => {
     await loadMonoAgentConfig({ cwd: input.cwd, jsonPath: input.configPath, warnOnDeprecatedConfig: false, warnOnDuplicateConfig: false });
     const report = await validateMonoAgentFolder({ cwd: input.cwd, configPath: input.configPath, env, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
     if (!report.structurallyValid) fail();
   };
+  const prevalidateExtra = async (source: Awaited<ReturnType<typeof readSource>>, changes: SettingsJson, id: CredentialCardId, env: Record<string, string | undefined>) => {
+    const checked = new Error("Private credential preflight complete");
+    try {
+      await writeSettingsJson({ path: input.configPath, patch: changes, guarded: { expectedVersion: source.config.version,
+        validate: async (candidate, candidatePath) => {
+          await validate(id, candidate, env, candidatePath);
+          const report = await validateMonoAgentFolder({ cwd: input.cwd, configPath: candidatePath, env, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
+          if (!report.structurallyValid) fail();
+          throw checked; // E1 owns private temp/ignore/lock cleanup. Never publish config or a backup in preflight.
+        },
+      } });
+    } catch (error) { if (error !== checked) throw error; }
+  };
   const configReady = (id: CredentialCardId, json: SettingsJson, env: Record<string, string | undefined>): boolean => {
-    const d = definitions[id], section = object(json[d.section]);
+    if (isExtraCredentialCard(id)) return extraCredentialReady(id, json, env);
+    const d = channelDefinitions[id], section = object(json[d.section]);
     try { patch({ card: id }, json, env); return readBoolean(env[`${d.prefix}ENABLED`], `${d.prefix}ENABLED`, section.enabled === true, () => new CredentialSetupError("credential_invalid", 400)); } catch { return false; }
   };
-  const assertRequest = (request: CredentialRequest, source: Awaited<ReturnType<typeof readSource>>) => {
+  const assertRequest = async (request: CredentialRequest, source: Awaited<ReturnType<typeof readSource>>) => {
     if (request.process.pid !== identity.pid || request.process.startedAt !== identity.startedAt || request.fence !== source.fence) fail("credential_conflict");
-    if (reason(request.card, source.config.json) !== "ready") fail();
+    if (await reason(request.card, source.config.json, effectiveEnv(source.env)) !== "ready") fail();
   };
   const applyConfig = async (intent: Pending): Promise<CredentialSaved> => {
     try {
       const current = await readSource();
-      if (reason(intent.card, current.config.json) !== "ready") fail();
+      if (await reason(intent.card, current.config.json, effectiveEnv(current.env)) !== "ready") fail();
       const changes = patch(intent, current.config.json, effectiveEnv(current.env));
-      const d = definitions[intent.card];
+      const d = definition(intent.card, current.config.json);
+      if (intent.destination !== undefined && Object.values(d.keys)[0] !== intent.destination) fail();
       const next = { ...current.config.json, [d.section]: { ...object(current.config.json[d.section]), ...object(changes[d.section]) } };
       const env = effectiveEnv(current.env);
-      await validateUnchangedPrerequisites(env);
+      if (isExtraCredentialCard(intent.card)) await prevalidateExtra(current, changes, intent.card, env);
+      else await validateUnchangedPrerequisites(env);
       await validate(intent.card, next, env);
       if (JSON.stringify(next) !== JSON.stringify(current.config.json)) await (dependencies.writeConfig ?? writeSettingsJson)({ path: input.configPath, patch: changes, guarded: {
         expectedVersion: current.config.version,
         validate: async (candidate, candidatePath) => {
           const latest = await readSource();
           if (latest.fence !== current.fence) fail("credential_conflict");
-          await validate(intent.card, candidate, effectiveEnv(latest.env));
+          await validate(intent.card, candidate, effectiveEnv(latest.env), candidatePath);
           const report = await validateMonoAgentFolder({ cwd: input.cwd, configPath: candidatePath, env: effectiveEnv(latest.env), allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
           if (!report.structurallyValid) fail();
         },
@@ -144,24 +165,26 @@ export function createCredentialSetupService(input: {
   return {
     read: () => safe(async () => {
       const source = await readSource();
-      return { version: 1, process: identity, fence: source.fence, cards: CREDENTIAL_CARDS.map((id) => {
-        const why = reason(id, source.config.json);
-        return { id, available: why === "ready", reason: why, fields: Object.entries(definitions[id].keys).map(([field, name]) => ({ id: field as "bot" | "app" | "bearer", state: source.env[name]?.trim() ? "set" as const : "not-set" as const })), ...(environmentOverrides(id, effectiveEnv(source.env)) ? { environmentOverrides: true as const } : {}), configReady: configReady(id, source.config.json, effectiveEnv(source.env)), configPending: pending.has(id) };
-      }) };
+      return { version: 1, process: identity, fence: source.fence, cards: await Promise.all(CREDENTIAL_CARDS.map(async (id) => {
+        const why = await reason(id, source.config.json, effectiveEnv(source.env));
+        return { id, available: why === "ready", reason: why, fields: Object.entries(definition(id, source.config.json).keys).map(([field, name]) => ({ id: field as "bot" | "app" | "bearer" | "credential", state: source.env[name]?.trim() ? "set" as const : "not-set" as const })), ...(environmentOverrides(id, source.config.json, effectiveEnv(source.env)) ? { environmentOverrides: true as const } : {}), configReady: (!isExtraCredentialCard(id) || why === "ready") && configReady(id, source.config.json, effectiveEnv(source.env)), configPending: pending.has(id) };
+      })) };
     }),
     save: (raw) => exclusive(async () => {
       let request: CredentialSaveRequest;
       try { request = parseCredentialSaveRequest(raw); } catch { fail("credential_invalid"); }
-      const source = await readSource(); assertRequest(request, source);
-      const intent: Pending = { card: request.card, ...(request.fields.allowedIds === undefined ? {} : { allowedIds: request.fields.allowedIds }) };
-      const d = definitions[request.card];
+      const source = await readSource(); await assertRequest(request, source);
+      const intent: Pending = { card: request.card, ...(isExtraCredentialCard(request.card) ? { destination: Object.values(definition(request.card, source.config.json).keys)[0]! } : {}), ...(request.fields.allowedIds === undefined ? {} : { allowedIds: request.fields.allowedIds }) };
+      const d = definition(request.card, source.config.json);
       const changes = patch(intent, source.config.json, effectiveEnv(source.env));
       const values: Record<string, string> = {};
       for (const [field, name] of Object.entries(d.keys)) { const value = request.fields[field as keyof typeof request.fields]; if (value !== undefined) values[name] = value; }
       if (Object.keys(values).length === 0) fail("credential_invalid");
+      if (intent.destination !== undefined && Object.values(values).some((value) => value.trim() === intent.destination)) fail("credential_invalid");
       if (intent.allowedIds !== undefined && [...Object.values(values), ...Object.values(d.keys).map((name) => source.env[name])].some((value) => value && intent.allowedIds!.split(",").some((id) => id.trim() === value))) fail("credential_invalid");
       const candidate = { ...source.config.json, [d.section]: { ...object(source.config.json[d.section]), ...object(changes[d.section]) } };
-      await validateUnchangedPrerequisites(effectiveEnv(source.env, values));
+      if (isExtraCredentialCard(request.card)) await prevalidateExtra(source, changes, request.card, effectiveEnv(source.env, values));
+      else await validateUnchangedPrerequisites(effectiveEnv(source.env, values));
       await validate(request.card, candidate, effectiveEnv(source.env, values));
       const options = { replaceKeys: Object.keys(values), expectedEnvRevision: source.bytes === undefined ? { exists: false as const } : { exists: true as const, contents: source.bytes } };
       await merge(dotenvPath!, values, { ...options, dryRun: true });
@@ -174,7 +197,7 @@ export function createCredentialSetupService(input: {
     retry: (raw) => exclusive(async () => {
       let request: CredentialRequest;
       try { request = parseCredentialRequest(raw); } catch { fail("credential_invalid"); }
-      const source = await readSource(); assertRequest(request, source);
+      const source = await readSource(); await assertRequest(request, source);
       const intent = pending.get(request.card); if (intent === undefined) fail();
       return await applyConfig(intent);
     }),

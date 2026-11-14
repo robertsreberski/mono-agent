@@ -83,7 +83,13 @@ return 501. Client helpers export the same strict decoders from `@mono-agent/cha
 An optional app-owned `CredentialSetupService` advertises
 `credentialSetup: { version: 1, save: true }`. Keyless `GET /v1/credentials`
 returns only set/not-set credential states, safe prerequisites and an opaque,
-process-local concurrency fence. Typed `POST /v1/credentials/save` requires
+process-local concurrency fence. Without an inventory header it retains the
+original three-card v1 response for older strict proxies. New proxies send
+`X-Mono-Agent-Credential-Inventory: extended` to read all eight cards (including
+prepared A2A, embeddings, Parallel search/fetch and hosted Ollama). The decoder
+accepts either complete inventory, not arbitrary partial or unknown cards.
+Prerequisite reason codes are fixed metadata, never exception prose or values.
+Typed `POST /v1/credentials/save` requires
 confirmation, full process identity and that fence. `/retry` retries only known
 pending configuration without credentials. A non-blocking `environmentOverrides`
 flag reports environment-owned settings without exposing names or values; Save
@@ -366,6 +372,7 @@ CronOperatorService
 DEFAULT_TUI_BASE_PATH
 DEFAULT_TUI_HOST
 DEFAULT_TUI_PORT
+LEGACY_CREDENTIAL_CARDS
 LoadTuiAdapterConfigInput
 MAX_CAPABILITY_ACTION_BYTES
 MAX_CAPABILITY_SETUP_BYTES
@@ -442,6 +449,7 @@ CredentialSaved
 CredentialSetupError
 CredentialSetupService
 CredentialSnapshot
+LEGACY_CREDENTIAL_CARDS
 MAX_CAPABILITY_ACTION_BYTES
 MAX_CAPABILITY_SETUP_BYTES
 OperatorStreamFrameTooLargeError

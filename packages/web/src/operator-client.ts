@@ -376,7 +376,7 @@ export class OperatorClient {
     try {
       const errors = new Map([["credential_invalid", 400], ["credential_conflict", 409], ["credential_unavailable", 409], ["credential_outcome_unknown", 503]]);
       const response = await this.request(`${this.baseUrl}/v1/credentials${operation === "read" ? "" : `/${operation}`}`, {
-        method: operation === "read" ? "GET" : "POST", headers: this.headers(operation !== "read"),
+        method: operation === "read" ? "GET" : "POST", headers: { ...this.headers(operation !== "read"), ...(operation === "read" ? { "X-Mono-Agent-Credential-Inventory": "extended" } : {}) },
         ...(input === undefined ? {} : { body: JSON.stringify(input) }), signal: AbortSignal.timeout(35_000),
       }, errors);
       const value: unknown = JSON.parse(await readBoundedBody(response, 16 * 1024, "credential_outcome_unknown"));

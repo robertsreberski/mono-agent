@@ -1,8 +1,9 @@
 import type { CapabilityActionProcess } from "./capability-actions.js";
 
-export const CREDENTIAL_CARDS = ["telegram", "slack", "openai-api"] as const;
+export const LEGACY_CREDENTIAL_CARDS = ["telegram", "slack", "openai-api"] as const;
+export const CREDENTIAL_CARDS = [...LEGACY_CREDENTIAL_CARDS, "a2a", "embeddings", "parallel-search", "parallel-fetch", "ollama-search"] as const;
 export type CredentialCardId = typeof CREDENTIAL_CARDS[number];
-export type CredentialFieldId = "bot" | "app" | "bearer" | "allowedIds";
+export type CredentialFieldId = "bot" | "app" | "bearer" | "credential" | "allowedIds";
 export interface CredentialRequest {
   readonly card: CredentialCardId;
   readonly process: CapabilityActionProcess;
@@ -13,7 +14,7 @@ export interface CredentialSaveRequest extends CredentialRequest { readonly fiel
 export interface CredentialCardStatus {
   readonly id: CredentialCardId;
   readonly available: boolean;
-  readonly reason: "ready" | "no-reloadable-source" | "prerequisites" | "env-shadowed";
+  readonly reason: "ready" | "no-reloadable-source" | "prerequisites" | "env-shadowed" | "plugin-required" | "endpoint-required" | "memory-required" | "tool-policy" | "invalid-destination" | "keyless";
   readonly fields: readonly { readonly id: Exclude<CredentialFieldId, "allowedIds">; readonly state: "set" | "not-set" }[];
   /** Non-blocking: environment-owned configuration fields are not changed by Save. */
   readonly environmentOverrides?: true;
@@ -61,28 +62,28 @@ export function parseCredentialRequest(value: unknown): CredentialRequest {
 export function parseCredentialSaveRequest(value: unknown): CredentialSaveRequest {
   const r = record(value, ["card", "process", "fence", "confirmed", "fields"]);
   const base = parseCredentialRequest({ card: r.card, process: r.process, fence: r.fence, confirmed: r.confirmed });
-  const allowed = base.card === "telegram" ? ["bot", "allowedIds"] : base.card === "slack" ? ["bot", "app", "allowedIds"] : ["bearer"];
+  const allowed = base.card === "telegram" ? ["bot", "allowedIds"] : base.card === "slack" ? ["bot", "app", "allowedIds"] : ["openai-api", "a2a"].includes(base.card) ? ["bearer"] : ["credential"];
   const fields = record(r.fields, allowed);
   if (Object.keys(fields).length === 0 || Object.keys(fields).length > 3 || Object.values(fields).some((item) => typeof item !== "string" || new TextEncoder().encode(item).length > 4096 || item.trim().length === 0 || /[\u0000-\u001f\u007f]/u.test(item))) throw new Error("Invalid credential fields.");
   return { ...base, fields: fields as CredentialSaveRequest["fields"] };
 }
 export function parseCredentialSnapshot(value: unknown): CredentialSnapshot {
   const r = record(value, ["version", "process", "fence", "cards"]);
-  if (r.version !== 1 || !Array.isArray(r.cards) || r.cards.length !== 3) throw new Error("Invalid credential status.");
+  if (r.version !== 1 || !Array.isArray(r.cards) || (r.cards.length !== LEGACY_CREDENTIAL_CARDS.length && r.cards.length !== CREDENTIAL_CARDS.length)) throw new Error("Invalid credential status.");
   const cards = r.cards.map((raw): CredentialCardStatus => {
     const c = record(raw, ["id", "available", "reason", "fields", "environmentOverrides", "configReady", "configPending"]);
     const id = card(c.id);
-    if ((c.environmentOverrides !== undefined && c.environmentOverrides !== true) || typeof c.available !== "boolean" || typeof c.configReady !== "boolean" || typeof c.configPending !== "boolean" || !["ready", "no-reloadable-source", "prerequisites", "env-shadowed"].includes(String(c.reason)) || !Array.isArray(c.fields)) throw new Error("Invalid credential status.");
-    const expected = id === "slack" ? ["bot", "app"] : id === "telegram" ? ["bot"] : ["bearer"];
+    if ((c.environmentOverrides !== undefined && c.environmentOverrides !== true) || typeof c.available !== "boolean" || typeof c.configReady !== "boolean" || typeof c.configPending !== "boolean" || !["ready", "no-reloadable-source", "prerequisites", "env-shadowed", "plugin-required", "endpoint-required", "memory-required", "tool-policy", "invalid-destination", "keyless"].includes(String(c.reason)) || !Array.isArray(c.fields)) throw new Error("Invalid credential status.");
+    const expected = id === "slack" ? ["bot", "app"] : id === "telegram" ? ["bot"] : ["openai-api", "a2a"].includes(id) ? ["bearer"] : ["credential"];
     const fields = c.fields.map((raw): CredentialCardStatus["fields"][number] => {
       const f = record(raw, ["id", "state"]);
       if (!expected.includes(String(f.id)) || (f.state !== "set" && f.state !== "not-set")) throw new Error("Invalid credential status.");
-      return { id: f.id as "bot" | "app" | "bearer", state: f.state };
+      return { id: f.id as Exclude<CredentialFieldId, "allowedIds">, state: f.state };
     });
     if (fields.length !== expected.length || new Set(fields.map((field) => field.id)).size !== expected.length) throw new Error("Invalid credential fields.");
     return { id, ...(c.environmentOverrides === true ? { environmentOverrides: true as const } : {}), available: c.available, reason: c.reason as CredentialCardStatus["reason"], fields, configReady: c.configReady, configPending: c.configPending };
   });
-  if (new Set(cards.map((c) => c.id)).size !== 3) throw new Error("Duplicate credential card.");
+  if (new Set(cards.map((c) => c.id)).size !== cards.length || !LEGACY_CREDENTIAL_CARDS.every((id) => cards.some((card) => card.id === id))) throw new Error("Duplicate credential card.");
   return { version: 1, process: identity(r.process), fence: fence(r.fence), cards };
 }
 export function parseCredentialSaved(value: unknown): CredentialSaved {

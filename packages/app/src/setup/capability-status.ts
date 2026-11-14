@@ -30,7 +30,7 @@ function moduleChoice(module: CapabilityModule, status: CapabilityStatus): Capab
       "In the agent folder, back up mono-agent.config.json. Merge only the shown fields; preserve unrelated settings, existing allowlists and deny rules. Replace every example placeholder before use. These manual steps do not apply changes. Only agents advertising console Enable support offer typed Memory Lite and cron-control actions.",
       JSON.stringify(module.configFragment(values), null, 2),
       ...(module.inputs.some((input) => input.secret)
-        ? ["In the owner terminal, set the following placeholders in the owner-only .env. Never paste credentials into this console.", ...(module.envExampleLines?.(values) ?? [])] : []),
+        ? ["For manual setup, set the following placeholders in the owner-only .env. Never paste credentials into chat or JSON examples; use separately advertised write-only fields when available.", ...(module.envExampleLines?.(values) ?? [])] : []),
       ...(module.files?.(values).flatMap((file) => [`Create ${file.path} with the following contents:`, file.contents]) ?? []),
       ...(discovery.preparation ?? []),
       "Run mono-agent validate. Resolve waiting/error findings before starting. Restart a managed agent with mono-agent restart; for foreground use stop/start in its terminal. Validation is readiness evidence, not proof of message delivery.",

@@ -15,6 +15,6 @@ const defaults = {
 export function resolveCredentialEnvironmentName(kind: keyof typeof defaults, configured?: string): string {
   const name = configured?.trim() || defaults[kind];
   const upper = name.toUpperCase();
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) || isSystemdBackgroundOperationalEnvName(upper) || /^(?:NODE_|LD_|DYLD_|PYTHON|BASH|ENV$|IFS$|MONO_AGENT_(?:MANAGED_|SYSTEMD_|TUI_|PROCESS_JOBS_|CONTINUATION|INTERACTION|NOTIFICATION))/u.test(upper)) throw new Error("Reserved or invalid credential environment name.");
+  if ((Object.values(defaults) as readonly string[]).some((reserved) => reserved === upper && reserved !== defaults[kind]) || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) || isSystemdBackgroundOperationalEnvName(upper) || /^(?:NODE_|LD_|DYLD_|PYTHON|BASH|ENV$|IFS$|MONO_AGENT_(?:MANAGED_|SYSTEMD_|TUI_|PROCESS_JOBS_|CONTINUATION|INTERACTION|NOTIFICATION))/u.test(upper)) throw new Error("Reserved or invalid credential environment name.");
   return name;
 }

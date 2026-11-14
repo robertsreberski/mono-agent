@@ -12,7 +12,7 @@ describe("Capabilities section", () => {
     vi.spyOn(api, "capabilitySetup").mockResolvedValue(capabilitySnapshot);
     render(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true })} />);
     await screen.findByRole("heading", { name: "Memory" });
-    expect(screen.getAllByRole("article")).toHaveLength(9);
+    expect(screen.getAllByRole("article")).toHaveLength(capabilitySnapshot.cards.length);
     for (const state of ["Ready", "Waiting", "Disabled", "Needs attention"]) expect(screen.getAllByText(state).length).toBeGreaterThan(0);
     fireEvent.click(screen.getAllByText("Details & manual setup")[0]!);
     fireEvent.change(screen.getByRole("combobox", { name: "Inspect memory tier (read-only)" }), { target: { value: "memory:journal" } });
@@ -75,12 +75,12 @@ describe("Capabilities section", () => {
     fireEvent.click(within(article).getByText("Details & manual setup"));
     expect(details.open).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Refresh capability status" }));
-    expect(screen.getAllByRole("article")).toHaveLength(9);
+    expect(screen.getAllByRole("article")).toHaveLength(capabilitySnapshot.cards.length);
     expect(screen.getByRole("article", { name: "Memory" })).toBe(article);
     expect(details.open).toBe(true);
     await act(async () => reject(new Error("Synthetic failure")));
     expect(screen.getByText(/Showing the last report below, not a fresh check/)).toBeTruthy();
-    expect(screen.getAllByRole("article")).toHaveLength(9);
+    expect(screen.getAllByRole("article")).toHaveLength(capabilitySnapshot.cards.length);
     view.rerender(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true, generation: "two" })} />);
     expect(screen.queryByRole("article")).toBeNull();
   });
