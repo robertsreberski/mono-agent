@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.27.0 — Long-conversation continuity (2026-11-15)
+
+- Long-conversation continuity is on by default and passes its end-to-end
+  validation gate: retained conversation evidence with `ConversationHistory`
+  lookup, protected summaries carried across restarts, and the 16k cold handover
+  pack. Opt out with `runtime.session.continuity.enabled: false` or
+  `packEnabled: false`. The continuity ledger, paid upkeep and durable Web model
+  switching remain opt-in.
+
 - Fix the console Capabilities page taking about ten seconds to load on a
   managed install, and every console Enable, Undo or credential save paying the
   same delay per check. Console checks now reuse the managed runtime
@@ -16,15 +25,6 @@
   check, which made the whole lookup unavailable or skipped the record. Node
   24.16 and later already read it correctly; the stored data and the text the
   model sees are unchanged.
-
-## 0.27.0 — Long-conversation continuity (2026-11-15)
-
-- Long-conversation continuity is on by default and passes its end-to-end
-  validation gate: retained conversation evidence with `ConversationHistory`
-  lookup, protected summaries carried across restarts, and the 16k cold handover
-  pack. Opt out with `runtime.session.continuity.enabled: false` or
-  `packEnabled: false`. The continuity ledger, paid upkeep and durable Web model
-  switching remain opt-in.
 
 - Fix E2 `size` refusing every real-source replay draw with `E2_REFUSED`: the
   clean sizing child now waits until each IPC message, including results of
