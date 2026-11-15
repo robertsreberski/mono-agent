@@ -51,7 +51,8 @@ it("exercises --estimate with private exclusive artifacts and only fixed content
   const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(() => { throw Error("network forbidden"); });
   const args = ["--estimate", "--protocol", protocol, "--limits", limits, "--sizing", sizing, "--output", output];
   expect(await main(args, io)).toBe(0); expect(fetch).not.toHaveBeenCalled(); expect(errors).toEqual([]);
-  const report = JSON.parse(calls.join("")); expect(report.forecastMinimumCapUnits).toBe("4105809000"); expect(report.worstCaseCapUnits).toBe("11956000000");
+  // CLI deliberately reads the live catalog: Pi 1.5 funds Sol's full 500K window.
+  const report = JSON.parse(calls.join("")); expect(report.forecastMinimumCapUnits).toBe("9025809000"); expect(report.worstCaseCapUnits).toBe("26716000000");
   expect(await readFile(join(output, "estimate.json"), "utf8")).toBe(calls.join(""));
   expect((await stat(output)).mode & 0o777).toBe(0o700); expect((await stat(join(output, "estimate.json"))).mode & 0o777).toBe(0o600);
   for (const value of [root, "FICTIONAL-ESTIMATE-CANARY", "sourceDigest", "fileSha256", "accountCommitment"]) expect(calls.join("")).not.toContain(value);

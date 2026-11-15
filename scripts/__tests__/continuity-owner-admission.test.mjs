@@ -8,6 +8,7 @@ const names = ["read_notes", "read_inventory", "read_archive", "read_status", "r
 const citeTool = (pass, rows) => pass === 2 ? [] : [{ kind: "open_work", value: "Fictional register review.", status: "unknown", sources: [rows.find(row => row.kind === "tool").id] }];
 const ownerOffers = (passes, text) => passes.filter(pass => pass.offered.some(row => row.owner && row.text === text)).map(pass => pass.pass);
 
+// Full root-gate subprocess contention exceeded 60s; keep this finite CPU budget.
 it("offers a late cancellation main never fits, while preserving the long initial constraint and delta caps", async () => {
   const initial = "Never send anything without my approval. " + words.slice(0, 700);
   const cancellation = "Cancel my promise to prepare the garden report; do not prepare or send it until I confirm.";
@@ -25,7 +26,7 @@ it("offers a late cancellation main never fits, while preserving the long initia
   const source = passes[1].records.find(r => r.text === cancellation);
   expect(source.inputId).toBe("fictional-input-337");
   expect(passes[1].offered).toContainEqual(expect.objectContaining({ recordId: source.recordId, owner: true, text: cancellation }));
-}, 60000);
+}, 180000);
 
 it("retains the next-action second offer after an uncited first offer and empty delta, but never makes a third offer", async () => {
   const constraint = "Never send a report without approval.", next = "Next action: check the filing receipt before further work.";
@@ -38,7 +39,7 @@ it("retains the next-action second offer after an uncited first offer and empty 
     expect(passes[1].offered).toContainEqual(expect.objectContaining({ recordId: id, owner: true, text }));
     expect(passes[2].offered.some(row => row.recordId === id)).toBe(false);
   }
-}, 60000);
+}, 180000);
 
 it("keeps identifier tool evidence under an owner flood after a prior exists, with an eighty percent fitted-span tool floor each pass", async () => {
   const records = [];
@@ -58,7 +59,7 @@ it("keeps identifier tool evidence under an owner flood after a prior exists, wi
       expect(pass.records).toContainEqual(expect.objectContaining({ recordId: row.recordId, kind: "tool", text: row.text }));
     }
   }
-}, 60000);
+}, 180000);
 
 it("offers a short late cancellation within three passes of a tool and identifier flood", async () => {
   const cancellation = "Cancel the willow report; wait for my confirmation before any work.";
@@ -70,4 +71,4 @@ it("offers a short late cancellation within three passes of a tool and identifie
   const source = pass.records.find(r => r.text === cancellation);
   expect(source.inputId).toBe("fictional-input-180");
   expect(pass.offered).toContainEqual(expect.objectContaining({ recordId: source.recordId, owner: true, text: cancellation }));
-}, 60000);
+}, 180000);

@@ -66,7 +66,7 @@ it("refuses a ceiling hold that exceeds an exact cap before any consume/send", a
 it("retains lost liability after the assigned child crashes mid-request, with observation-only recovery", async () => {
   await start(); const p = admission(), permit = await rpc("admit", p); await rpc("consume", { permit, bodyDigest: p.payloadDigest });
   const exited = once(worker, "exit"); worker.kill("SIGKILL"); await exited; await journal.finish(0, "lost"); journal.release(); journal = undefined;
-  const report = await controller.reconcileLookupPilot(outputRoot); expect(report.reconciliation).toBe(true); expect(report.costs.retainedUnits).toBe("3920000000");
+  const report = await controller.reconcileLookupPilot(outputRoot); expect(report.reconciliation).toBe(true); expect(report.costs.retainedUnits).toBe("8840000000");
 });
 it("refuses a summary outside an actual declared lifecycle, without admitting a hold", async () => {
   await start(); await expect(rpc("admit", admission("summary"))).rejects.toMatchObject({ code: "e2_summary_not_authorized" });
@@ -75,12 +75,12 @@ it("refuses a summary outside an actual declared lifecycle, without admitting a 
 it("keeps full own-cancellation liability instead of releasing the reserve", async () => {
   authorization.timeoutMs = 2000; await start(); const p = admission(), permit = await rpc("admit", p); await rpc("consume", { permit, bodyDigest: p.payloadDigest });
   await rpc("settle", { permit, outcome: { kind: "own_abort_after_send" }, rawUsage: null, tier: null }); await journal.finish(0, "own_abort_after_send");
-  expect(accounting.accountRun(journal.snapshot().slots)).toMatchObject({ retainedUnits: "3920000000", consecutiveProviderLosses: 0 });
+  expect(accounting.accountRun(journal.snapshot().slots)).toMatchObject({ retainedUnits: "8840000000", consecutiveProviderLosses: 0 });
 });
 it("retains a forged/missing summary result and never promotes it to probe authority", async () => {
   await start(); await summaryBegin(); const p = admission("summary"), permit = await rpc("admit", p); await rpc("consume", { permit, bodyDigest: p.payloadDigest });
   await expect(rpc("settle", { permit, outcome: { kind: "settled", costUnits: "300000" }, rawUsage: { input_tokens: 100, output_tokens: 10 }, tier: "default", evidence: { schema: "continuity-e2-generated-summary-receipt-v1", sha256: "c".repeat(64) } })).rejects.toMatchObject({ code: "e2_summary_receipt_invalid" });
-  expect(journal.snapshot().stop).toBe("e2_summary_receipt_invalid"); expect(accounting.accountRun(journal.snapshot().slots)).toMatchObject({ retainedUnits: "3920000000", knownPartialUnits: "300000" });
+  expect(journal.snapshot().stop).toBe("e2_summary_receipt_invalid"); expect(accounting.accountRun(journal.snapshot().slots)).toMatchObject({ retainedUnits: "8840000000", knownPartialUnits: "300000" });
 });
 it("requires verified output plus durable-compaction acknowledgment before probes and publishes no canaries", async () => {
   await start(); const { rawUsage, written } = await settledSummary();
@@ -161,7 +161,7 @@ it.each(["consume", "settle"])("refuses late %s at the admission-anchored reques
   await expect(rpc(op, op === "consume" ? { permit, bodyDigest: p.payloadDigest }
     : { permit, outcome: { kind: "settled", costUnits: "300000" }, rawUsage: { input_tokens: 100, output_tokens: 10 }, tier: "default" })).rejects.toMatchObject({ code: "e2_worker_timeout" });
   expect(journal.snapshot().stop).toBe("e2_worker_timeout"); expect(journal.snapshot().slots[0].terminal).toBe("lost");
-  expect(accounting.accountRun(journal.snapshot().slots)).toMatchObject({ retainedUnits: "3920000000", activeUnits: "0" });
+  expect(accounting.accountRun(journal.snapshot().slots)).toMatchObject({ retainedUnits: "8840000000", activeUnits: "0" });
 });
 it("stops admission at the phase deadline even between requests", async () => {
   const base = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(base);

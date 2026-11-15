@@ -1,3 +1,4 @@
+import { historicalPi12Catalog } from "./fixtures/pi-1.2-catalog.mjs";
 // Shared-core tests, fictional text, no transport/provider/registry. Not subprocess proofs.
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, realpath, mkdir, readFile, writeFile, rm } from "node:fs/promises";
@@ -5,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { e2ExecutionPolicy as policy } from "../lib/continuity-e2-execution-policy.mjs";
 import { E2_GUARD_CONTRACT, E2_SUMMARY_RESULTS_DIRECTORY } from "../lib/continuity-e2-policy.mjs";
-import { e2RequestPrice, loadE2Catalog } from "../lib/continuity-e2-pricing.mjs";
+import { e2RequestPrice } from "../lib/continuity-e2-pricing.mjs";
 import { SOL, LUNA } from "../lib/continuity-e2-protocol.mjs";
 import { guardedModels } from "../lib/continuity-guarded-models.mjs";
 import { guardedAccounting } from "../lib/continuity-guarded-accounting.mjs";
@@ -16,7 +17,7 @@ let root, pilot, planned;
 const slotId = "b".repeat(64), operationDigest = "d".repeat(64), context = { systemPrompt: "Fictional instructions.", messages: [{ role: "user", content: "Fictional request." }], tools: [] };
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "e2-ledger-"))); await mkdir(join(root, E2_SUMMARY_RESULTS_DIRECTORY), { mode: 0o700 }); vi.stubEnv("HOME", root);
-  const catalogs = await loadE2Catalog();
+  const catalogs = await historicalPi12Catalog();
   pilot = { descriptor: { capUnits: "900719925474099312345" }, registration: { catalog: catalogs,
     roles: ["summary", "continuation", "probe"].flatMap(role => (role === "summary" ? [SOL, LUNA] : [SOL]).map(model => ({ role, model, maxInputTokens: 272000, maxOutputTokens: 128000, expectedOutputTokens: 512 }))),
     toolPolicies: { summary: [], replay: ["ConversationHistory"], proof: ["ConversationHistory"], cancelContinuation: ["ConversationHistory", "ProofSentinel"] } } };
@@ -161,4 +162,16 @@ it.each([1, 3, 4])("derives per-probe admission ordinal and final wire tool poli
   // An early answer ends its probe; the next question/repeat starts at one.
   slot.holds = slot.holds.slice(0, 1);
   expect(policy.admission(pilot, planned, slot, request("probe")).metadata.probeRequest).toBe(1);
+});
+
+it("applies the same E2 tool allowlist to native additional_tools, rejecting unlisted declarations", () => {
+  const body = { model: SOL.split(":")[1], store: false, stream: true, input: [{ type: "additional_tools", role: "developer",
+    tools: [{ type: "function", name: "ConversationHistory", parameters: { type: "object", properties: {} } }] }] };
+  const hold = { model: SOL, tools: ["ConversationHistory"], probeRequest: 1 };
+  expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), hold)).not.toThrow();
+  body.input[0].tools[0].name = "UnapprovedTool";
+  expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), hold)).toThrow("e2_tools_forbidden");
+  body.input[0].tools[0].name = "ConversationHistory";
+  body.input[0].tools[0].unlisted = true;
+  expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), hold)).toThrow("e2_payload_forbidden");
 });

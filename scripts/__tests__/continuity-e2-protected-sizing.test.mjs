@@ -62,6 +62,7 @@ describe.sequential("four replay alternatives", () => {
     records.push(JSON.parse(await readFile(join(output, "sizing.json"), "utf8")));
   }, 180000);
   it("funds the count/size union within eight files", async () => {
+    const catalog = await loadE2Catalog();
     expect(records.map(r => r.summary)).toEqual(E2_REPLAY_SCENARIOS);
     expect(records.every(r => r.schema === "continuity-e2-sizing-v3" && r.qualification === true)).toBe(true);
     for (const record of records.slice(2)) {
@@ -71,14 +72,18 @@ describe.sequential("four replay alternatives", () => {
       expect(record.protectedSizing.identity).toMatchObject({ codeSha256: expect.stringMatching(/^[a-f0-9]{64}$/u), buildOutputSha256: expect.stringMatching(/^[a-f0-9]{64}$/u), sourceHead: expect.stringMatching(/^[a-f0-9]{40}$/u), node: process.version });
       for (const c of record.protectedSizing.controls) {
         expect(c.committed).toBe(true);
+        const model = catalog.find(row => row.model === c.model);
+        // At 500K the historical large carry fits; the helper asserts coverage and no fallback.
+        if (c.carrier === "carry" && c.fallback && model.contextWindow > 272000)
+          expect(c.retainedBytes).toBeLessThanOrEqual(1024 * 1024);
         if (record.summary === "protected-refusal" && !c.fallback) expect(c).toMatchObject({ noncommitObserved: true, unchangedRefusalSuppressed: true, growthQualified: true });
         for (const row of c.requests) expect(row).toMatchObject({ role: row.paidRole === null ? "setup-scripted" : "summary", paidRole: row.paidRole, size: { method: "intercepted-full-models-context", serializedBytes: expect.any(Number) } });
       }
     }
     expect(() => requireProtectedE2Sizing(records)).not.toThrow();
     expect(() => requireProtectedE2Sizing(records.slice(0, 2))).toThrow("E2_ESTIMATE_INVALID");
-    const { roles, sizing } = JSON.parse(await readFile(new URL("./fixtures/continuity-e2-cap-sizing.json", import.meta.url))), catalog = await loadE2Catalog();
-    for (const role of roles) role.maxInputTokens = 272000;
+    const { roles, sizing } = JSON.parse(await readFile(new URL("./fixtures/continuity-e2-cap-sizing.json", import.meta.url)));
+    for (const role of roles) role.maxInputTokens = catalog.find(row => row.model === role.model).contextWindow;
     const probeCounts = protocol.branches.flatMap(b => b.checkpoints).map((_, checkpoint) => ({ checkpoint, questions: 1 }));
     const normal = records.map(r => normalizeE2Sizing(protocol, r)), schedule = e2PhaseSchedule(protocol, records, probeCounts);
     expect(schedule).toHaveLength(1);
@@ -91,7 +96,11 @@ describe.sequential("four replay alternatives", () => {
     // Replacing one protected observation by a larger full request must increase
     // the union forecast, without changing its request counts or adding paid runs.
     const larger = structuredClone(records), row = larger[3].protectedSizing.controls[0].requests.find(r => r.paidRole === "summary");
-    row.size.serializedBytes = 600000; row.size.serializedBytesOver3 = 200000; row.size.maximum = Math.max(200000, row.size.engineFullRequest);
+    // The 500K carry now dominates the union; inflate beyond that observation,
+    // still inside the live role/window cap, rather than the former 200K size.
+    row.size.serializedBytes = 3 * (catalog.find(r => r.model === row.model).contextWindow - 1);
+    row.size.serializedBytesOver3 = Math.ceil(row.size.serializedBytes / 3);
+    row.size.maximum = Math.max(row.size.serializedBytesOver3, row.size.engineFullRequest);
     const inflated = estimateE2SizingSet({ protocol, records: larger, roles, catalog, probeCounts });
     expect(BigInt(inflated.forecastNoCacheMinimumCapUnits)).toBeGreaterThan(BigInt(estimate.forecastNoCacheMinimumCapUnits));
     expect(inflated.fundedSchedule.totals.requests).toBe(estimate.fundedSchedule.totals.requests);

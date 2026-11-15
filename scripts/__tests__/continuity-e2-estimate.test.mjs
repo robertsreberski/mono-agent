@@ -1,12 +1,13 @@
+import { historicalPi12Catalog } from "./fixtures/pi-1.2-catalog.mjs";
 import { expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { estimateE2Reservations, validateE2Sizing } from "../lib/continuity-e2-estimate.mjs";
 import { e2PaidRole } from "../lib/continuity-e2-roles.mjs";
-import { loadE2Catalog, e2UsageUnits } from "../lib/continuity-e2-pricing.mjs";
+import { e2UsageUnits } from "../lib/continuity-e2-pricing.mjs";
 async function fixture() {
   const f = JSON.parse(await readFile(new URL("./fixtures/continuity-e2-cap-sizing.json", import.meta.url)));
   const requests = f.sizing.variants.flatMap((v, checkpoint) => v.requests.map(({ ordinal: _ordinal, ...row }) => ({ checkpoint, ...row })));
-  return { roles: f.roles, requests, catalog: await loadE2Catalog() };
+  return { roles: f.roles, requests, catalog: await historicalPi12Catalog() };
 }
 it("pins the C2-shaped fictional sizing cap, by public checkpoint/role and integer units", async () => {
   const f = await fixture(), report = estimateE2Reservations(f);

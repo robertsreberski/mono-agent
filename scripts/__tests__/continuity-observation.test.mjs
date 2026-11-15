@@ -441,6 +441,7 @@ describe("read-only continuity observation", () => {
     expect(() => assertAllowed(mutated, EXPORT_ALLOWLIST.metrics)).toThrow("INVALID_EXPORT");
   });
 
+  // This exhaustive subprocess batch exceeded 30s under full root-gate contention.
   it("does not leak canary substitutions from any JSON source field", async () => {
     const base = [boundary(), compaction(), pack(), tool()];
     function leaves(v, path = []) {
@@ -453,7 +454,7 @@ describe("read-only continuity observation", () => {
       const f = fixture(temp(), { parts: i => i === 1 ? parts : [] }), out = join(temp(), "exports");
       assertExports(out, await run(f, { output: out }));
     }
-  });
+  }, 120000);
 
   it("classifies NULL parts as invalid but not oversized", async () => {
     const f = fixture(temp()); editDb(f, db => db.prepare("UPDATE messages SET parts_json=NULL WHERE id=?").run(`${CANARY}_turn_2_assistant`));

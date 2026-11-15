@@ -83,6 +83,19 @@ Contributors: run `pnpm run clean` once after updating a checkout built before t
   Coding endpoint overrides must include `/v1`. Provider checks and summaries
   remain single-shot SSE; no runtime assistant retry policy is enabled here.
 
+### Guarded continuity registrations and funding
+
+Pi 1.5.2 changes the installed Codex catalog digest and GPT-6.1 Sol's default
+context window from 272K to 500K. Existing catalog-bound E2 registrations must
+be re-sized and re-registered before use; exact catalog-drift rejection remains
+in force. The full-window conservative Sol reservation increases from
+`3920000000` to `8840000000` accounting units per request, including the current
+long-input rate tier. An unchanged funding cap admits fewer simultaneous
+reservations/retries. Do not substitute the historical 272K catalog to avoid
+re-registration or to reduce live-request funding. The separate frozen lookup
+contract still enforces its 272K input/payload/hold envelope.
+
+
 ## Unreleased absolute compaction ceiling
 
 - `RuntimeCompactionPolicy.maxInputTokens` (config:
@@ -1126,15 +1139,3 @@ Worklab's runtime fork:
    against the packed or published package, assert that no production import
    resolves Pi directly, and prove the injected Claude query performs no
    network call.
-
-### Guarded continuity registrations and funding
-
-Pi 1.5.2 changes the installed Codex catalog digest and GPT-6.1 Sol's default
-context window from 272K to 500K. Existing catalog-bound E2 registrations must
-be re-sized and re-registered before use; exact catalog-drift rejection remains
-in force. The full-window conservative Sol reservation increases from
-`3920000000` to `8840000000` accounting units per request, including the current
-long-input rate tier. An unchanged funding cap admits fewer simultaneous
-reservations/retries. Do not substitute the historical 272K catalog to avoid
-re-registration or to reduce live-request funding. The separate frozen lookup
-contract still enforces its 272K input/payload/hold envelope.

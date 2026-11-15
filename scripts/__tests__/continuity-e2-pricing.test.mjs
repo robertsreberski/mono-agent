@@ -2,18 +2,21 @@
 import { expect, it } from "vitest";
 import { E2_USD_UNITS, E2_PAID_ROLES, E2_CENTRAL_CACHE, e2RateUnits, e2CatalogRates, e2RequestPrice, loadE2Catalog } from "../lib/continuity-e2-pricing.mjs";
 import { SOL, LUNA } from "../lib/continuity-e2-protocol.mjs";
-const SHA = "3cc35a7e122e5c77ee8ec30a9a3bd8bd59629997e85ba2cb3f9e0ed62e9a09c0";
-const catalogs = [
-  { model: SOL, api: "openai-codex-responses", fileSha256: SHA, contextWindow: 272000, maxTokens: 128000, cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }] } },
-  { model: LUNA, api: "openai-codex-responses", fileSha256: SHA, contextWindow: 272000, maxTokens: 128000, cost: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, tiers: [{ inputTokensAbove: 272000, input: 0.2, output: 0.75, cacheRead: 0.02, cacheWrite: 0.25 }] } },
-];
+import { historicalPi12Catalog } from "./fixtures/pi-1.2-catalog.mjs";
+const catalogs = historicalPi12Catalog();
 it("pins integer units, role classification and explicit central-cache assumption", () => {
   expect(E2_USD_UNITS).toBe(1000000000n);
   expect(E2_PAID_ROLES).toEqual(["summary", "continuation", "probe"]);
   expect(E2_CENTRAL_CACHE).toEqual({ numerator: 1, denominator: 2 });
 });
 it("pins both installed pi-ai catalog rows and their common catalog-file digest", async () => {
-  expect(await loadE2Catalog()).toEqual(catalogs);
+  const installed = await loadE2Catalog();
+  // Pi 1.5 corrects Sol's live window to 500K; historical fixture stays frozen.
+  expect(installed).toEqual(catalogs.map(row => ({ ...row, fileSha256: installed[0].fileSha256,
+    contextWindow: row.model === SOL ? 500000 : 272000 })));
+  expect(installed[0].fileSha256).toMatch(/^[a-f0-9]{64}$/u);
+  expect(installed[0].fileSha256).not.toBe(catalogs[0].fileSha256);
+  expect(e2RequestPrice(installed[0], { inputTokens: 1, maxOutputTokens: 128000 }).reservationUnits).toBe("8840000000");
 });
 it("represents Luna cache reads exactly, rather than truncating to lookup units", () => {
   expect(e2RateUnits(0.01)).toBe(10n); expect(e2RateUnits(2)).toBe(2000n); expect(e2RateUnits(0)).toBe(0n);

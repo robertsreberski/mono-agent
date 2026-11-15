@@ -23,7 +23,10 @@ function bind(protocol, protocolId) {
   }
   function lookupInputEnvelope(payload, settledOutputTokens = [], assumptions = LOOKUP_ASSUMPTIONS) {
     const h = assumptions.framing;
-    const input = payload.input ?? [], tools = payload.tools ?? [];
+    const input = payload.input ?? [];
+    // Pi 1.4+ anchors Codex declarations in input; retain the same conservative
+    // per-tool/schema framing charge as top-level declarations.
+    const tools = [...(payload.tools ?? []), ...input.filter(item => item?.type === "additional_tools").flatMap(item => item.tools ?? [])];
     const H = h.base + input.length * h.inputItem + input.filter(x => x.type === "reasoning").length * h.reasoningItem
       + tools.length * h.tool + properties(tools) * h.schemaProperty + (Object.hasOwn(payload, "instructions") ? h.instructions : 0);
     const bytes = Buffer.byteLength(JSON.stringify(payload));

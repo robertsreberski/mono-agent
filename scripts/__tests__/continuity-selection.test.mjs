@@ -8,6 +8,7 @@ import { replayLedgerSelection } from "../lib/continuity-selection-replay.mjs";
 // Input digests prevent changing a fixture while silently keeping its old base.
 const baseline = JSON.parse(await readFile(new URL("./fixtures/continuity-selection-baseline.json", import.meta.url), "utf8"));
 
+// Full root-gate subprocess contention exceeded 60s; keep this finite CPU budget.
 it.each(selectionReplayCases())("preserves source diversity and improves first offers: $name", async scenario => {
   const base = baseline.cases[scenario.name];
   expect(createHash("sha256").update(JSON.stringify(scenario.records)).digest("hex")).toBe(base.sourceDigest);
@@ -37,4 +38,4 @@ it.each(selectionReplayCases())("preserves source diversity and improves first o
   // Repeat all five cases through fresh SQLite stores, including adversarial
   // floods. Exact offers and retained records, not just totals, must agree.
   expect(await replayLedgerSelection(scenario.records)).toEqual(passes);
-}, 60000);
+}, 180000);
