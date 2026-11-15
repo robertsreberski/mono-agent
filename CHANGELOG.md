@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix E2 `size` refusing every real-source replay draw with `E2_REFUSED`: the
+  clean sizing child now waits until each IPC message, including results of
+  1 MiB or more, is delivered before disconnecting. An undelivered result still
+  refuses and removes the child's qualifying `sizing.json`.
+
 - Raise the cold continuity-pack (handover) ceiling from 8,000 to a fixed
   16,000 estimated tokens (at most 47,952 rendered UTF-8 bytes), still lowered
   by the destination's real headroom and skipped below 500 tokens. A whole
