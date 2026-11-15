@@ -118,3 +118,39 @@ it("defaults ledger selection/fitting to the same 16k ceiling without enlarging 
   expect(fitLedgerSelection(selection, scope, undefined, { maxTokens: 8000, deltaEntries: 24 })).toEqual(fitted);
   expect(fitLedgerSelection(selection, scope, undefined, { maxTokens: 64000, deltaEntries: 24 })).toEqual(fitted);
 });
+
+// Every caller-visible budget ≥ 4k collapses to the unchanged 4k ledger prefix,
+// so reverting a ledger default or the inner prefix clamp from the shared
+// ceiling to a literal is behaviourally invisible. Pin the sites to the named
+// constant at source level; the runtime drift guard covers the offered budget.
+it("pins every pack ceiling site to its package-local named constant (source contract)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = async (path: string) => await readFile(new URL(path, import.meta.url), "utf8");
+  const ceilingLiterals = (text: string) => text.match(/\b(?:8|16)_?000\b/gu) ?? [];
+  const renderFit = await source("../continuity/render-fit.ts"), pack = await source("../continuity/pack.ts"), ledger = await source("../continuity/ledger.ts");
+  const run = await source("../../../turn/src/execution/pi/run.ts");
+  expect(renderFit).toMatch(/^export const CONTINUITY_PACK_MAX_TOKENS = 16_000;$/mu);
+  expect(renderFit).toMatch(/fitsLedgerPrefixBytes = [^\n]*<= Math\.min\(4000, Math\.max\(0, Math\.min\(CONTINUITY_PACK_MAX_TOKENS, Math\.floor\(maxTokens\)\)\)\);$/mu);
+  expect(pack).toMatch(/export function renderContinuityPack\([^)]*?maxTokens = CONTINUITY_PACK_MAX_TOKENS,/u);
+  expect(pack).toMatch(/const limit = Math\.max\(0, Math\.min\(CONTINUITY_PACK_MAX_TOKENS, Math\.floor\(maxTokens\)\)\);/u);
+  expect(ledger).toMatch(/export function selectLedgerSources\([^\n]*\} = \{ maxTokens: CONTINUITY_PACK_MAX_TOKENS \}\): LedgerSelection \{/u);
+  expect(ledger).toMatch(/\}, limits: \{ maxTokens: number; deltaEntries: number \} = \{ maxTokens: CONTINUITY_PACK_MAX_TOKENS, deltaEntries: 24 \}\)/u);
+  expect(run).toMatch(/^const CONTINUITY_PACK_MAX_TOKENS = 16_000;$/mu);
+  expect(run).toMatch(/const maxTokens = Math\.max\(0, Math\.min\(CONTINUITY_PACK_MAX_TOKENS, Math\.floor\(Math\.min\(window, policy\.triggerTokens\) - fixed - input - reserve\)\)\);/u);
+  // The only ceiling literals are the two constant definitions themselves.
+  expect([ceilingLiterals(renderFit), ceilingLiterals(pack), ceilingLiterals(ledger)]).toEqual([["16_000"], [], []]);
+  expect(run.match(/\b16_?000\b/gu)).toEqual(["16_000"]);
+});
+
+it("exercises the upkeep oversized-owner branch with the default ledger budget", () => {
+  // snapshot.upkeep enables the budget-dependent oversized check (ledger.ts
+  // selectLedgerSources). Its admission rule is the 4k prefix for any budget at
+  // or above 4k, and tighter below it.
+  const owner = record(1, `Fictional owner paragraph: ${"keep cobalt and confirm the orchard plan. ".repeat(160)}`);
+  const snapshot = { records: [owner], omitted: 0, gaps: 0, upkeep: { watermark: 1, excluded: [] } };
+  const byDefault = selectLedgerSources(snapshot);
+  expect(byDefault.oversizedProgress).toBeUndefined(); expect(byDefault.spans.length).toBeGreaterThan(0);
+  for (const maxTokens of [4000, 8000, CONTINUITY_PACK_MAX_TOKENS, 1e9]) expect(selectLedgerSources(snapshot, undefined, 64000, { maxTokens })).toEqual(byDefault);
+  const tight = selectLedgerSources(snapshot, undefined, 64000, { maxTokens: 2500 });
+  expect(tight.spans).toEqual([]); expect(tight.oversizedProgress).toBeDefined(); expect(tight.oversizedAdvance).toBe(true);
+});

@@ -378,7 +378,8 @@ describe("continuity offline contract run (production harness, scripted provider
     const receipt = packed.boundary.observed.continuityPacks[0];
     expect(receipt.ownerEntries).toBeGreaterThan(0); expect(receipt.toolEntries).toBeGreaterThan(0);
     expect(receipt.ownerDeduped).toBeGreaterThanOrEqual(0); expect(receipt.toolReserved).toBeGreaterThan(0);
-    expect(receipt.tokens).toBeGreaterThan(0); expect(receipt.tokens).toBeLessThanOrEqual(8000);
+    const { CONTINUITY_PACK_MAX_TOKENS } = await import("../../packages/conversation/dist/continuity/render-fit.js");
+    expect(receipt.tokens).toBeGreaterThan(0); expect(receipt.tokens).toBeLessThanOrEqual(CONTINUITY_PACK_MAX_TOKENS);
     expect(packed.boundary.observed.offlineProviderPackCounts).toEqual([1, 1]);
     expect(storeTrial.boundary.observed.continuityPacks).toEqual([]);
     expect(storeTrial.boundary.observed.offlineProviderPackCounts).toEqual([0, 0]);

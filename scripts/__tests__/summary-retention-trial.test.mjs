@@ -344,6 +344,31 @@ describe("frozen fictional summary qualification", () => {
     }
   });
 
+  it("carries a whole summary between the former 8k and the 16k ceiling through the default cold reseed", async () => {
+    const modules = await loadTrialModules(); modules.trialEffort = "low";
+    const fixture = (await loadTrialFixtures()).fixtures[0];
+    const [{ model }] = await resolveTrialCatalog(modules, resolveTrialModels());
+    const { packTokens, PACK_HEADER, CONTINUITY_PACK_MAX_TOKENS } = await import("../../packages/conversation/dist/continuity/render-fit.js");
+    // Fictional background enlarges only the first checkpoint's summary; later
+    // stages stay small so every request remains under the 64-KiB matrix limit.
+    const background = `## Background\n${"- Fictional workshop background note; cobalt retained. \n".repeat(470)}`;
+    const complete = vi.fn(async (_model, context) => reply(complete.mock.calls.length === 1 ? `${background}${controlSummary(context)}` : controlSummary(context)));
+    const result = await runTrialChain({ modules, fixture, model, cap: 2000, repetition: 1, coldReseeds: true, complete });
+    const first = result.checkpoints[0].summary, reseed = result.reseeds[0];
+    const entryTokens = packTokens(PACK_HEADER + `Generated summary evidence id="x" sha256="${"0".repeat(64)}": ${JSON.stringify(first)}\n`) + 220;
+    expect(entryTokens).toBeGreaterThan(8000); expect(entryTokens).toBeLessThan(CONTINUITY_PACK_MAX_TOKENS);
+    expect(reseed).toMatchObject({ stage: 1, counts: { summary: 1 }, summarySha256: createHash("sha256").update(first).digest("hex") });
+    expect(reseed.packBytes).toBeGreaterThan(24000); expect(reseed.packBytes).toBeLessThanOrEqual(47952);
+    // The next shipping request carries that whole quotation; the former 8k
+    // budget would have omitted it (renderer control, not a trial lane).
+    expect(JSON.stringify(result.requests.find(row => row.stage === 2).context)).toContain(JSON.stringify(JSON.stringify(first)).slice(1, -1));
+    const record = { recordId: "fictional-control", generationId: "fictional", conversationId: "fictional", runId: "control", kind: "summary", provenance: "generated", sequence: 0, ordinal: 1,
+      sha256: "0".repeat(64), originalBytes: Buffer.byteLength(first), retainedBytes: Buffer.byteLength(first), truncated: false, redacted: false, source: {}, untrusted: true, text: first };
+    expect(modules.renderContinuityPack({ records: [record], omitted: 0, gaps: 0 }, [], 8000).counts.summary).toBe(0);
+    expect(result.reseeds).toHaveLength(3);
+    for (const request of result.requests) expect(request.bytes).toBeLessThanOrEqual(65536);
+  });
+
   it("integrates store/publication, host pack supplier, real cold hook, native seed and restart", async () => {
     const modules = await loadTrialModules(); modules.trialEffort = "low";
     const fixture = (await loadTrialFixtures()).fixtures[0];

@@ -145,9 +145,9 @@ repetitions: 12 chains, four successive compactions each, one split turn, three
 cold reseeds, 60 summary requests and 48 checkpoints. The shipping compaction kit
 chooses cuts; the runtime's preparation, split reserve division and summary policy
 add focus, evidence and reasoning allowance. Summaries are read back unchanged
-from durable native checkpoints. A shipping continuity-pack renderer carries only
-that checkpoint's summary into the next cold journal; it never backfills original
-facts. This isolates summary carriage, not full sidecar publication/recovery.
+from durable native checkpoints. A shipping continuity-pack renderer, at its
+default fixed 16k-token ceiling, carries only that checkpoint's whole summary into
+the next cold journal; it never backfills original facts. This isolates summary carriage, not full sidecar publication/recovery.
 No source/answer completions are purchased.
 
 The focused offline integration lane (`runTrialChain` with `coldReseeds: "host"`)
