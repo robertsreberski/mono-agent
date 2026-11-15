@@ -11,7 +11,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root,
 async function fixture(extra = {}) {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "credential-setup-"))); roots.push(cwd);
   const configPath = join(cwd, "mono-agent.config.json"), dotenvPath = join(cwd, ".env");
-  await writeFile(configPath, JSON.stringify({ runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] }, ...extra }));
+  await writeFile(configPath, JSON.stringify({ runtime: { model: "openai-codex:gpt-6.1-terra" }, context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] }, ...extra }));
   await writeFile(join(cwd, "IDENTITY.md"), "# Fictional agent\n");
   return { cwd, configPath, dotenvPath, env: {} };
 }

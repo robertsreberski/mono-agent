@@ -105,6 +105,10 @@ it.each([
   ["premature length with a tool call", fauxAssistantMessage([fauxToolCall("NeverExecute", {}, { id: "fictional-truncated-call" })], { stopReason: "length" }), { maxTokens: 64, contextWindow: 4096 }, "failed"],
 ])("preserves removed-harness response classification: %s", async (_name: any, response: any, modelDef: any, status: any) => {
   const { adapter, raw, faux } = await harness([response], undefined, modelDef);
+  // This case models z.ai's uncached-input overflow, not faux's cache writes.
+  const stream = faux.provider.streamSimple;
+  vi.spyOn(faux.provider, "streamSimple").mockImplementation((model, context, options) =>
+    stream(model, context, { ...options, cacheRetention: "none" }));
   const events: any = []; adapter.subscribe((event: any) => events.push(event));
   try {
     expect((await adapter.prompt("Fictional request.")).status).toBe(status);
@@ -482,7 +486,7 @@ it("rejects unbound steering before and between turns so the next bound prompt p
   } finally { await adapter.close(); await raw.close(); }
 });
 
-it.each([1, "1"])("adapts provider declarations but preserves native validation for %s", async (choice: any) => {
+it.each([1, "1", "3"])("adapts provider declarations but preserves native validation for %s", async (choice: any) => {
   const { getCurrentTools } = await import("@earendil-works/pi-ai");
   const faux = fauxProvider({ provider: "faux", models: [{ id: "schema-fixture" }] });
   const transport = createModels(); transport.setProvider(faux.provider);
@@ -511,8 +515,8 @@ it.each([1, "1"])("adapts provider declarations but preserves native validation 
     const second = await config.prepareRequest();
     expect(first.context.tools).toBe(second.context.tools);
     expect(first.context.tools[0].parameters).toBe(tool.parameters);
-    expect(execute).toHaveBeenCalledTimes(choice === 1 ? 1 : 0);
-    if (choice === 1) expect(execute.mock.calls[0]![1]).toEqual({ lookup: "accepted original string", choice: 1 });
+    expect(execute).toHaveBeenCalledTimes(choice === "3" ? 0 : 1);
+    if (choice !== "3") expect(execute.mock.calls[0]![1]).toEqual({ lookup: "accepted original string", choice: 1 });
   } finally { loop.mockRestore(); await adapter.close(); await raw.close(); }
 });
 
@@ -570,4 +574,24 @@ it.each([false, true])("awaits async compaction listeners only with continuity r
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(completed).toBe(!recording);
   } finally { release(); await compact; await driver.close(); await raw.close(); }
+});
+
+it("never executes a malformed final tool call even when its parsed prefix validates", async () => {
+  const execute = vi.fn(async () => ({ content: [{ type: "text", text: "Must not run" }] }));
+  const tool = { name: "FictionalLookup", description: "Fictional", parameters: {
+    type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false,
+  }, execute };
+  const malformed = { ...fauxToolCall(tool.name, { title: "Fictional" }, { id: "malformed-call" }),
+    argumentsError: "Unexpected end of JSON input" };
+  const { adapter, raw } = await harness([
+    fauxAssistantMessage([malformed], { stopReason: "toolUse" }), fauxAssistantMessage([fauxText("done")]),
+  ], undefined, {}, [tool]);
+  try {
+    expect((await adapter.prompt("Fictional lookup")).status).toBe("completed");
+    expect(execute).not.toHaveBeenCalled();
+    const result = (await raw.getEntries()).find((entry: any) => entry.message?.role === "toolResult").message;
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("Invalid arguments for tool");
+    expect(JSON.stringify(result.content)).toContain("Unexpected end of JSON input");
+  } finally { await adapter.close(); await raw.close(); }
 });

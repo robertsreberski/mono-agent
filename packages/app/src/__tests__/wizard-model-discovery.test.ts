@@ -131,7 +131,7 @@ describe("supported wizard model catalog", () => {
     expect(pi.some((candidate) => candidate.value.startsWith("openai:"))).toBe(true);
     expect(pi.every((candidate) => candidate.availability === "catalog_available")).toBe(true);
     expect(pi.some((candidate) => candidate.supportedEfforts?.includes("minimal"))).toBe(true);
-    expect(pi.find((candidate) => candidate.value === "github-copilot:gemini-3.7-flash")).toMatchObject({
+    expect(pi.find((candidate) => candidate.value === "github-copilot:gemini-3.8-flash")).toMatchObject({
       authState: "auth_required",
       setupRequired: true,
     });

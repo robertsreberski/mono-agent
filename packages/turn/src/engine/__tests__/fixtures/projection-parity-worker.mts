@@ -48,7 +48,35 @@ const { JsonlSessionRepo } = await import(pathToFileURL(`${source}/session-store
 const { createRunDriver } = await import(pathToFileURL(`${source}/run-driver.js`) as unknown as string);
 const { buildHarnessSessionContext } = await import(pathToFileURL(`${source}/session-context.js`) as unknown as string);
 const { readLegacySession } = await import(pathToFileURL(`${source}/legacy-import.js`) as unknown as string);
-const { createModels, fauxProvider, fauxAssistantMessage, fauxText, normalizeContext } = await import("@earendil-works/pi-ai");
+const { createModels, fauxProvider: currentFauxProvider, fauxAssistantMessage, fauxText, normalizeContext, createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
+// Freeze the *transport input* to the archived harness comparison. Pi 1.5's
+// faux estimator stopped double-counting cache writes as input. Reproduce the
+// old synthetic estimates at the provider boundary; do not normalize any engine
+// output or regenerate the release-freeze goldens.
+const fauxProvider: typeof currentFauxProvider = (...args) => {
+  const faux = currentFauxProvider(...args);
+  const stream = faux.provider.streamSimple;
+  faux.provider.streamSimple = (model, context, options) => {
+    const inner = stream(model, context, options), outer = createAssistantMessageEventStream();
+    const legacyUsage = <T,>(value: T): T => {
+      const copy = structuredClone(value) as T & { usage?: { input: number; cacheWrite: number; totalTokens: number } };
+      if (copy.usage) { copy.usage.input += copy.usage.cacheWrite; copy.usage.totalTokens += copy.usage.cacheWrite; }
+      return copy;
+    };
+    void (async () => {
+      for await (const event of inner) {
+        const copy = { ...event };
+        if ("partial" in copy) copy.partial = legacyUsage(copy.partial);
+        if ("message" in copy) copy.message = legacyUsage(copy.message);
+        if ("error" in copy) copy.error = legacyUsage(copy.error);
+        outer.push(copy);
+      }
+      outer.end(legacyUsage(await inner.result()));
+    })();
+    return outer;
+  };
+  return faux;
+};
 await rm(root, { recursive: true, force: true });
 const repo = new JsonlSessionRepo({ sessionsRoot: root });
 const raw = await repo.create({ id: "parity-fixture", cwd: "/fictional" });

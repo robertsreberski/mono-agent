@@ -75,6 +75,21 @@ describe("model-specific effort signals", () => {
 });
 
 describe("shortModelName", () => {
+  it.each([
+    ["anthropic:claude-fable-5-2", "Claude Fable 5.2", "Fable 5.2"],
+    ["anthropic:claude-haiku-5-5", "Claude Haiku 5.5", "Haiku 5.5"],
+    ["openai-codex:gpt-6.1-terra", "GPT-6.1 Terra", "Terra 6.1"],
+    ["opencode:muse-ember-1.0", "Muse Ember 1.0", "Muse Ember 1.0"],
+    ["opencode:muse-wonder-1.0", "Muse Wonder", "Muse Wonder"],
+    ["opencode-go:kimi-k3.1-pro", "Kimi K3.1 Pro", "Kimi K3.1 Pro"],
+    ["opencode-go:hy4", "Hy4", "Hy4"],
+    ["opencode-go:minimax-m3.1-flash", "MiniMax M3.1 Flash", "MiniMax M3.1 Flash"],
+    ["opencode-go:gemini-4-argon", "Gemini 4 Argon", "Gemini 4 Argon"],
+  ])("labels Pi 1.5 %s without confusing model families", (ref, name, expected) => {
+    expect(shortModelName(ref, name)).toBe(expected);
+    // Without catalog metadata, unknown families retain their exact identity.
+    expect(shortModelName(ref)).not.toBe("");
+  });
   it("preserves family and version in compact names", () => {
     expect(shortModelName(CODEX_SOL, "GPT-5.6 Sol")).toBe("Sol 5.6");
     expect(shortModelName("openai-codex:gpt-6-astra", "GPT-6 Astra")).toBe("Astra 6");

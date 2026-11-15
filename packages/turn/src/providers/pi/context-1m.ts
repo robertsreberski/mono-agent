@@ -14,7 +14,7 @@ export function supportsPiContext1M(reference: string): boolean {
   const id = reference.slice(separator + 1);
   if (separator < 0 || !["openai", "openai-codex"].includes(provider) || !id.startsWith("gpt-")) return false;
   const model = getBuiltinModel((provider) as any, id);
-  return model?.contextWindow === 272_000
+  return (model?.contextWindow === 272_000 || model?.contextWindow === 500_000)
     && model.cost?.tiers?.some((tier) => tier.inputTokensAbove === 272_000) === true;
 }
 

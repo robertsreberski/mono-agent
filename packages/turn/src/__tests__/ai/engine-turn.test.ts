@@ -1987,7 +1987,8 @@ describe("pi-native AgentHarness bridge", () => {
       messages: [{ role: "user", content: "hi" }],
     }));
     expect(result.error).toBe("partial failure");
-    expect(result.usage.input_tokens).toBeGreaterThan(0);
+    // Pi 1.5 faux bills the entire new prompt as cache writes, not input too.
+    expect(result.usage.input_tokens).toBeNull();
     expect(result.usage.cache_read_tokens).toBe(0);
     expect(result.usage.cache_creation_tokens).toBeGreaterThan(0);
     expect(result.usage.cache_write_tokens).toBe(result.usage.cache_creation_tokens);

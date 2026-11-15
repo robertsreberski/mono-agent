@@ -195,7 +195,7 @@ tools enabled and add their local-first settings:
 ```json
 {
   "runtime": {
-    "model": "openai-codex:gpt-5.5",
+    "model": "openai-codex:gpt-6.1-terra",
     "workspace": "."
   },
   "context": {

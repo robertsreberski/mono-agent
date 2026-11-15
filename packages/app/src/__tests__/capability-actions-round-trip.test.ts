@@ -12,7 +12,7 @@ it("round-trips browser proxy → real agent → durable guarded write, rejects 
   try {
     root = await realpath(root);
     const configPath = join(root, "mono-agent.config.json");
-    const original = JSON.stringify({ runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] } });
+    const original = JSON.stringify({ runtime: { model: "openai-codex:gpt-6.1-terra" }, context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] } });
     await writeFile(configPath, original); await writeFile(join(root, "IDENTITY.md"), "# Fictional Agent\n");
     const responder = { respond: async () => ({ text: "No model calls" }) };
     const adapter = await startTuiAdapter({ port: 0, responder, capabilityActions: createCapabilityActionsService({ cwd: root, configPath, env: {} }) });

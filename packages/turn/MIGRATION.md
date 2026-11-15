@@ -28,6 +28,61 @@ their original context.
 
 Contributors: run `pnpm run clean` once after updating a checkout built before this change.
 
+## Unreleased Pi 1.5.2 compatibility
+
+- Pi AI and Pi Agent Core are exact-pinned to `1.5.2`, including development
+  fixtures and packed-consumer resolution. Catalog snapshots derive their data
+  fields from the pinned Pi model type and remain defensive deep clones.
+- Built-in models come only from Pi's chat catalog: Claude Fable 5.2, Haiku 5.5,
+  GPT-6.1 Terra, Kimi K3.1 Pro, Hy4, MiniMax M3.1 Flash, Muse Ember/Wonder and
+  Gemini 4 Argon need no local supplements. Availability still depends on the
+  provider/account. Restricted models absent from Pi are not advertised.
+- Haiku 5.5 now admits `none` (Pi's `off`). Fable 5.2 admits `minimal` through
+  `max`, not `none`. Kimi K3.1 Pro has `low`, `high`, `max`; Gemini 4 Argon has
+  `low`, `medium`, `high`. The picker and runtime use each row's native map,
+  not the global effort ladder. Fable/Haiku already have native 1M context;
+  they do not need or advertise the GPT-only `context1M` opt-in.
+- Codex GPT-6.1 Sol/Terra use the upstream 500,000-token default. The explicit
+  `context1M` override still applies to GPT rows with the 272K long-input price
+  tier and a 272K or 500K default; pricing and output caps stay catalog-owned.
+- Replace removed catalog IDs in primary/fallback/compaction and other model
+  routes before upgrading. Pi no longer lists `openai-codex:gpt-5.5` or
+  `gpt-5.3-codex-spark`; `openai:gpt-5.2-chat-latest`, `gpt-5.3-chat-latest`
+  or `gpt-realtime-2.1`; `opencode:claude-sonnet-4`, `deepseek-v4-flash` or
+  `muse-spark-1.3-contributor-free`; and `opencode-go:deepseek-v4-flash`,
+  `minimax-m2.7`, `grok-4.6` or `space-bunny`. Provider prefixes in each group
+  apply to every listed ID. Pick a currently listed model explicitly; there
+  are no aliases or automatic replacements. Unknown routes retain the clear
+  `pi model not found: provider:model` failure.
+- `StructuredOutput` now forwards the host's plain JSON Schema directly instead
+  of wrapping it with Pi's removed TypeBox re-export. No TypeBox dependency is
+  required. Pi validates all schemas with pi-schema coercion, including MCP
+  schemas: a required string can turn `null` into `"null"`, `"3.5"` becomes `3`
+  for an integer, a scalar can become a one-item array, and optional nulls can
+  disappear. Missing required fields, bounds and closed-object guards still
+  reject invalid calls. Validation errors now contain paths and pi-schema
+  messages (for example `- title: missing`), not TypeBox wording.
+- Final malformed tool-call JSON carries Pi's `argumentsError` and fails
+  validation before tool execution even if a partially parsed object validates.
+  Runtime path, approval, sandbox, background-admission and budget checks remain
+  independent and unchanged. Session/journal formats are unchanged.
+- Pi now supplies OpenCode session headers natively. The wrapper aligns the
+  OpenCode request session ID with the run attribution ID, including standalone
+  compaction, while auth/request headers, null suppression and caller transforms
+  keep precedence. Other providers' session IDs are untouched.
+- Pi uses Anthropic's updated OAuth client identity and native message-thread
+  continuation on its direct Anthropic endpoint. A transport failure clears
+  continuation state: request recovery resends the same logical transcript as
+  a full thread-create request instead of a byte-identical thread-continue
+  body. Completed tools are not replayed and failed partial calls stay excluded.
+  Token accounting and prompt caching remain upstream-owned; recreating a
+  thread does not guarantee a cache hit. Its preferred-strict fallback
+  now remembers schema-limit rejections per session. OpenAI-compatible requests
+  omit empty `tools` by default even with tool history: older proxies requiring
+  that field must set `compat.requiresToolsWithToolHistory: true`. Custom Kimi
+  Coding endpoint overrides must include `/v1`. Provider checks and summaries
+  remain single-shot SSE; no runtime assistant retry policy is enabled here.
+
 ## Unreleased absolute compaction ceiling
 
 - `RuntimeCompactionPolicy.maxInputTokens` (config:
@@ -159,7 +214,7 @@ The canonical adapter API is `resolveEngineTurnAdapter`,
 the optional resolver shares the same malformed-reference validation. Config,
 wire identifiers and the `"pi"` adapter id are unchanged.
 
-The runtime exact-pins Pi AI and Pi Agent Core at `1.2.0` (the terminal TUI
+The runtime exact-pins Pi AI and Pi Agent Core at `1.5.2` (the terminal TUI
 renderer is retired, so no Pi TUI pin remains). Pi Core removed its high-level
 harness. The Pi provider glue uses the runtime-owned engine for model-run admission,
 steering, journal/storage and compaction over upstream `runAgentLoop`; provider
@@ -1042,7 +1097,7 @@ Worklab's runtime fork:
    `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
    of provider bridge code. Move tests off Pi's faux-provider helpers too; until
    that is complete, isolate the fixture or pin its development-only dependencies
-  to the exact Pi AI `1.2.0` and Pi Agent Core `1.2.0` compatibility pins
+  to the exact Pi AI `1.5.2` and Pi Agent Core `1.5.2` compatibility pins
    rather than floating ranges. Do not restore the
    removed `pi-sdk.js` subpath.
 3. **Use the public Pi surfaces.** Run models through
@@ -1050,7 +1105,7 @@ Worklab's runtime fork:
    `listPiBuiltinModels`, `getPiBuiltinModel`,
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the
-   exact Pi AI `1.2.0` and Pi Agent Core `1.2.0` compatibility pins inside the
+   exact Pi AI `1.5.2` and Pi Agent Core `1.5.2` compatibility pins inside the
    runtime and its engine dependency. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.
@@ -1071,3 +1126,15 @@ Worklab's runtime fork:
    against the packed or published package, assert that no production import
    resolves Pi directly, and prove the injected Claude query performs no
    network call.
+
+### Guarded continuity registrations and funding
+
+Pi 1.5.2 changes the installed Codex catalog digest and GPT-6.1 Sol's default
+context window from 272K to 500K. Existing catalog-bound E2 registrations must
+be re-sized and re-registered before use; exact catalog-drift rejection remains
+in force. The full-window conservative Sol reservation increases from
+`3920000000` to `8840000000` accounting units per request, including the current
+long-input rate tier. An unchanged funding cap admits fewer simultaneous
+reservations/retries. Do not substitute the historical 272K catalog to avoid
+re-registration or to reduce live-request funding. The separate frozen lookup
+contract still enforces its 272K input/payload/hold envelope.

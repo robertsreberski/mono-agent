@@ -31,7 +31,7 @@ vi.mock("../service/managed-runtime/managed-runtime-packages.js", () => ({ resol
 let dir: string;
 let configPath: string;
 const config = () => JSON.stringify({
-  runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
+  runtime: { model: "openai-codex:gpt-6.1-terra", workspace: "." },
   context: { identityPath: "IDENTITY.md", soulPath: "SOUL.md", selectedSkills: [] },
   tools: { allowedTools: [], disallowedTools: [], mcpConfigPath: ".mcp.json" },
 });

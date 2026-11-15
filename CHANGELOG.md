@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Require re-sizing and re-registering catalog-bound continuity E2 runs after
+  upgrading to Pi 1.5.2. Sol's 500K window raises each conservative reservation
+  from `3920000000` to `8840000000` units, reducing reservation/retry concurrency
+  under an unchanged cap; frozen lookup enforcement remains 272K. See
+  `packages/turn/MIGRATION.md`.
+
+- Add Pi 1.5.2's native model catalog, including Claude Fable 5.2, GPT-6.1
+  Terra, Kimi K3.1 Pro, Hy4, MiniMax M3.1 Flash, Muse Ember/Wonder and Gemini
+  4 Argon across runtime resolution and the web model picker. Keep effort
+  ladders catalog-derived; Haiku 5.5 now also offers disabled thinking. Codex
+  GPT-6.1 Sol/Terra default to 500K context and retain the explicit 1M opt-in.
+  Retired model IDs must be replaced in configured routes; see the turn
+  migration guide for the removed rows.
+- Keep tool schemas as plain JSON Schema on Pi 1.5.2, without a TypeBox
+  dependency. Pi now coerces every tool's arguments, including MCP schemas
+  (numeric strings, scalar arrays and optional nulls), and reports validation
+  failures with field paths. Reject malformed final tool-call JSON before
+  execution, even when its parsed prefix would satisfy the schema. Keep
+  runtime tool guards and host budgets unchanged.
+- Keep Anthropic request recovery on the same logical transcript with Pi's
+  native message threads: after a failed continuation, retry with the full
+  transcript in a new thread, without replaying completed tools or admitting
+  partial tool calls. Prompt-cache reuse remains provider-controlled.
+- Keep OpenCode's run attribution stable across compaction and main requests
+  with Pi's native session headers, preserving explicit header overrides.
+
 ## 0.27.0 — Long-conversation continuity (2026-11-15)
 
 - Long-conversation continuity is on by default and passes its end-to-end

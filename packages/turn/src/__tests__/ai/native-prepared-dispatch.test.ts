@@ -17,7 +17,6 @@ import { resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.
 import { refreshProviderSession } from "../../runtime/session-fanout.js";
 import { createPreparedDispatchLease, prepareDispatchAuth, copyDispatchData, freezeDispatchData } from "../../execution/pi/prepared-dispatch.js";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
-import { Type } from "@earendil-works/pi-ai";
 
 const cleanups: Array<() => unknown> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
@@ -298,8 +297,10 @@ it("preserves prototype methods and their original private-field receiver", asyn
 });
 
 it("real Codex provider serializes frozen TypeBox/StructuredOutput declarations without mutation", async () => {
-  const provider = openaiCodexProvider(), model = provider.getModels()[0], schema = Type.Object({ answer: Type.String() }, { additionalProperties: false });
-  const legacyKind = Symbol.for("TypeBox.Kind"), declaration = Type.Unsafe(schema) as unknown as { properties: { answer: Record<PropertyKey, unknown> }; [key: symbol]: string };
+  const provider = openaiCodexProvider(), model = provider.getModels().find((row) => row.id === "gpt-6.1-terra")!, schema = { type: "object", properties: { answer: { type: "string", "~kind": "String" } }, required: ["answer"], additionalProperties: false, "~kind": "Object" };
+  // An external caller may still supply TypeBox-style metadata; pi-ai no longer
+  // exports its builder. Preserve that opaque metadata without depending on it.
+  const legacyKind = Symbol.for("TypeBox.Kind"), declaration = schema as unknown as { properties: { answer: Record<PropertyKey, unknown> }; [key: symbol]: string };
   declaration[legacyKind] = "Object"; (declaration).properties.answer[legacyKind] = "String";
   const parameters = freezeDispatchData(copyDispatchData(declaration));
   expect(parameters[legacyKind]).toBe("Object"); expect(parameters.properties.answer[legacyKind]).toBe("String");
@@ -312,7 +313,7 @@ it("real Codex provider serializes frozen TypeBox/StructuredOutput declarations 
     toolsAdded: [{ name: "StructuredOutput", description: "Fictional structure", parameters }] }, { role: "user", content: "Fictional input", timestamp: 0 }] },
     { transport: "sse", maxRetries: 0, onPayload: payload });
   expect(result.errorMessage).toContain("Fictional transport refusal"); expect(fetch).toHaveBeenCalledOnce();
-  expect(payload).toHaveBeenCalledOnce(); expect(payload.mock.calls[0]![0].tools[0].parameters).toMatchObject({ type: "object", required: ["answer"] });
+  expect(payload).toHaveBeenCalledOnce(); expect(payload.mock.calls[0]![0].input.find((item: { type: string }) => item.type === "additional_tools").tools[0].parameters).toMatchObject({ type: "object", required: ["answer"] });
   expect(parameters["~kind"]).toBe(schema["~kind"]); expect(parameters.properties.answer["~kind"]).toBe("String"); expect(Object.isFrozen(parameters.properties.answer)).toBe(true);
 });
 

@@ -63,7 +63,7 @@ function createSummaryRequestOptions(options: any, context: any) {
     return {
         ...options,
         signal: context.abortSignal,
-        telemetryContext: context.telemetryContext,
+        telemetry: context.telemetry,
         cacheRetention: "none",
         sessionId: options.sessionId ?? uuidv7(),
     };

@@ -592,7 +592,7 @@ describe("sessionToolHistorySection", () => {
       const configPath = join(root, "..", "mono-agent.config.json");
       await writeFile(join(root, "..", "IDENTITY.md"), "# Example agent\n");
       await writeFile(configPath, JSON.stringify({
-        runtime: { model: "openai-codex:gpt-5.5" },
+        runtime: { model: "openai-codex:gpt-6.1-terra" },
         context: { identityPath: "./IDENTITY.md" },
         artifacts: { dir: join(root, "..", "artifacts") },
       }));

@@ -328,7 +328,7 @@ const PI_RUNTIME_BACKEND = Object.freeze<MonoRuntimeBackendDescriptor>({
   sdk: "pi",
   transport: "sdk",
   providerBoundary: "Pi SDK provider gateway via @mono-agent/turn",
-  modelReferenceExamples: Object.freeze(["openai-codex:gpt-5.5", "github-copilot:gpt-4.1"]),
+  modelReferenceExamples: Object.freeze(["openai-codex:gpt-6.1-terra", "github-copilot:gpt-4.1"]),
   acceptsProviderIds: true,
   capabilities: Object.freeze(capabilitiesForRuntimeBridge("pi")),
 });

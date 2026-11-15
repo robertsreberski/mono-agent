@@ -18,7 +18,7 @@ it("round-trips console credentials to the selected dotenv without exposing plan
   try {
     const configPath = join(root, "mono-agent.config.json"), dotenvPath = join(root, ".env.custom"), registryDir = join(root, "traces");
     await writeFile(join(root, "IDENTITY.md"), "# Synthetic agent\n");
-    await writeFile(configPath, JSON.stringify({ runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" }, openaiApi: { port: 0 }, traceability: { registryDir, sourceId: "fictional", sourceLabel: "Synthetic" } }));
+    await writeFile(configPath, JSON.stringify({ runtime: { model: "openai-codex:gpt-6.1-terra" }, context: { identityPath: "IDENTITY.md" }, openaiApi: { port: 0 }, traceability: { registryDir, sourceId: "fictional", sourceLabel: "Synthetic" } }));
     const backgroundSnapshot = { schema: "mono-agent.background-snapshot.v1" as const, configPath, configFingerprint: "synthetic-config", dotenvPath, dotenvFingerprint: "synthetic-hmac", identityPath: join(root, "IDENTITY.md"), identityFingerprint: "synthetic-identity", operationalEnvironmentFingerprint: "synthetic-operational" };
     const app = await startMonoAgentApp({ cwd: root, configPath, dotenvPath, env: {}, drivers: [createTuiChannelDriver()], backgroundSnapshot, logger: { error: (...args) => logs.push(args), warn: (...args) => logs.push(args), info: (...args) => logs.push(args) } });
     cleanup.push(() => app.stop());

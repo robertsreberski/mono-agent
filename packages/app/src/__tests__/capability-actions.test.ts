@@ -8,7 +8,7 @@ afterEach(async () => { await Promise.all(roots.map((root) => rm(root, { recursi
 async function fixture(extra: Record<string, unknown> = {}, env: Record<string, string> = {}) {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "capability-actions-"))); roots.push(cwd);
   const configPath = join(cwd, "mono-agent.config.json");
-  const config = { runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] }, ...extra };
+  const config = { runtime: { model: "openai-codex:gpt-6.1-terra" }, context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] }, ...extra };
   await writeFile(join(cwd, "IDENTITY.md"), "# Fictional Agent\n"); await writeFile(configPath, JSON.stringify(config));
   const service = createCapabilityActionsService({ cwd, configPath, env });
   return { cwd, configPath, config, service, process: (await service.read()).process };
@@ -147,7 +147,7 @@ it("offers no Undo before a console save and consumes the slot after one Undo", 
 it("restores exact prior bytes while leaving dotenv credentials and memory data untouched", async () => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "capability-actions-"))); roots.push(cwd);
   const configPath = join(cwd, "mono-agent.config.json");
-  const original = `{\r\n  "runtime": { "model": "openai-codex:gpt-5.5" },\r\n  "context": { "identityPath": "IDENTITY.md" },\r\n  "tools": { "allowedTools": ["Read"], "disallowedTools": ["Bash"] }\r\n}\r\n`;
+  const original = `{\r\n  "runtime": { "model": "openai-codex:gpt-6.1-terra" },\r\n  "context": { "identityPath": "IDENTITY.md" },\r\n  "tools": { "allowedTools": ["Read"], "disallowedTools": ["Bash"] }\r\n}\r\n`;
   await writeFile(join(cwd, "IDENTITY.md"), "# Fictional Agent\n"); await writeFile(configPath, original);
   const service = createCapabilityActionsService({ cwd, configPath, env: {} });
   const process = (await service.read()).process;

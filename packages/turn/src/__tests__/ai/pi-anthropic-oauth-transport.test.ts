@@ -21,19 +21,19 @@ async function capturedRequest(model: Model<string> | undefined, apiKey: string)
   return captured!;
 }
 
-describe("Pi 0.99.2 Anthropic OAuth transport", () => {
-  it("sends the upstream Claude Code 2.1.280 identity for native Opus 5.5", async () => {
+describe("Pi 1.5.2 Anthropic OAuth transport", () => {
+  it("sends the upstream Claude Code 2.1.322 identity for native Opus 5.5", async () => {
     const model = builtinModels().getModel("anthropic", "claude-opus-5-5");
     expect(model).toBeDefined();
     const sent = await capturedRequest(model, "sk-ant-oat-synthetic-test-only");
     expect(sent.body.model).toBe("claude-opus-5-5");
-    expect(sent.headers.get("user-agent")).toBe("claude-cli/2.1.280");
+    expect(sent.headers.get("user-agent")).toBe("claude-cli/2.1.322");
     expect(sent.headers.get("x-app")).toBe("cli");
   });
 
   it("does not apply OAuth identity to an API-key request", async () => {
     const model = builtinModels().getModel("anthropic", "claude-opus-5-5");
     const sent = await capturedRequest(model, "sk-ant-api03-synthetic-test-only");
-    expect(sent.headers.get("user-agent")).not.toBe("claude-cli/2.1.280");
+    expect(sent.headers.get("user-agent")).not.toBe("claude-cli/2.1.322");
   });
 });

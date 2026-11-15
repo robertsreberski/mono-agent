@@ -27,7 +27,7 @@ describe("GPT 1M context policy", () => {
     const before = structuredClone(upstream);
     for (const enabled of [true, false, true]) {
       const { model } = resolvePiRuntimeModel(resolved, { context1MModels: { [reference]: enabled } });
-      expect(model.contextWindow).toBe(enabled ? CONTEXT_1M_TOKENS : 272_000);
+      expect(model.contextWindow).toBe(enabled ? CONTEXT_1M_TOKENS : 500_000);
       expect(model.cost).toEqual(before.cost);
       expect(model.maxTokens).toBe(before.maxTokens);
       if (enabled) expect(model).not.toBe(upstream);
@@ -45,7 +45,7 @@ describe("GPT 1M context policy", () => {
     expect(wrapped.complete(model)).toBe(CONTEXT_1M_TOKENS);
     expect(wrapped.complete(other)).toBe(272_000);
     expect(wrapped.otherMethod()).toBe(collection);
-    expect(model.contextWindow).toBe(272_000);
+    expect(model.contextWindow).toBe(500_000);
   });
 
   it("composes the declared window with global correction", () => {
@@ -60,7 +60,7 @@ describe("GPT 1M context policy", () => {
 
 describe("native Pi 1M context", () => {
   it("rebinds a resumed lane ON/OFF/ON and reports matching live usage", async () => {
-    const faux = fauxProvider({ provider: resolved.provider, models: [{ id: resolved.model, contextWindow: 272_000 }] });
+    const faux = fauxProvider({ provider: resolved.provider, models: [{ id: resolved.model, contextWindow: 500_000 }] });
     const models = createModels();
     models.setProvider(faux.provider);
     const dispatched: number[] = [];
@@ -80,10 +80,10 @@ describe("native Pi 1M context", () => {
         });
         expect(result.error).toBeNull();
         sessionId = result.sessionId;
-        expect((events.find((event) => event.type === "context_usage") as { contextWindow: number } | undefined)?.contextWindow).toBe(context1M ? CONTEXT_1M_TOKENS : 272_000);
+        expect((events.find((event) => event.type === "context_usage") as { contextWindow: number } | undefined)?.contextWindow).toBe(context1M ? CONTEXT_1M_TOKENS : 500_000);
       }
-      expect(dispatched).toEqual([CONTEXT_1M_TOKENS, 272_000, CONTEXT_1M_TOKENS]);
-      expect(faux.getModel().contextWindow).toBe(272_000);
+      expect(dispatched).toEqual([CONTEXT_1M_TOKENS, 500_000, CONTEXT_1M_TOKENS]);
+      expect(faux.getModel().contextWindow).toBe(500_000);
     } finally { if (sessionId) await disposeProviderSession(sessionId); }
   });
 

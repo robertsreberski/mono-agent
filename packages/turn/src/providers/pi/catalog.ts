@@ -12,39 +12,12 @@ import {
 import { getPiOAuthAuth, resolveOAuthApiKey, toAuthInteraction } from "./oauth-compat.js";
 import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./models.js";
 
-export type PiBuiltinModelSnapshot = {
-  id: string;
-  name: string;
-  api: string;
-  provider: string;
-  baseUrl: string;
-  reasoning: boolean;
-  input: Array<"text" | "image">;
-  cost: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    tiers?: Array<{
-      inputTokensAbove: number;
-      input: number;
-      output: number;
-      cacheRead: number;
-      cacheWrite: number;
-    }>;
-  };
-  contextWindow: number;
-  maxTokens: number;
-  thinkingLevelMap?: {
-    [x: string]: string | null;
-  };
-  compat?: {
-    [x: string]: any;
-  };
-  headers?: {
-    [x: string]: string;
-  };
-  [key: string]: any;
+// Derive all catalog data fields from the pinned upstream model, including
+// optional thinking-map entries and new input/cache metadata. The facade has
+// an arbitrary API string, so use Pi's merged compat shape instead of Model's
+// API-conditional compat (which narrows to never for Model<string>).
+export type PiBuiltinModelSnapshot = Omit<import("@earendil-works/pi-ai").Model<string>, "compat"> & {
+  compat?: import("@earendil-works/pi-ai/providers/compat-schema").ProviderCompat;
 };
 
 export type PiReasoningLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -153,7 +126,7 @@ export function getPiBuiltinModel(providerId: string, modelId: string): PiBuilti
   );
   return model === undefined
     ? undefined
-    : (cloneInteropValue(model)) as PiBuiltinModelSnapshot;
+    : cloneInteropValue(model);
 }
 
 let builtinProviderLabels: Map<string, string> | undefined;

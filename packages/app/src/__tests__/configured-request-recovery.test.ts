@@ -64,7 +64,7 @@ async function fixture(route: Route, phase: "pre-response" | "post-response", pi
   } });
   const models = builtinModels({ credentials: { read: async () => route === "anthropic" ? { type: "api_key", key: "fictional-unused-key" }
     : { type: "oauth", access: token, refresh: "fictional", expires: Date.now() + 3_600_000 } } as never, authContext: { env: () => undefined } as never });
-  const bodies: unknown[] = [];
+  const bodies: Array<{ thread?: { type: string; previous_message_id?: string }; messages?: unknown[] }> = [];
   const fetch = vi.fn(async (_input: unknown, init?: RequestInit) => {
     const body = init?.body as Uint8Array;
     bodies.push(JSON.parse(new Headers(init?.headers).get("content-encoding") === "zstd" ? zstdDecompressSync(body).toString() : String(body)));
@@ -113,7 +113,13 @@ it.each(["anthropic", "openai-codex"] as const)("configured %s parent recovers o
     expect(result.text).toBe("Fictional answer");
     expect(f.toolRuns()).toBe(1); expect(f.runs).toHaveBeenCalledOnce();
     expect(f.fetch).toHaveBeenCalledTimes(3); expect(f.requests).toHaveBeenCalledTimes(3);
-    expect(f.bodies[2]).toEqual(f.bodies[1]);
+    expect(f.requests.mock.calls[2]?.[1]).toEqual(f.requests.mock.calls[1]?.[1]);
+    if (route === "anthropic") {
+      // Pi clears failed native continuation state. Retry the same logical
+      // transcript as a full create, not a continuation of a failed reply.
+      expect(f.bodies[1]?.thread).toEqual({ type: "continue", previous_message_id: "fictional" });
+      expect(f.bodies[2]?.thread).toEqual({ type: "create" });
+    } else expect(f.bodies[2]).toEqual(f.bodies[1]);
     expect(JSON.stringify(f.bodies[2])).toContain("Fictional contents");
     expect(JSON.stringify(f.bodies[2])).not.toContain("partial-call");
     expect(f.requests.mock.calls.every(([, , options]) => options?.maxRetries === 0 && typeof options.fetch === "function")).toBe(true);
@@ -151,7 +157,15 @@ it.each(["anthropic", "openai-codex"] as const)("configured %s fallback chain re
   expect(f.results[0]?.failureKind).toBe("provider_unavailable");
   expect(f.results[0]?.failoverHistory).toHaveLength(1);
   expect(f.results[0]?.failoverHistory).toEqual([expect.objectContaining({ model: expect.objectContaining({ provider: route }) })]);
-  for (const body of f.bodies.slice(2)) expect(body).toEqual(f.bodies[1]);
+  for (const request of f.requests.mock.calls.slice(2)) expect(request[1]).toEqual(f.requests.mock.calls[1]?.[1]);
+  if (route === "anthropic") {
+    expect(f.bodies[1]?.thread).toEqual({ type: "continue", previous_message_id: "fictional" });
+    for (const body of f.bodies.slice(2)) {
+      expect(body.thread).toEqual({ type: "create" });
+      expect(body).toEqual(f.bodies[2]);
+      expect(JSON.stringify(body)).not.toContain("partial-call");
+    }
+  } else for (const body of f.bodies.slice(2)) expect(body).toEqual(f.bodies[1]);
 });
 
 it.each(["anthropic", "openai-codex"] as const)("configured %s cancellation during recovery stops before another send", async (route) => {

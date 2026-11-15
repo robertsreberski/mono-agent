@@ -643,7 +643,7 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["validate", "--auth"])).toThrow(/--auth/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
     expect(() => parseCliArgs(["init", "--effort", "turbo"])).toThrow(/--effort/u);
-    expect(() => parseCliArgs(["status", "--model", "openai-codex:gpt-5.5"])).toThrow(/--model.*mono-agent init/u);
+    expect(() => parseCliArgs(["status", "--model", "openai-codex:gpt-6.1-terra"])).toThrow(/--model.*mono-agent init/u);
     expect(() => parseCliArgs(["presets", "list", "--config", "agent.json"])).toThrow(/--config/u);
     expect(() => parseCliArgs(["init", "--follow"])).toThrow(/--follow/u);
     expect(() => parseCliArgs(["web", "status", "--port", "5050"])).toThrow(/web start/u);
@@ -927,7 +927,7 @@ describe("runCli validate --json", () => {
     try {
       const result = await captureCli(() => runCli([
         "status",
-        "--model", "openai-codex:gpt-5.5",
+        "--model", "openai-codex:gpt-6.1-terra",
         "--env-file", envPath,
       ]));
       expect(result.code).toBe(2);
@@ -942,12 +942,12 @@ describe("runCli validate --json", () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       memory: {
         path: "./memory", mode: "bujo", writeMode: "capture",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
-        llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" },
+        llm: { provider: "agent-host", model: "openai-codex:gpt-6.1-terra" },
         capture: { reconcileModel: "openai-codex:gpt-5.6-terra" },
       },
     }), "utf8");
@@ -971,7 +971,7 @@ describe("runCli validate --json", () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
     }), "utf8");
 

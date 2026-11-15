@@ -334,7 +334,7 @@ describe("validateMonoAgentFolder", () => {
     await mkdir(oldPath, { recursive: true });
     await writeFile(join(oldPath, "evidence"), "fictional evidence");
     await writeFile(join(dir, "IDENTITY.md"), "Fictional instructions");
-    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5", session: { root: "sessions" } },
+    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-6.1-terra", session: { root: "sessions" } },
       context: { identityPath: "IDENTITY.md" } });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false,
       allowFilesystemWrites: false, statusExecFile: async () => ({ stdout: "" }) });
@@ -348,7 +348,7 @@ describe("validateMonoAgentFolder", () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
       runtime: {
-        model: "openai-codex:gpt-5.5",
+        model: "openai-codex:gpt-6.1-terra",
         fallbacks: [{ model: "anthropic:claude-sonnet-4-6" }],
       },
       context: { identityPath: "./IDENTITY.md" },
@@ -548,7 +548,7 @@ describe("validateMonoAgentFolder", () => {
       mcpServers: { "ops-control": { command: "ops-control" } },
     }));
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       tools: { mcpConfigPath, continuationServers: ["ops-control"] },
       continuations: { port: 4381 },
@@ -572,7 +572,7 @@ describe("validateMonoAgentFolder", () => {
   it.each([false, true])("reports detached subagent configuration with persistence=%s", async (enabled) => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" }, tools: { allowedTools: ["Agent", "AgentManage"] },
+      runtime: { model: "openai-codex:gpt-6.1-terra" }, tools: { allowedTools: ["Agent", "AgentManage"] },
       context: { identityPath: "./IDENTITY.md" }, processJobs: { enabled: true },
       subagents: { enabled, instances: { enabled } },
     });
@@ -586,7 +586,7 @@ describe("validateMonoAgentFolder", () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const stateDir = join(dir, ".mono-agent", "process-jobs");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       processJobs: { enabled: true },
     });
@@ -613,7 +613,7 @@ describe("validateMonoAgentFolder", () => {
   it("surfaces the unsafe protection warning without putting a private path in the warning", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       sandbox: { mode: "off" },
       processJobs: { enabled: true, unsafeAllowUnprotectedState: true },
@@ -641,7 +641,7 @@ describe("validateMonoAgentFolder", () => {
     try {
       await symlink(outside, join(dir, ".mono-agent"));
       const configPath = await writeConfig({
-        runtime: { model: "openai-codex:gpt-5.5" },
+        runtime: { model: "openai-codex:gpt-6.1-terra" },
         context: { identityPath: "./IDENTITY.md" },
         processJobs: { enabled: true },
       });
@@ -682,7 +682,7 @@ describe("validateMonoAgentFolder", () => {
     }
     await writeFile(join(artifactsDir, "ignored-output"), "secret artifact contents\n", { mode: 0o600 });
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       processJobs: { enabled: true },
     });
@@ -716,7 +716,7 @@ describe("validateMonoAgentFolder", () => {
     })}\n`, { mode: 0o600 });
     await chmod(recordPath, 0o600);
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "./IDENTITY.md" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" }, context: { identityPath: "./IDENTITY.md" },
       processJobs: { enabled: true }, subagents: { enabled: true, instances: { enabled: true } },
       tools: { allowedTools: ["Agent", "AgentManage"] },
     });
@@ -735,7 +735,7 @@ describe("validateMonoAgentFolder", () => {
     await mkdir(recordsDir, { recursive: true, mode: 0o700 }); await chmod(stateDir, 0o700); await chmod(recordsDir, 0o700);
     const jobId = "55555555-5555-4555-8555-555555555555";
     await writeFile(join(recordsDir, `${jobId}.json`), `${JSON.stringify({ jobId, state: "interrupted", ...(kind ? { kind } : {}), subagentOwnership: { privateCanary: join(dir, "private") } })}\n`, { mode: 0o600 });
-    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "./IDENTITY.md" }, processJobs: { enabled: true } });
+    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-6.1-terra" }, context: { identityPath: "./IDENTITY.md" }, processJobs: { enabled: true } });
     const section = sectionById(await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false }), "process-jobs");
     expect(section.status).toBe("error"); expect(section.details.join("\n")).toContain("record child ownership is invalid");
     expect(section.details.join("\n")).not.toContain(join(dir, "private"));
@@ -751,7 +751,7 @@ describe("validateMonoAgentFolder", () => {
     const quarantineName = "transaction-2026-08-15T10-00-00.000Z-24242424-2424-4424-8424-242424242424.json";
     await writeFile(join(quarantineDir, quarantineName), "{\"unreplayable\":true}\n", { mode: 0o600 });
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       processJobs: { enabled: true },
     });
@@ -773,7 +773,7 @@ describe("validateMonoAgentFolder", () => {
       new Date("2026-08-15T10:00:00.000Z"),
     );
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       processJobs: { enabled: true },
     });
@@ -788,7 +788,7 @@ describe("validateMonoAgentFolder", () => {
   it("fails continuation doctor validation for ephemeral configured ports", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: { port: 0 },
     });
@@ -846,7 +846,7 @@ describe("validateMonoAgentFolder", () => {
     }), { mode: 0o600 });
     await chmod(ledgerPath, 0o600);
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -883,7 +883,7 @@ describe("validateMonoAgentFolder", () => {
       },
     }), { mode: 0o600 });
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -927,7 +927,7 @@ describe("validateMonoAgentFolder", () => {
       records: { [recordId]: record },
     }), { mode: 0o600 });
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: { retention: { terminalMaxAgeMs: Number.MAX_SAFE_INTEGER } },
     });
@@ -994,7 +994,7 @@ describe("validateMonoAgentFolder", () => {
     }), { mode: 0o600 });
     await chmod(manifestPath, 0o600);
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -1083,7 +1083,7 @@ describe("validateMonoAgentFolder", () => {
       },
     ];
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -1109,7 +1109,7 @@ describe("validateMonoAgentFolder", () => {
     const { manifestPath } = await seedDoctorV3Store(stateDir, false);
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -1172,7 +1172,7 @@ describe("validateMonoAgentFolder", () => {
     await writeFile(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
     await chmod(manifestPath, 0o600);
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -1350,7 +1350,7 @@ describe("validateMonoAgentFolder", () => {
     const stateDir = join(dir, ".mono-agent", "continuations");
     await seedDoctorV3Store(stateDir, true);
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -1475,7 +1475,7 @@ describe("validateMonoAgentFolder", () => {
       activatedAt: "2026-07-14T12:01:00.000Z",
     }), { mode: 0o600 });
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -1494,7 +1494,7 @@ describe("validateMonoAgentFolder", () => {
     await mkdir(recordsV3, { recursive: true, mode: 0o700 });
     await chmod(stateDir, 0o700);
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -1555,7 +1555,7 @@ describe("validateMonoAgentFolder", () => {
     await writeFile(recordTemporary, "incomplete\n", { mode: 0o600 });
     await writeFile(markerTemporary, "incomplete\n", { mode: 0o600 });
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -1582,7 +1582,7 @@ describe("validateMonoAgentFolder", () => {
     const stateDir = join(dir, ".mono-agent", "continuations");
     await seedDoctorV3Store(stateDir, true);
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -1738,7 +1738,7 @@ describe("validateMonoAgentFolder", () => {
     }), { mode: 0o600 });
     await chmod(manifestPath, 0o600);
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -1801,7 +1801,7 @@ describe("validateMonoAgentFolder", () => {
     }), { mode: 0o600 });
     await chmod(manifestPath, 0o600);
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       continuations: {},
     });
@@ -1816,7 +1816,7 @@ describe("validateMonoAgentFolder", () => {
   it("reports adapter-derived send tools when enabled adapter configs are valid", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       tools: { allowedTools: ["SlackSendMessage", "TelegramSendMessage"] },
       slack: {
@@ -1842,7 +1842,7 @@ describe("validateMonoAgentFolder", () => {
 
   it("fails when the identity file is missing", async () => {
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
     });
 
@@ -1857,7 +1857,7 @@ describe("validateMonoAgentFolder", () => {
   it("fails when a selected skill has no SKILL.md", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md", skillsRoot: ".", selectedSkills: ["missing-skill"] },
     });
 
@@ -1870,7 +1870,7 @@ describe("validateMonoAgentFolder", () => {
   it("treats the retired configuration selector as nonfatal waiting without loading a skills root", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: {
         identityPath: "./IDENTITY.md",
         selectedSkills: ["MONO-AGENT-CONFIGURE"],
@@ -1896,7 +1896,7 @@ describe("validateMonoAgentFolder", () => {
     await writeFile(join(dir, "skills", "mono-agent-memory", "SKILL.md"), "# Memory\n");
     await writeFile(join(dir, "skills", "mono-agent-configure", "SKILL.md"), "RETIRED_BODY_MUST_NOT_LOAD\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: {
         identityPath: "./IDENTITY.md",
         skillsRoot: "./skills",
@@ -1929,7 +1929,7 @@ describe("validateMonoAgentFolder", () => {
       embeddingModel: "openai:text-embedding-3-small",
     });
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       memory: {
         mode: "journal",
@@ -1960,7 +1960,7 @@ describe("validateMonoAgentFolder", () => {
       embeddingModel: "openai:text-embedding-3-small",
     });
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       memory: {
         mode: "journal",
@@ -1992,7 +1992,7 @@ describe("validateMonoAgentFolder", () => {
       embeddingModel: "ollama:nomic-embed-text:v1.5",
     });
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       memory: {
         mode: "bujo",
@@ -2019,7 +2019,7 @@ describe("validateMonoAgentFolder", () => {
   it("silently ignores stale core memory env keys without requiring a memory path", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -2046,7 +2046,7 @@ describe("validateMonoAgentFolder", () => {
   it("warns non-fatally when a channel secret (bot token) is sourced from JSON", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       telegram: { enabled: true, botToken: "123:json-bot-token", allowAllChats: true },
     });
@@ -2065,7 +2065,7 @@ describe("validateMonoAgentFolder", () => {
   it("warns when an external A2A driver reports JSON bearer tokens", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       channels: {
         plugins: [
@@ -2105,7 +2105,7 @@ describe("validateMonoAgentFolder", () => {
   it("errors on an invalid per-trigger model/effort override at validate time", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       cron: {
         jobs: [
@@ -2130,7 +2130,7 @@ describe("validateMonoAgentFolder", () => {
     dir = await realpath(dir);
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       cron: {
         jobs: [{ id: "digest", enabled: true, expression: "0 7 * * *", prompt: "Summarize." }],
@@ -2152,7 +2152,7 @@ describe("validateMonoAgentFolder", () => {
   it("rejects unknown exact Pi models in static webhook and cron overrides", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       webhook: {
         enabled: true,
@@ -2200,7 +2200,7 @@ describe("validateMonoAgentFolder", () => {
     // daemon log and launchd's captured stdout.
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       cron: {
         jobs: [{
@@ -2250,7 +2250,7 @@ describe("validateMonoAgentFolder", () => {
             }],
           };
       const configPath = await writeConfig({
-        runtime: { model: "openai-codex:gpt-5.5" },
+        runtime: { model: "openai-codex:gpt-6.1-terra" },
         context: { identityPath: "./IDENTITY.md" },
         [channel]: { enabled: true, ...disabledEntry },
       });
@@ -2324,7 +2324,7 @@ describe("validateMonoAgentFolder", () => {
   it("accepts valid per-trigger model/effort overrides", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       cron: {
         jobs: [
@@ -2348,7 +2348,7 @@ describe("validateMonoAgentFolder", () => {
   it("allows a static Pi-to-Claude trigger override when the configured sandbox is off", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       sandbox: { mode: "off" },
       webhook: {
@@ -2372,7 +2372,7 @@ describe("validateMonoAgentFolder", () => {
   it("reports an effective native sandbox when the engine is available", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       sandbox: { mode: "native", fallback: "fail-closed" },
     });
@@ -2486,7 +2486,7 @@ describe("validateMonoAgentFolder", () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
       runtime: {
-        model: "openai-codex:gpt-5.5",
+        model: "openai-codex:gpt-6.1-terra",
       },
       context: { identityPath: "./IDENTITY.md" },
       ...(sandbox === undefined ? {} : { sandbox }),
@@ -2504,7 +2504,7 @@ describe("validateMonoAgentFolder", () => {
 
   it.each([undefined, { mode: "off" }])("predicts required protection for enabled, uninitialized jobs without creating state (%j)", async (sandbox) => {
     await writeFile(join(dir, "IDENTITY.md"), "Fictional identity");
-    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5" },
+    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" }, processJobs: { enabled: true },
       ...(sandbox ? { sandbox } : {}) });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false,
@@ -2544,7 +2544,7 @@ describe("validateMonoAgentFolder", () => {
   it("warns non-fatally when unsafe sandbox fallback is active", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       sandbox: {
         mode: "native",
@@ -2578,7 +2578,7 @@ describe("validateMonoAgentFolder", () => {
   it("reports fail-closed sandbox unavailability without failing validation", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       sandbox: { mode: "native", fallback: "fail-closed" },
     });
@@ -2600,7 +2600,7 @@ describe("validateMonoAgentFolder", () => {
   it("does not warn about a channel secret supplied via env", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       telegram: { enabled: true, allowAllChats: true },
     });
@@ -2863,7 +2863,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     await writeFile(
       configPath,
       JSON.stringify({
-        runtime: { model: "openai-codex:gpt-5.5" },
+        runtime: { model: "openai-codex:gpt-6.1-terra" },
         context: { identityPath: "./IDENTITY.md" },
         ...extra,
       }),
@@ -3282,7 +3282,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
         path: dir,
         writeMode: "append-host-summary",
         embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
-        llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" },
+        llm: { provider: "agent-host", model: "openai-codex:gpt-6.1-terra" },
       },
     });
 
@@ -3291,7 +3291,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     const memory = sectionById(report, "memory");
     expect(memory.status).toBe("ok");
     const text = memory.details.join("\n");
-    expect(text).toContain("agent-host:openai-codex:gpt-5.5");
+    expect(text).toContain("agent-host:openai-codex:gpt-6.1-terra");
     expect(text).not.toMatch(/pull|not pulled|WARN/iu);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -3304,7 +3304,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
         path: dir,
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
-        llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" },
+        llm: { provider: "agent-host", model: "openai-codex:gpt-6.1-terra" },
       },
     });
 
@@ -3313,8 +3313,8 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     const memory = sectionById(report, "memory");
     expect(memory.status).toBe("ok");
     const text = memory.details.join("\n");
-    expect(text).toContain("agent-host:openai-codex:gpt-5.5");
-    expect(text).not.toMatch(/openai-codex:gpt-5\.5.*pull|not pulled|WARN/iu);
+    expect(text).toContain("agent-host:openai-codex:gpt-6.1-terra");
+    expect(text).not.toMatch(/openai-codex:gpt-6\.1-terra.*pull|not pulled|WARN/iu);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -3759,7 +3759,7 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
       embeddingModel: "ollama:nomic-embed-text:v1.5",
     });
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       memory: {
         mode: "bujo",
@@ -3787,7 +3787,7 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
     const blocker = join(dir, "blocker");
     await writeFile(blocker, "x");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       memory: {
         mode: "bujo",
@@ -3813,7 +3813,7 @@ describe("validateMonoAgentFolder — web tools", () => {
   async function writeWebToolsConfig(web: Record<string, unknown>): Promise<string> {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     return writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       tools: { web },
     });
@@ -4174,7 +4174,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
       },
     }));
     const configPath = await writeCredConfig({
-      runtime: { model: "ollama:qwen3.6", fallbacks: [{ model: "openai-codex:gpt-5.5" }] },
+      runtime: { model: "ollama:qwen3.6", fallbacks: [{ model: "openai-codex:gpt-6.1-terra" }] },
       providers: { piAuthPath: authPath },
     });
 
@@ -4190,7 +4190,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(creds.status).toBe("waiting");
     const text = creds.details.join("\n");
     expect(text).toMatch(/Primary ollama:qwen3\.6: no Pi credentials found for provider `ollama` in the auth store/u);
-    expect(text).toMatch(/Fallback openai-codex:gpt-5\.5: OAuth credentials for `openai-codex` present \(token valid/u);
+    expect(text).toMatch(/Fallback openai-codex:gpt-6\.1-terra: OAuth credentials for `openai-codex` present \(token valid/u);
     expect(report.ok).toBe(false);
   });
 
@@ -4249,7 +4249,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     });
     const configPath = await writeCredConfig({
       runtime: {
-        model: "openai-codex:gpt-5.5",
+        model: "openai-codex:gpt-6.1-terra",
         fallbacks: [{ model: "opencode-go:not-in-the-catalog" }],
       },
       providers: { piAuthPath: authPath },
@@ -4294,7 +4294,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
 
   it("rejects a disabled providers.local model row on an agent-host memory LLM", async () => {
     const configPath = await writeCredConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       providers: {
         local: [{
           id: "local-compat",
@@ -4503,7 +4503,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = await writeAuthStore({ "openai-codex": { type: "oauth", expires: PAST, refresh: "r" } });
     await writeModelsStore(["opencode-go"]);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k3", fallbacks: [{ model: "openai-codex:gpt-5.5" }] },
+      runtime: { model: "opencode-go:kimi-k3", fallbacks: [{ model: "openai-codex:gpt-6.1-terra" }] },
       providers: { piAuthPath: authPath },
     });
 
@@ -4526,7 +4526,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = await writeAuthStore({ anthropic: { type: "oauth", expires: FUTURE } });
     await writeModelsStore(["opencode-go"]);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k3", fallbacks: [{ model: "openai-codex:gpt-5.5" }] },
+      runtime: { model: "opencode-go:kimi-k3", fallbacks: [{ model: "openai-codex:gpt-6.1-terra" }] },
       providers: { piAuthPath: authPath },
     });
 
@@ -4550,7 +4550,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
         path: dir,
         writeMode: "append-host-summary",
         embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
-        llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" },
+        llm: { provider: "agent-host", model: "openai-codex:gpt-6.1-terra" },
       },
     });
 
@@ -4558,7 +4558,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
 
     const creds = sectionById(report, "credentials");
     expect(creds.status).toBe("waiting");
-    expect(creds.details.join("\n")).toMatch(/Memory LLM openai-codex:gpt-5\.5: stored OAuth credential for `openai-codex` has no usable access or refresh token/u);
+    expect(creds.details.join("\n")).toMatch(/Memory LLM openai-codex:gpt-6\.1-terra: stored OAuth credential for `openai-codex` has no usable access or refresh token/u);
   });
 
   it("flags missing credentials for the capture reconcile model separately from the capture LLM", async () => {
@@ -4571,21 +4571,21 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
         mode: "bujo", path: dir, writeMode: "capture",
         embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
         llm: { provider: "ollama", model: "qwen3.6:latest" },
-        capture: { reconcileModel: "openai-codex:gpt-5.5" },
+        capture: { reconcileModel: "openai-codex:gpt-6.1-terra" },
       },
     });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     const creds = sectionById(report, "credentials");
     expect(creds.status).toBe("waiting");
     expect(creds.details.join("\n"))
-      .toMatch(/Capture reconcile model openai-codex:gpt-5\.5: no Pi credentials found for provider `openai-codex`/u);
+      .toMatch(/Capture reconcile model openai-codex:gpt-6\.1-terra: no Pi credentials found for provider `openai-codex`/u);
     expect(creds.details.join("\n")).not.toContain("Memory LLM openai-codex");
   });
 
   it("ignores credentials and model resolution for a globally disabled webhook", async () => {
     const authPath = await writeAuthStore({});
     const configPath = await writeCredConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       providers: { piAuthPath: authPath },
       webhook: {
         enabled: false,
@@ -4777,7 +4777,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
   ): Promise<string> {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     return writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       tools,
       ...extra,
@@ -4844,10 +4844,10 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
 
   it("validates allowed subagent model routes", async () => {
     const configPath = await writeToolsConfig({ allowedTools: ["Read", "Agent"] }, {
-      subagents: { enabled: true, models: [{ name: "helper-model", model: "openai-codex:gpt-5.5" }] },
+      subagents: { enabled: true, models: [{ name: "helper-model", model: "openai-codex:gpt-6.1-terra" }] },
     });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-    expect(sectionById(report, "tools").details.join("\n")).toContain('Subagent model "helper-model" openai-codex:gpt-5.5 runs on');
+    expect(sectionById(report, "tools").details.join("\n")).toContain('Subagent model "helper-model" openai-codex:gpt-6.1-terra runs on');
   });
 
   it("rejects unresolved allowed subagent models", async () => {
@@ -4861,7 +4861,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
 
   it("rejects a model alias colliding with a profile before readiness", async () => {
     const configPath = await writeToolsConfig({ allowedTools: ["Read", "Agent"] }, {
-      subagents: { enabled: true, models: [{ name: "helper", model: "openai-codex:gpt-5.5" }],
+      subagents: { enabled: true, models: [{ name: "helper", model: "openai-codex:gpt-6.1-terra" }],
         definitions: [{ name: "helper", description: "d", prompt: "p" }],
       },
     });
@@ -4903,13 +4903,13 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
 
   it("reports each external MCP diagnostic once without unconditional tools prose", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Fictional Agent\n");
-    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "./IDENTITY.md" }, tools: { allowedTools: ["Read"], mcpConfigPath: "./missing-mcp.json" } });
+    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-6.1-terra" }, context: { identityPath: "./IDENTITY.md" }, tools: { allowedTools: ["Read"], mcpConfigPath: "./missing-mcp.json" } });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false, allowFilesystemWrites: false });
     expect(sectionById(report, "mcp").status).toBe("error");
     expect(sectionById(report, "tools").status).toBe("error");
     expect(report.sections.flatMap((section) => section.details).filter((line) => line.includes("MCP config file is missing"))).toHaveLength(1);
     expect(sectionById(report, "tools").details).toContain("See MCP servers for external server configuration findings.");
-    const plainPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "./IDENTITY.md" }, tools: { allowedTools: ["Read"] } });
+    const plainPath = await writeConfig({ runtime: { model: "openai-codex:gpt-6.1-terra" }, context: { identityPath: "./IDENTITY.md" }, tools: { allowedTools: ["Read"] } });
     const plain = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath: plainPath, liveness: false });
     expect(sectionById(plain, "mcp")).toMatchObject({ status: "disabled", details: [] });
     expect(sectionById(plain, "tools").details.join("\n")).not.toMatch(/External MCP tools|See MCP servers/);
@@ -4921,7 +4921,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
       mcpServers: { remote: { type: "http", url: "https://mcp.example.test" } },
     }));
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       tools: {
         allowedTools: ["*"],
@@ -4947,7 +4947,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
       },
     }));
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       tools: {
         allowedTools: ["*"],
@@ -4975,7 +4975,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
       },
     }));
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       tools: {
         allowedTools: ["*"],
@@ -5010,7 +5010,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
       },
     }));
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       tools: {
         allowedTools: ["*"],
