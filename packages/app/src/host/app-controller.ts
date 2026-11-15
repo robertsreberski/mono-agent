@@ -159,12 +159,13 @@ export async function startVerifiedManagedMonoAgentApp(
   options: MonoAgentAppOptions,
   verification: ManagedRuntimeLaunchVerification,
 ): Promise<MonoAgentApp> {
-  return await startMonoAgentAppInternal(options, [verification.installRoot]);
+  return await startMonoAgentAppInternal(options, [verification.installRoot], verification.provenanceDetail);
 }
 
 async function startMonoAgentAppInternal(
   options: MonoAgentAppOptions,
   trustedRuntimeReadRoots: readonly string[],
+  verifiedRuntimeProvenanceDetail?: string,
 ): Promise<MonoAgentApp> {
   const startupStartedAt = performance.now();
   const startupPhases: Record<string, number> = {};
@@ -211,6 +212,7 @@ async function startMonoAgentAppInternal(
       ...(options.activityTracker === undefined ? {} : { activityTracker: options.activityTracker }),
       ...(options.restartAuthority === undefined ? {} : { restartAuthority: options.restartAuthority }),
       trustedRuntimeReadRoots,
+      ...(verifiedRuntimeProvenanceDetail === undefined ? {} : { verifiedRuntimeProvenanceDetail }),
     });
     const startedController = controller;
 
@@ -284,6 +286,8 @@ interface MonoAgentAppControllerInput {
   readonly activityTracker?: WorkerActivityTracker;
   readonly restartAuthority?: TuiRestartAuthority;
   readonly trustedRuntimeReadRoots: readonly string[];
+  /** Launch-verified runtime provenance of a managed worker; console validations reuse it. */
+  readonly verifiedRuntimeProvenanceDetail?: string;
 }
 
 const DEFAULT_SANDBOX_STATUS: SandboxStatus = sandboxStatusFromState({
@@ -317,6 +321,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly activityTracker: WorkerActivityTracker;
   readonly restartAuthority: TuiRestartAuthority | undefined;
   readonly trustedRuntimeReadRoots: readonly string[];
+  readonly verifiedRuntimeProvenanceDetail: string | undefined;
   readonly agentRootOwnership: AgentRootOwnership;
   private agentRootOwnershipReleased = false;
   private trustedSrtSandboxEngine: SandboxEngine | undefined;
@@ -447,6 +452,7 @@ export class MonoAgentAppController implements MonoAgentApp {
       ...(input.memoryHealthWorkerTimeoutMs === undefined ? {} : { timeoutMs: input.memoryHealthWorkerTimeoutMs }),
     });
     this.trustedRuntimeReadRoots = [...input.trustedRuntimeReadRoots];
+    this.verifiedRuntimeProvenanceDetail = input.verifiedRuntimeProvenanceDetail;
     for (const driver of input.drivers) {
       this.statuses.set(driver.id, {
         kind: "waiting_for_config",

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix the console Capabilities page taking about ten seconds to load on a
+  managed install, and every console Enable, Undo or credential save paying the
+  same delay per check. Console checks now reuse the managed runtime
+  verification from `mono-agent start` (or verify it at most once per agent
+  process) instead of re-hashing the whole runtime on every read. While a read
+  is pending the page says it is checking the agent's configuration.
+  `mono-agent validate` and `mono-agent doctor` still verify on every run.
+
 ## 0.27.0 — Long-conversation continuity (2026-11-15)
 
 - Long-conversation continuity is on by default and passes its end-to-end

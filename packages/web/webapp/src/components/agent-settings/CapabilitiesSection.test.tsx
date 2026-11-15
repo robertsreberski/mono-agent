@@ -49,6 +49,15 @@ describe("Capabilities section", () => {
     expect(screen.getByText(/Supported cards also offer write-only credential entry/)).toBeVisible();
     expect(screen.queryByText(/durable configuration inputs|loaded runtime/)).toBeNull();
   });
+  it("announces a pending read as progress so a multi-second check does not look hung", async () => {
+    let resolve!: (value: typeof capabilitySnapshot) => void;
+    vi.spyOn(api, "capabilitySetup").mockReturnValue(new Promise((done) => { resolve = done; }));
+    render(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true })} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Reading capability status… Checking this agent’s configuration; this can take a few seconds.");
+    await act(async () => resolve(capabilitySnapshot));
+    await screen.findByRole("heading", { name: "Memory" });
+    expect(screen.queryByText(/this can take a few seconds/)).toBeNull();
+  });
   it("does not request status from offline or older agents", () => {
     const read = vi.spyOn(api, "capabilitySetup");
     const view = render(<CapabilitiesSection agent={agent("old")} />);

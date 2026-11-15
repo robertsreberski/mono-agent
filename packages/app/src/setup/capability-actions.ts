@@ -11,6 +11,7 @@ import {
 import { isAgentToolAllowed, isAgentToolDenied, isAllowAllTools } from "../tools/known-tools.js";
 import { validateMonoAgentFolder } from "../doctor/doctor.js";
 import type { ValidateMonoAgentFolderOptions } from "../doctor/options.js";
+import { processRuntimeProvenanceDetail, type RuntimeProvenanceSource } from "../provenance/process-runtime-provenance.js";
 import { CAPABILITY_MODULES } from "./modules/catalog.js";
 
 const processIdentity = () => ({ pid: process.pid, startedAt: new Date(performance.timeOrigin).toISOString() });
@@ -79,9 +80,15 @@ const agentAllowedByRawPolicy = (json: SettingsJson): boolean => {
 
 export function createCapabilityActionsService(
   input: ValidateMonoAgentFolderOptions,
-  dependencies: { readonly loadedState?: () => { readonly memory: boolean; readonly cron: boolean; readonly subagents?: boolean }; readonly log?: (message: string) => void } = {},
+  dependencies: {
+    readonly loadedState?: () => { readonly memory: boolean; readonly cron: boolean; readonly subagents?: boolean };
+    readonly log?: (message: string) => void;
+    /** Informational runtime provenance; defaults to the process-lifetime memo, never a per-validation closure re-hash. */
+    readonly runtimeProvenanceDetail?: RuntimeProvenanceSource;
+  } = {},
 ): CapabilityActionsService {
   const identity = processIdentity();
+  const runtimeProvenance = dependencies.runtimeProvenanceDetail ?? processRuntimeProvenanceDetail;
   const assertIdentity = (request: CapabilityActionInput): void => {
     if (request.process.pid !== identity.pid || request.process.startedAt !== identity.startedAt) fail("capability_action_conflict");
   };
@@ -90,7 +97,10 @@ export function createCapabilityActionsService(
     // Driver loaders can bind operator registries. Never validate a candidate through live driver instances.
     const { drivers: _liveDrivers, ...validationInput } = input;
     const candidateInput = { ...validationInput, configPath: candidatePath };
-    const report = await validateMonoAgentFolder({ ...candidateInput, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
+    const report = await validateMonoAgentFolder({
+      ...candidateInput, allowFilesystemWrites: false, liveness: false, subprocessProbes: false,
+      verifiedRuntimeProvenanceDetail: input.verifiedRuntimeProvenanceDetail ?? await runtimeProvenance(),
+    });
     if (!report.structurallyValid) invalid();
     // Cron's loader owns jobs-dir and inline validation even for embedded hosts without drivers.
     const cron = await loadCronAdapterConfig({ env: input.env, json: candidate, cwd: input.cwd });

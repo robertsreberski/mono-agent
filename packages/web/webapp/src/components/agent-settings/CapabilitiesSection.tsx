@@ -143,7 +143,7 @@ export function CapabilitiesSection({ agent, restart = null }: { readonly agent:
   if (agent.status === "degraded") return <>{credentialWarning}<div className="settings-notice">This agent’s connection is degraded. Capability status cannot be confirmed; check the connection and try again. No readiness is assumed.</div></>;
   if (agent.supportsCapabilitySetup !== true) return <>{credentialWarning}<div className="settings-notice">This agent version doesn't report capabilities. Update the agent to view readiness and manual setup steps.</div></>;
   const errorNotice = <div className="settings-notice">Capability validation is unavailable. {snapshot !== null && "Showing the last report below, not a fresh check. "}Run <code>mono-agent validate</code> in the agent folder. <button className="settings-button" type="button" onClick={() => setRevision((value) => value + 1)}>Retry capability status</button></div>;
-  if (snapshot === null) return <>{credentialWarning}{error ? errorNotice : <p>Reading capability status…</p>}</>;
+  if (snapshot === null) return <>{credentialWarning}{error ? errorNotice : <p role="status">Reading capability status… Checking this agent’s configuration; this can take a few seconds.</p>}</>;
   return <>
     {error && errorNotice}
     <p className="settings-section-summary">Explore optional features. Eligible Memory Lite, cron controls and subagent delegation can be previewed and saved. A recovery panel offers one-level Undo when a console save is available. Supported cards also offer write-only credential entry; other setup uses manual instructions.</p>

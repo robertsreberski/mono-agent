@@ -4,6 +4,7 @@ import { loadAppCoreConfig } from "../composition/app-config.js";
 import { validateMonoAgentFolder } from "../doctor/doctor.js";
 import type { ValidateMonoAgentFolderOptions } from "../doctor/options.js";
 import type { ValidationReport } from "../doctor/doctor-types.js";
+import { processRuntimeProvenanceDetail, type RuntimeProvenanceSource } from "../provenance/process-runtime-provenance.js";
 import { CAPABILITY_MODULES } from "./modules/catalog.js";
 import { resolveModuleInputs, type CapabilityModule } from "./modules/types.js";
 
@@ -94,6 +95,8 @@ export function createCapabilityStatusService(
     readonly now?: () => number;
     readonly timeoutMs?: number;
     readonly hostPreflight?: () => CapabilitySetupSnapshot["hostPreflight"];
+    /** Informational runtime provenance; defaults to the process-lifetime memo, never a per-read closure re-hash. */
+    readonly runtimeProvenanceDetail?: RuntimeProvenanceSource;
   } = {},
 ): CapabilitySetupService {
   const now = dependencies.now ?? Date.now;
@@ -103,9 +106,13 @@ export function createCapabilityStatusService(
   let cachedUntil = 0;
   let cachedFailure: Error | undefined;
   const validate = dependencies.validate ?? validateMonoAgentFolder;
+  const runtimeProvenance = dependencies.runtimeProvenanceDetail ?? processRuntimeProvenanceDetail;
   const read = async (): Promise<CapabilitySetupSnapshot> => {
     const before = await readFile(input.configPath);
-    const report = await validate({ ...input, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
+    const report = await validate({
+      ...input, allowFilesystemWrites: false, liveness: false, subprocessProbes: false,
+      verifiedRuntimeProvenanceDetail: input.verifiedRuntimeProvenanceDetail ?? await runtimeProvenance(),
+    });
     const config = await loadAppCoreConfig(input, { warnOnDeprecatedConfig: false, warnOnDuplicateConfig: false }).catch(() => undefined);
     const after = await readFile(input.configPath);
     if (!before.equals(after)) throw new Error("Configuration changed during validation.");
