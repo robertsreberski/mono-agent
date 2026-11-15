@@ -1396,7 +1396,7 @@ the pack arm calls `ConversationHistory`. Content-free pack receipts retain
 section counts, omissions, token estimates and uncertain overlap for inspection.
 Source or headroom failures invalidate the pack sample; expected budget overflow
 is recorded, not treated as a missing treatment. Ordinary request usage includes
-pack input tokens. The planning estimate allows the full 8k pack on each reader
+pack input tokens. The planning estimate allows a full 16k-ceiling pack on each reader
 request, with the same retrieval allowance as store-only and no upkeep call. No quality improvement is claimed from offline runs, and the
 paid paired comparison is a separate operator action.
 

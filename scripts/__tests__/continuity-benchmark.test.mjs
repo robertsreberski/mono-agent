@@ -271,7 +271,10 @@ describe("continuity arms and plan", () => {
     expect(estimateCost(pilot, traces, {}).status).toBe("unknown_price");
     const paired = makePlan({ traces, sha256, arms: ["native", "cold-rebuild", "continuity-store", "continuity-pack-cold", "continuity-pack-boundary"] });
     const pairedEstimate = estimateCost(paired, traces, { [paired.reader.model]: { input: 0.1, output: 0.5, cacheRead: 0.01 } });
-    expect(pairedEstimate.arms["continuity-pack-cold"].inputTokens - pairedEstimate.arms["continuity-store"].inputTokens).toBe(probes * 3 * 8000);
+    // The planning pack equals the shipping 16k ceiling (built conversation constant).
+    const { CONTINUITY_PACK_MAX_TOKENS } = await import("../../packages/conversation/dist/continuity/render-fit.js");
+    expect(CONTINUITY_PACK_MAX_TOKENS).toBe(16000);
+    expect(pairedEstimate.arms["continuity-pack-cold"].inputTokens - pairedEstimate.arms["continuity-store"].inputTokens).toBe(probes * 3 * CONTINUITY_PACK_MAX_TOKENS);
     expect(pairedEstimate.arms["continuity-pack-boundary"]).toEqual(pairedEstimate.arms["continuity-pack-cold"]);
     expect(pilot.reader).toEqual({ model: "openai-codex:gpt-6-luna", effort: "low" });
     expect(pilot.judge).toMatchObject({ model: "openai-codex:gpt-6.1-sol", scope: "next_action" });
