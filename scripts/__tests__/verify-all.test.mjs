@@ -294,10 +294,10 @@ describe("verify-all", () => {
     expect(Object.values(workflow.jobs).filter((job) => job.name === "Required verdict")).toHaveLength(1);
   });
 
-  it.each(["verify", "checks-and-packaging"])("pins %s to 60 minutes and an independent exact Node matrix", (jobId) => {
+  it.each(["verify", "checks-and-packaging"])("pins %s to 90 minutes and an independent exact Node matrix", (jobId) => {
     for (const [original, replacement] of [
-      ["timeout-minutes: 60", "timeout-minutes: 61"],
-      ["timeout-minutes: 60", "timeout-minutes: 59"],
+      ["timeout-minutes: 90", "timeout-minutes: 91"],
+      ["timeout-minutes: 90", "timeout-minutes: 89"],
       ['node-version: ["24.18.0"]', 'node-version: ["24"]'],
       ["    strategy:", "    needs: verify\n    strategy:"],
       ["    strategy:", "    if: false\n    strategy:"],
@@ -561,11 +561,11 @@ describe("verify-all", () => {
   it("rejects unmodeled execution fields on the workflow and verify job", () => {
     const source = readCiWorkflow();
     const jobOriginal = [
-      "    timeout-minutes: 60",
+      "    timeout-minutes: 90",
       "    strategy:",
     ].join("\n");
     const jobDefaults = [
-      "    timeout-minutes: 60",
+      "    timeout-minutes: 90",
       "    \"defaults\" : { run: { shell: bash } }",
       "    strategy:",
     ].join("\n");
@@ -1161,8 +1161,8 @@ function parseCiMatrixJob(job, jobId) {
   if (requireScalarField(jobFields, "runs-on", context) !== "ubuntu-latest") {
     throw new Error(`The ${context} must run on ubuntu-latest.`);
   }
-  if (requireScalarField(jobFields, "timeout-minutes", context) !== 60) {
-    throw new Error(`The CI ${jobId} job timeout must remain 60 minutes.`);
+  if (requireScalarField(jobFields, "timeout-minutes", context) !== 90) {
+    throw new Error(`The CI ${jobId} job timeout must remain 90 minutes.`);
   }
 
   const strategy = requireMapField(jobFields, "strategy", context);
