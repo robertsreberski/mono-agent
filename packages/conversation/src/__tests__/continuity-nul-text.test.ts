@@ -8,6 +8,7 @@ import { ToolHistoryWriter } from "../tool-history/writer.js";
 import { ToolHistoryReader } from "../tool-history/reader.js";
 import { continuityGenerationId, continuityRecordId } from "../tool-history/continuity-storage.js";
 import { progressSource } from "../continuity/frontier.js";
+import { continuityRecordColumns } from "../tool-history/sqlite-text.js";
 import { selectLedgerSources, validateLedgerOutput, type LedgerSelection } from "../continuity/ledger.js";
 
 // node:sqlite in Node 24.15 (the supported floor) decoded TEXT result columns
@@ -70,5 +71,13 @@ describe("retained continuity text with embedded NUL characters", () => {
     const generation = validateLedgerOutput(output(selection), selection, scope);
     await writer.publishLedger(generation);
     expect(reader.ledger(scope)?.records.map(record => record.text)).toEqual([TEXT]);
+  });
+  it("selects exactly the continuity_records columns that r.* would", async () => {
+    const { reader } = await fixture();
+    const db = new DatabaseSync(reader.databasePath, { readOnly: true });
+    try {
+      const columns = (db.prepare("PRAGMA table_info(continuity_records)").all() as { name: string }[]).map(column => column.name);
+      expect(continuityRecordColumns().split(",").map(column => column.split(/[ .]/u).at(-1))).toEqual(columns);
+    } finally { db.close(); }
   });
 });
