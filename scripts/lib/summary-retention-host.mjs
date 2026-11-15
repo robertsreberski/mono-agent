@@ -65,7 +65,28 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
     if (preparedCold) for (const entry of sourceJournals) await rm(entry.path);
     const targetId = preparedCold ? "retention" : "cold", targetKey = `faux:${targetId}`;
     const faux = ai.fauxProvider({ models: [{ id: targetId, contextWindow: 100000, maxTokens: 10000 }], tokensPerSecond: 1000000 });
-    const models = ai.createModels(); models.setProvider(faux.provider);
+    const models = ai.createModels();
+    // This frozen synthetic pressure scenario was calibrated against Pi 1.2's
+    // faux accounting. Keep that external transport input, not a lower trigger
+    // or a changed protected-summary assertion, after Pi 1.5 fixed faux totals.
+    const stream = faux.provider.streamSimple;
+    models.setProvider({ ...faux.provider, streamSimple(model, context, options) {
+      const inner = stream(model, context, options), outer = ai.createAssistantMessageEventStream();
+      const historicalUsage = value => {
+        const copy = structuredClone(value);
+        if (copy.usage) { copy.usage.input += copy.usage.cacheWrite; copy.usage.totalTokens += copy.usage.cacheWrite; }
+        return copy;
+      };
+      void (async () => {
+        for await (const event of inner) {
+          const copy = { ...event };
+          for (const key of ["partial", "message", "error"]) if (key in copy) copy[key] = historicalUsage(copy[key]);
+          outer.push(copy);
+        }
+        outer.end(historicalUsage(await inner.result()));
+      })();
+      return outer;
+    } });
     const contexts = [], events = [];
     faux.setResponses([context => { contexts.push(structuredClone(context)); return ai.fauxAssistantMessage([ai.fauxText("Fictional resumed answer.")]); },
       context => { contexts.push(structuredClone(context)); return ai.fauxAssistantMessage([ai.fauxText(automaticRefusal ? "Lossy fictional automatic summary." : "Fictional restarted answer.")]); },

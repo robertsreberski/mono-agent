@@ -1,3 +1,4 @@
+import { codexWireTools } from "./fixtures/codex-wire-tools.mjs";
 // Native SDK subprocesses; the only provider transport is replaced by owned HTTP loopback.
 import { afterEach, expect, it } from "vitest";
 import { mkdtemp, realpath, writeFile, readFile, rm, readdir } from "node:fs/promises";
@@ -40,7 +41,7 @@ function toolEvents(name, args, count) {
     .map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
 }
 function proofReply(body, count) {
-  const name = body.tools?.find(t => t.name?.endsWith("ConversationHistory"))?.name;
+  const name = codexWireTools(body).find(t => t.name?.endsWith("ConversationHistory"))?.name;
   if (!name) return events("Fictional compacted context; retrieve archival evidence before answering.");
   const output = body.input.filter(i => i.type === "function_call_output").at(-1)?.output;
   // Parse the actual notice-framed response, independent of JSON key order.
@@ -115,7 +116,7 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
       }
       if (["cancel", "cancel-then-refuse"].includes(scenario) || ["crash", "containment", "request-timeout"].includes(responseFault)) { response.flushHeaders(); return; }
       if (replay) {
-        const tool = received.at(-1).tools?.find(t => t.name === "ConversationHistory");
+        const tool = codexWireTools(received.at(-1)).find(t => t.name === "ConversationHistory");
         response.end(probeLookups && tool ? toolEvents(tool.name, { action: "search", query: "Fictional response", limit: 1 }, received.length) : events("Fictional response"));
       }
       else if (scenario === "proof") {
@@ -165,7 +166,7 @@ it("sends identical genuine SDK payload bytes with receipt capture disabled and 
   expect(rows.map(row => row.phase).sort()).toEqual(["call", "response"]);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("refuses the next ceiling reservation above the exact cap before a third send", async () => {
-  const result = await run({ scenario: "cap", requests: 3, reuse: true, capUnits: "8000000000", rows: Array.from({ length: 3 }, () => ({ role: "probe", model: SOL })) });
+  const result = await run({ scenario: "cap", requests: 3, reuse: true, capUnits: "12760000000", rows: Array.from({ length: 3 }, () => ({ role: "probe", model: SOL })) });
   expect(result.received).toHaveLength(2); expect(result.report.stop).toBe("budget_admission"); expect(result.caught).toBe("not_admitted_cap"); expect(result.reuse).toBe("e2_authorization_lease_invalid");
   expect(result.report.costs.totalUnits).toBe("7840000000");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
@@ -175,7 +176,7 @@ it.each(["unauthorized-summary", "direct-model", "alternate-stream"])("refuses %
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("retains full liability when cancelled after actual response headers", async () => {
   const result = await run({ scenario: "cancel", rows: [{ role: "continuation", model: SOL }] });
-  expect(result.received).toHaveLength(1); expect(result.report.retries.attempted).toBe(0); expect(result.report.costs.retainedUnits).toBe("3920000000");
+  expect(result.received).toHaveLength(1); expect(result.report.retries.attempted).toBe(0); expect(result.report.costs.retainedUnits).toBe("8840000000");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("verifies generated output and an actual durable journal before accepting the SDK probe body", async () => {
   const result = await run({ scenario: "summary", rows: [{ role: "summary", model: SOL }, { role: "probe", model: SOL }] });
@@ -301,12 +302,12 @@ const productionRows = ["summary", "continuation", "probe"].flatMap(role => Arra
 it("reconciles a crashed genuine phase child without dispatching another native request", async () => {
   const result = await run({ production: true, fault: "crash", reuse: true, rows: productionRows });
   expect(result.received, JSON.stringify(result.report)).toHaveLength(1); expect(result.report.stop).not.toBe("completed");
-  expect(result.report.costs.retainedUnits).toBe("3920000000"); expect(result.reconciled.reconciliation).toBe(true); expect(result.reuse).toBe("e2_authorization_lease_invalid");
+  expect(result.report.costs.retainedUnits).toBe("8840000000"); expect(result.reconciled.reconciliation).toBe(true); expect(result.reuse).toBe("e2_authorization_lease_invalid");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("contains a real descendant of the genuine phase child at the watchdog, retaining its hold", async () => {
   const result = await run({ production: true, fault: "containment", rows: productionRows });
   expect(result.received).toHaveLength(1); expect(result.report.retries.attempted).toBe(0); expect(result.report.stop).toBe("e2_worker_timeout");
-  expect(result.report.costs.retainedUnits).toBe("3920000000");
+  expect(result.report.costs.retainedUnits).toBe("8840000000");
   const descendant = JSON.parse(await readFile(result.profile.descendant, "utf8"));
   expect(() => process.kill(descendant.pid, 0)).toThrow();
 }, E2_NATIVE_TEST_TIMEOUT_MS);
@@ -322,7 +323,7 @@ it("allows only the registered completed cancellation seed-to-resume transition 
     ...Array.from({ length: 8 }, () => ({ role: "probe", model: SOL, phase: "resume" }))];
   const result = await run({ production: true, scenario: "proof", arm: "cancel", rows });
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.report.phases).toHaveLength(2);
-  expect(result.report.phases[1].score).toBe(1); expect(BigInt(result.report.costs.retainedUnits)).toBe(3920000000n);
+  expect(result.report.phases[1].score).toBe(1); expect(BigInt(result.report.costs.retainedUnits)).toBe(8840000000n);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it("awaits the native completed-cut ACK before scripted tool progress across a forced read gap", async () => {
@@ -353,7 +354,7 @@ it("a genuine SDK model failure ends the authorization before any registered res
     { role: "continuation", model: SOL, phase: "seed" }, { role: "continuation", model: SOL, phase: "resume" }, { role: "probe", model: SOL, phase: "resume" }];
   const result = await run({ production: true, arm: "cancel", rows, fault: "model-error", reuse: true });
   expect(result.received).toHaveLength(2); expect(result.report.schedule.visited).toBe(1); expect(result.report.schedule.remaining).toBe(1);
-  expect(result.report.stop).toBe("e2_phase_failed"); expect(result.report.costs.retainedUnits).toBe("7840000000");
+  expect(result.report.stop).toBe("e2_phase_failed"); expect(result.report.costs.retainedUnits).toBe("17680000000");
   expect(result.reuse).toBe("e2_authorization_lease_invalid");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
@@ -398,7 +399,7 @@ it("funds R=3 and withdraws native tools on each fourth C1 probe request", async
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
   const probes = result.received.filter(body => JSON.stringify(body.input).includes("PRIVATE-FROZEN-FICTIONAL-QUESTION"));
   expect(probes).toHaveLength(8);
-  expect(probes.map(body => (body.tools ?? []).map(t => t.name))).toEqual([
+  expect(probes.map(body => codexWireTools(body).map(t => t.name))).toEqual([
     ["ConversationHistory"], ["ConversationHistory"], ["ConversationHistory"], [],
     ["ConversationHistory"], ["ConversationHistory"], ["ConversationHistory"], [],
   ]);
@@ -420,7 +421,7 @@ it("kills a stalled genuine paid request on its own clock, not the longer phase 
   const result = await run({ production: true, fault: "request-timeout", rows: productionRows,
     deadlines: { requestDeadlineMs: 1000, phaseDeadlineMs: 60000, childWatchdogMs: 60000, runDeadlineMs: 120000 } });
   expect(result.received).toHaveLength(1); expect(result.report.retries.attempted).toBe(0); expect(result.report.stop).toBe("e2_worker_timeout");
-  expect(result.report.costs).toMatchObject({ retainedUnits: "3920000000", activeUnits: "0" });
+  expect(result.report.costs).toMatchObject({ retainedUnits: "8840000000", activeUnits: "0" });
   expect(performance.now() - started).toBeLessThan(60000);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
@@ -480,7 +481,7 @@ it.each([
 it("records an unexpected SDK abortion without changing lost/abort liability", async () => {
   const result = await run({ scenario: "unexpected-abort" });
   expect(result.report.phases[0].diagnostics?.nativeCause).toMatchObject({ causeClass: "sdk_aborted_result", responseHeadersObserved: true, terminalUsageObserved: false });
-  expect(result.report.costs.retainedUnits).toBe("3920000000");
+  expect(result.report.costs.retainedUnits).toBe("8840000000");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it("keeps accepted C1 answers outside restored roots and emits only informational partial quality on failure", async () => {
@@ -577,7 +578,7 @@ it.each([
   expect(holds[1]).toMatchObject({ retryOf: 1, consumed: true, paidRole: holds[0].paidRole, model: holds[0].model, checkpoint: holds[0].checkpoint, reservedUnits: holds[0].reservedUnits });
   expect(holds[1].permitId).not.toBe(holds[0].permitId); expect(holds.every(h => h.summaryPresence)).toBe(true);
   if (["empty", "sdk-aborted"].includes(fault)) expect(result.report.costs.completeUnits).toBe("140000");
-  else expect(result.report.costs.retainedUnits).toBe("3920000000");
+  else expect(result.report.costs.retainedUnits).toBe("8840000000");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 
 it.each(["http-auth", "http-context", "http-quota", "http-other", "http-rate-json-quota", "http-rate-json-mixed", "sse-mixed-quota", "sse-mixed-context", "sse-context", "sse-rate", "sse-auth", "sse-quota", "sse-invalid", "sse-policy", "sse-context-reset", "length", "sdk-unknown", "sdk-deadline", "body-deadline"])("never retries ineligible %s despite a recoverable next response", async fault => {
@@ -588,12 +589,12 @@ it.each(["http-auth", "http-context", "http-quota", "http-other", "http-rate-jso
 it("stops after the sole retry fails, retaining both lost liabilities", async () => {
   const result = await run({ fault: "model-error", reuse: true });
   expect(result.received).toHaveLength(2); expect(result.report.retries).toEqual({ attempted: 1, succeeded: 0, causeClasses: { http_5xx: 1 } });
-  expect(result.report.costs.retainedUnits).toBe("7840000000"); expect(result.reuse).toBe("e2_authorization_lease_invalid");
+  expect(result.report.costs.retainedUnits).toBe("17680000000"); expect(result.reuse).toBe("e2_authorization_lease_invalid");
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("does not fetch a retry when the failed hold leaves insufficient cap", async () => {
-  const result = await run({ fault: "model-error", retryOnce: true, capUnits: "5000000000" });
+  const result = await run({ fault: "model-error", retryOnce: true, capUnits: "10000000000" });
   expect(result.received).toHaveLength(1); expect(result.report.stop).toBe("budget_admission");
-  expect(result.report.costs.retainedUnits).toBe("3920000000"); expect(result.report.retries.attempted).toBe(0);
+  expect(result.report.costs.retainedUnits).toBe("8840000000"); expect(result.report.retries.attempted).toBe(0);
   const state = JSON.parse(await readFile(join(result.root, "output/e2-validation-controller.json")));
   expect(result.report.phases[0].terminal).toBe("lost"); expect(state.slots[0].terminal).toBe("lost");
   expect(guardedAccounting("e2-validation").accountRun(state.slots).consecutiveProviderLosses).toBe(1);
@@ -607,7 +608,7 @@ it("stops the ninth eligible failure without consuming another logical slot or r
 it("reconciles abrupt child loss during a retry without any automatic resend", async () => {
   const result = await run({ fault: "crash-retry", reuse: true });
   expect(result.received).toHaveLength(2); expect(result.report.stop).not.toBe("completed");
-  expect(result.report.costs.retainedUnits).toBe("7840000000"); expect(result.reconciled.reconciliation).toBe(true);
+  expect(result.report.costs.retainedUnits).toBe("17680000000"); expect(result.reconciled.reconciliation).toBe(true);
   expect(result.reuse).toBe("e2_authorization_lease_invalid"); expect(result.report.retries.succeeded).toBe(0);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 it("retries a generated summary without accepting its failed predecessor as durable lineage", async () => {
@@ -619,7 +620,7 @@ it("keeps R=3 logical tool ordinals unchanged after retrying the first probe", a
   const result = await run({ production: true, replay: true, probeLookupRounds: 3, probeLookups: true, fault: "model-error", retryOnce: true });
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed"); expect(result.received).toHaveLength(9);
   expect(result.receivedBytes[1]).toEqual(result.receivedBytes[0]);
-  expect(result.received.map(b => (b.tools ?? []).length)).toEqual([1, 1, 1, 1, 0, 1, 1, 1, 0]);
+  expect(result.received.map(b => codexWireTools(b).length)).toEqual([1, 1, 1, 1, 0, 1, 1, 1, 0]);
   expect(result.funded.filter(b => b.paidRole !== "summary").reduce((n,b) => n + b.maxRequests,0)).toBe(8);
 }, E2_NATIVE_TEST_TIMEOUT_MS);
 

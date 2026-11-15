@@ -48,6 +48,11 @@ function withOpenCodeHeaderTransform(options: Record<string, any> | undefined, s
   const previousTransform = options?.transformHeaders;
   return {
     ...(options ?? {}),
+    // Pi 1.4+ derives its default OpenCode header from this request option
+    // before transformHeaders. Use the run's attribution identity even for a
+    // compaction request with a separate generated session id; auth/request
+    // header overrides and the caller transform must still win.
+    sessionId,
     transformHeaders: async (headers: ProviderHeaders) => {
       let attributed = addDefaultHeader(headers, "x-opencode-session", sessionId);
       attributed = addDefaultHeader(attributed, "x-opencode-client", "mono-agent");

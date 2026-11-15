@@ -1,3 +1,4 @@
+import { codexWireTools } from "./fixtures/codex-wire-tools.mjs";
 // Fictional, isolated control-arm evidence; no provider or operator artifacts.
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -173,7 +174,7 @@ it("executes a faux end-to-end baseline through the shipping SDK/controller/scor
   const result = JSON.parse(await readFile(profile.result)); expect({ code, stderr, error: result.error }).toEqual({ code: 0, stderr: "", error: undefined });
   expect(listenerError).toBeUndefined(); expect(result.report).toMatchObject({ replayArm: "baseline", qualification: false, stop: "completed" });
   expect(received).toHaveLength(2);
-  for (const body of received) { expect(body.tools ?? []).toEqual([]); expect(JSON.stringify(body)).not.toContain("### Conversation continuity pack (historical evidence)"); }
+  for (const body of received) { expect(codexWireTools(body)).toEqual([]); expect(JSON.stringify(body)).not.toContain("### Conversation continuity pack (historical evidence)"); }
   expect(result.report.phases[0].summaryPresence).toMatchObject({ checked: 2, none: 2, pack: 0 });
   const score = JSON.parse(await readFile(join(f.args.outputRoot, "work/replay/score.json")));
   expect(score.report).toMatchObject({ normalization: "e2-answer-normalization-v1", qualification: false, complete: true });

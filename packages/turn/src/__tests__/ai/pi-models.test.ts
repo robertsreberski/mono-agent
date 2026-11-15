@@ -16,9 +16,9 @@ import { estimateCost } from "../../telemetry/cost.js";
 
 // Exercise the real pinned chat catalog, not a mock or a copied row:
 // pricing, dispatch, advertised effort and listing must agree.
-describe("Pi 1.2.0 native model integration", () => {
+describe("Pi 1.5.2 native model integration", () => {
   const rows = [
-    ["anthropic", "claude-haiku-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
+    ["anthropic", "claude-haiku-5-5", 1_000_000, ["none", "low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
     ["anthropic", "claude-opus-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 4, 20],
     ["anthropic", "claude-sonnet-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 2, 10],
     ["openai-codex", "gpt-6-sol", 272_000, ["none", "minimal", "low", "medium", "high", "xhigh", "max"], 2, 10],
@@ -27,7 +27,17 @@ describe("Pi 1.2.0 native model integration", () => {
     ["openai", "gpt-6-luna", 272_000, ["none", "low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
     // Pi 0.99.2 does not expose disabled effort for GPT-6.1 Sol.
     ["openai", "gpt-6.1-sol", 272_000, ["low", "medium", "high", "xhigh", "max"], 2, 10],
-    ["openai-codex", "gpt-6.1-sol", 272_000, ["minimal", "low", "medium", "high", "xhigh", "max"], 2, 10],
+    ["openai-codex", "gpt-6.1-sol", 500_000, ["minimal", "low", "medium", "high", "xhigh", "max"], 2, 10],
+    ["anthropic", "claude-fable-5-2", 1_000_000, ["minimal", "low", "medium", "high", "xhigh", "max"], 8, 40],
+    ["openai", "gpt-6.1-terra", 272_000, ["none", "low", "medium", "high", "xhigh", "max"], 1, 5],
+    ["openai-codex", "gpt-6.1-terra", 500_000, ["none", "minimal", "low", "medium", "high", "xhigh", "max"], 1, 5],
+    ["opencode-go", "kimi-k3.1-pro", 1_048_576, ["low", "high", "max"], 2, 10],
+    ["opencode-go", "hy4", 1_048_576, ["none", "high"], 0.834, 2.501],
+    ["opencode-go", "minimax-m3.1-flash", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 0.15, 0.6],
+    ["opencode-go", "gemini-4-argon", 1_048_576, ["low", "medium", "high"], 2, 10],
+    ["opencode", "gemini-4-argon", 1_048_576, ["low", "medium", "high"], 2, 10],
+    ["opencode", "muse-ember-1.0", 1_048_576, ["minimal", "low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
+    ["opencode", "muse-wonder-1.0", 1_048_576, ["minimal", "low", "medium", "high", "xhigh", "max"], 4, 20],
   ] as const;
 
   for (const [provider, model, contextWindow, levels, input, output] of rows) {
@@ -43,7 +53,7 @@ describe("Pi 1.2.0 native model integration", () => {
       expect(resolved.model).toEqual(upstream);
       expect(resolved.model.contextWindow).toBe(contextWindow);
       expect(resolved.capabilities.reasoning_levels).toEqual(levels);
-      expect(thinkingLevelForEffort("max", resolved.capabilities)).toBe("max");
+      expect(thinkingLevelForEffort(levels.at(-1)!, resolved.capabilities)).toBe(levels.at(-1)!);
       expect(estimateCost({ model: `${provider}:${model}`, inputTokens: 1_000, outputTokens: 1_000 }))
         .toBeCloseTo((input + output) / 1_000, 6);
     });
@@ -70,6 +80,7 @@ describe("Pi 1.2.0 native model integration", () => {
     for (const [provider, model] of [
       ["openai-codex", "gpt-6-nemesis"],
       ["anthropic", "claude-opus-9"],
+      ["opencode-go", "deepseek-v4-flash"],
     ]) {
       expect(() => resolvePiRuntimeModel({ provider, model, reference: `${provider}:${model}` }, {}))
         .toThrow(`pi model not found: ${provider}:${model}`);
@@ -222,7 +233,7 @@ describe("resolvePiRuntimeModel — OpenCode Go DeepSeek V4.1 Flash upstream bui
       name: "DeepSeek V4.1 Flash",
       api: "openai-completions",
       provider: "opencode-go",
-      baseUrl: "https://opencode.ai/zen/go/v1",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
       reasoning: true,
       input: ["text", "image"],
       compat: {

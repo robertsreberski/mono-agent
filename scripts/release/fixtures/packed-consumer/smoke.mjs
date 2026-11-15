@@ -301,7 +301,7 @@ async function verifyRetiredExporterMigration() {
   const cwd = await mkdtemp(join(tmpdir(), "mono-agent-packed-config-"));
   const configPath = join(cwd, "mono-agent.config.json");
   const base = {
-    runtime: { model: "pi:openai-codex:gpt-5.5" },
+    runtime: { model: "pi:openai-codex:gpt-6.1-terra" },
     context: { identityPath: "IDENTITY.md" },
   };
   try {

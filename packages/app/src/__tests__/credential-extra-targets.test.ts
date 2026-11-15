@@ -18,7 +18,7 @@ async function fixture(card: CredentialCardId, name?: string, mode: "journal" | 
     : card === "embeddings" ? { memory: { mode, path: "memory", embeddings, ...(mode === "bujo" ? { llm: { provider: "ollama", model: "fictional-model" } } : {}) } }
     : { tools: { allowedTools: ["Read", "WebSearch", "WebFetch"], disallowedTools: ["Bash"], web: { search: { backend: card === "ollama-search" ? "ollama" : "parallel", ...(card === "ollama-search" ? { ollama: { baseUrl: "https://ollama.com", ...(name ? { apiKeyEnv: name } : {}) } } : { parallel: { ...(name ? { apiKeyEnv: name } : {}) } }) }, fetch: { provider: "parallel", parallel: { ...(name ? { apiKeyEnv: name } : {}) } } } } };
   const configPath = join(cwd, "mono-agent.config.json"), dotenvPath = join(cwd, ".env");
-  await writeFile(configPath, JSON.stringify({ runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] }, ...extra }));
+  await writeFile(configPath, JSON.stringify({ runtime: { model: "openai-codex:gpt-6.1-terra" }, context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] }, ...extra }));
   await writeFile(join(cwd, "IDENTITY.md"), "# Fictional identity\n");
   if (card === "embeddings") {
     const { safeRebuildMemoryIndex } = await import("@mono-agent/memory/bujo");

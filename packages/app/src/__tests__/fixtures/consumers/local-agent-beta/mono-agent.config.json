@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/app/schema/mono-agent.config.schema.json",
   "runtime": {
-    "model": "openai-codex:gpt-5.5",
+    "model": "openai-codex:gpt-6.1-terra",
     "fallbacks": [
       {
         "model": "opencode-go:glm-5.2",

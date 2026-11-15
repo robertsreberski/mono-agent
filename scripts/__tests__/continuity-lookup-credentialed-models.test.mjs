@@ -1,3 +1,4 @@
+import { codexWireTools } from "./fixtures/codex-wire-tools.mjs";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -44,7 +45,7 @@ beforeAll(async () => {
       const chunks = []; for await (const chunk of request) chunks.push(chunk);
       const raw = Buffer.concat(chunks), bytes = request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(raw) : raw;
       const body = JSON.parse(bytes);
-      expect(body.tools).toHaveLength(1); expect(body.tools[0]).toMatchObject({type: "function", name: "ConversationHistory"});
+      expect(codexWireTools(body)).toHaveLength(1); expect(codexWireTools(body)[0]).toMatchObject({type: "function", name: "ConversationHistory"});
       // The authority graph is unit-only; transport/credential/serializer paths are real.
       expect(state.slots[0].holds.at(-1)).toMatchObject({consumed: true, payloadDigest: sha(bytes)});
       arrivals.push({account: request.headers["chatgpt-account-id"], cache: body.prompt_cache_key,

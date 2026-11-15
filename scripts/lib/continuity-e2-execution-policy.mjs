@@ -26,12 +26,14 @@ function textParts(parts, reasoning = false) {
 }
 function validateBody(body) {
   need(fieldsOnly(body, ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "tools", "reasoning"])
-    && Array.isArray(body.input) && (body.instructions === undefined || typeof body.instructions === "string")
+    && Array.isArray(body.input) && Array.isArray(body.tools ?? []) && (body.instructions === undefined || typeof body.instructions === "string")
     && (body.reasoning === undefined || fieldsOnly(body.reasoning, ["effort", "summary"])) && (body.text === undefined || fieldsOnly(body.text, ["verbosity"]))
     && (body.include === undefined || Array.isArray(body.include) && body.include.every(v => v === "reasoning.encrypted_content")), "e2_payload_forbidden");
-  for (const t of body.tools ?? []) need(fieldsOnly(t, ["type", "name", "description", "parameters", "strict"]), "e2_payload_forbidden");
+  for (const t of [...(body.tools ?? []), ...body.input.filter(item => item?.type === "additional_tools").flatMap(item => item.tools ?? [])]) need(fieldsOnly(t, ["type", "name", "description", "parameters", "strict"]), "e2_payload_forbidden");
   for (const item of body.input) {
-    if (item?.type === "reasoning") {
+    if (item?.type === "additional_tools") {
+      need(fieldsOnly(item, ["type", "role", "tools"]) && item.role === "developer" && Array.isArray(item.tools), "e2_payload_forbidden");
+    } else if (item?.type === "reasoning") {
       need(fieldsOnly(item, ["type", "id", "summary", "encrypted_content", "status", "content"]), "e2_payload_forbidden");
       if (item.summary !== undefined) textParts(item.summary, true);
       if (item.content != null) {
@@ -146,7 +148,10 @@ export const e2ExecutionPolicy = Object.freeze({
     need(model?.provider === contract.provider && model.id === contract.model && model.api === contract.api && model.baseUrl === contract.baseUrl
       && options.transport === "sse" && options.maxRetries === 0 && (options.piMaxRetries === undefined || options.piMaxRetries === 0)
       && options.reasoning === contract.effort, "e2_route_mismatch");
-    need(Object.keys(options).every(k => ["maxTokens", "reasoning", "transport", "maxRetries", "piMaxRetries", "maxRetryDelayMs", "signal", "telemetryContext", "sessionId", "apiKey", "onPayload", "onProviderStreamEvent", "onResponse", "cacheRetention", "thinkingBudgets"].includes(k)), "e2_option_forbidden");
+    need(Object.keys(options).every(k => ["identity", "maxTokens", "reasoning", "transport", "maxRetries", "piMaxRetries", "maxRetryDelayMs", "signal", "telemetry", "sessionId", "apiKey", "onPayload", "onProviderStreamEvent", "onResponse", "cacheRetention", "thinkingBudgets"].includes(k)), "e2_option_forbidden");
+    // The frozen proof transport does not enable tracing or forward span data.
+    need(options.telemetry === undefined, "e2_option_forbidden");
+    need(options.identity === undefined || JSON.stringify(options.identity) === JSON.stringify({ attribution: { name: "pi", url: "https://pi.dev", categories: ["cli-agent"] } }), "e2_option_forbidden");
     need(options.maxRetryDelayMs === undefined || Number.isSafeInteger(options.maxRetryDelayMs) && options.maxRetryDelayMs >= 0, "e2_option_forbidden");
     need(options.thinkingBudgets === undefined && [undefined, "none"].includes(options.cacheRetention), "e2_option_forbidden");
   },
@@ -357,13 +362,17 @@ export const e2ExecutionPolicy = Object.freeze({
   assertBody(bytes, hold) {
     let body; try { body = JSON.parse(bytes); } catch { fail("e2_body_mismatch"); }
     need(`${E2_GUARD_CONTRACT.provider}:${body.model}` === hold?.model && body.stream === true && body.store === false && body.service_tier === undefined, "e2_body_mismatch");
-    need(Array.isArray(body.tools ?? []) && (body.tools ?? []).every(t => t.type === "function" && hold.tools.includes(t.name)), "e2_tools_forbidden");
-    if (hold.probeRequest !== undefined) need((body.tools ?? []).length === hold.tools.length, "e2_tools_forbidden");
+    need(Array.isArray(body.tools ?? []), "e2_tools_forbidden");
+    const additional = (Array.isArray(body.input) ? body.input : []).filter(item => item?.type === "additional_tools");
+    for (const item of additional) need(fieldsOnly(item, ["type", "role", "tools"]) && item.role === "developer" && Array.isArray(item.tools), "e2_payload_forbidden");
+    const tools = [...(body.tools ?? []), ...additional.flatMap(item => item.tools)];
+    need(tools.every(t => t.type === "function" && hold.tools.includes(t.name)), "e2_tools_forbidden");
+    if (hold.probeRequest !== undefined) need(tools.length === hold.tools.length, "e2_tools_forbidden");
+    validateBody(body);
     if (hold.replayArm === "baseline") {
       const kind = hold.paidRole === "summary" ? "summary"
         : hold.probeRequest !== undefined || hold.paidRole === "probe" ? "probe" : "source";
       assertE2BaselineRequest(body, { kind, sourceTools: hold.tools });
     }
-    validateBody(body);
   },
 });

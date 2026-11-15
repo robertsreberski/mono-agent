@@ -120,7 +120,7 @@ it.each([[false, false, false, false, false], [true, false, false, false, false]
       { type: "response.completed", response: { id: "fictional-response", status: "completed", output: [], usage: { input_tokens: 100, output_tokens: 150, total_tokens: 250 } } }];
     return new Response(frames.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
   }); vi.stubGlobal("fetch", fetch);
-  const answer = fauxProvider({ provider: "openai-codex", api: "openai-responses", models: [{ id: "gpt-5.5" }], tokensPerSecond: 1_000_000 });
+  const answer = fauxProvider({ provider: "openai-codex", api: "openai-responses", models: [{ id: "gpt-6.1-terra" }], tokensPerSecond: 1_000_000 });
   const local = fauxProvider({ provider: "private", api: "openai-responses", models: [{ id: "base" }], tokensPerSecond: 1_000_000 });
   const models = createModels(); models.setProvider(answer.provider); models.setProvider(local.provider);
   const pricing = vi.fn(() => ({ priced: true, input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1, source: "fictional" }));
@@ -129,7 +129,7 @@ it.each([[false, false, false, false, false], [true, false, false, false, false]
   const child = nested ? createMonoRuntime({ workspace: root, resolvePiApiKey: createPiOAuthApiKeyResolver({ path: explicitPath }), resolveCustomPricing: pricing }) : undefined;
   if (child) close.push(() => child.disposeAllSessions!());
   const cloud = routed ? createMonoRuntime({ workspace: root,
-    fallbackChain: [{ model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } }],
+    fallbackChain: [{ model: { provider: "openai-codex", model: "gpt-6.1-terra", reference: "openai-codex:gpt-6.1-terra" } }],
     resolvePiApiKey: nested ? async () => undefined : createPiOAuthApiKeyResolver({ path: explicitPath }),
     resolveAttempt: () => child ? { runtime: child } : { options: { resolveCustomPricing: pricing } },
   }) : undefined;
@@ -137,14 +137,14 @@ it.each([[false, false, false, false, false], [true, false, false, false, false]
   const harness = await createConfiguredConversationHarness({ config, cwd: root, runtime,
     ...(cloud ? { runtimeForModel: () => cloud } : {}),
     runtimeOptions: { ...(routed || requestOnly ? {} : { resolveCustomPricing: pricing }), ...(explicit ? { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: explicitPath }) } : {}) }, runtimeOptionsForRequest: ({ request }) => {
-    const selected = request.metadata?.web ? { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } : { provider: "private", model: "base", reference: "private:base" };
+    const selected = request.metadata?.web ? { provider: "openai-codex", model: "gpt-6.1-terra", reference: "openai-codex:gpt-6.1-terra" } : { provider: "private", model: "base", reference: "private:base" };
     return { runtimeOptions: { ...(requestOnly ? { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: explicitPath }), resolveCustomPricing: pricing } : {}), model: selected, piResolvedModel: selected.provider === "private" ? local.getModel() : answer.getModel(), piResolvedModels: models, compaction: { enabled: false } } };
   } }); close.push(() => harness.dispose!());
   local.setResponses([() => fauxAssistantMessage("Fictional answer.")]);
   await harness.run({ conversationId: "web:fictional", userMessage: "Never send without confirmation.", captureSpeakerKind: "human-turn", abortSignal: new AbortController().signal });
   const events: Record<string, unknown>[] = [];
   answer.setResponses([() => fauxAssistantMessage("Fictional answer.")]);
-  await harness.run({ conversationId: "web:fictional", userMessage: "Current.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: "openai-codex:gpt-5.5" } }, abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
+  await harness.run({ conversationId: "web:fictional", userMessage: "Current.", captureSpeakerKind: "human-turn", metadata: { source: "web", web: { model: "openai-codex:gpt-6.1-terra" } }, abortSignal: new AbortController().signal, onEvent: event => events.push(event) });
   if (strict) {
     expect(fetch).not.toHaveBeenCalled();
     const db = new DatabaseSync(new ToolHistoryReader(join(root, "history")).databasePath); close.push(async () => { db.close(); });

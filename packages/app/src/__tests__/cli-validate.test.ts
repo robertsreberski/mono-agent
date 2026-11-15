@@ -211,7 +211,7 @@ describe("runCli validate --consumer", () => {
   it.each(["validate", "config"])("keeps %s --json stderr clean with deprecated monitors configuration", async (command) => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeConsumerConfig(dir, "mono-agent.config.json", {
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       monitors: { enabled: true, unknownNestedKey: { ignored: true } },
     });
@@ -231,10 +231,10 @@ describe("runCli validate --consumer", () => {
     await mkdir(invocationDir, { recursive: true });
     await mkdir(consumerDir, { recursive: true });
     await writeFile(join(invocationDir, ".env"), "MONO_AGENT_MODEL=not-a-valid-model\n", "utf8");
-    await writeFile(join(consumerDir, ".env"), "MONO_AGENT_MODEL=openai-codex:gpt-5.5\n", "utf8");
+    await writeFile(join(consumerDir, ".env"), "MONO_AGENT_MODEL=openai-codex:gpt-6.1-terra\n", "utf8");
     await writeFile(join(consumerDir, "IDENTITY.md"), "# Consumer\n", "utf8");
     await writeConsumerConfig(consumerDir, "mono-agent.config.json", {
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
     });
 
@@ -245,7 +245,7 @@ describe("runCli validate --consumer", () => {
     expect(result.code).toBe(0);
     expect(process.cwd()).toBe(invocationDir);
     expect(result.stdout).toContain(`Loaded ${join(consumerDir, "mono-agent.config.json")}.`);
-    expect(result.stdout).toContain("Primary model openai-codex:gpt-5.5");
+    expect(result.stdout).toContain("Primary model openai-codex:gpt-6.1-terra");
     expect(result.stderr).toBe("");
   });
 
@@ -254,10 +254,10 @@ describe("runCli validate --consumer", () => {
     const consumerDir = join(dir, "consumer");
     await mkdir(invocationDir, { recursive: true });
     await mkdir(consumerDir, { recursive: true });
-    await writeFile(join(consumerDir, ".env"), "MONO_AGENT_MODEL=openai-codex:gpt-5.5\n", "utf8");
+    await writeFile(join(consumerDir, ".env"), "MONO_AGENT_MODEL=openai-codex:gpt-6.1-terra\n", "utf8");
     await writeFile(join(consumerDir, "IDENTITY.alt.md"), "# Consumer\n", "utf8");
     const configPath = await writeConsumerConfig(consumerDir, "alternate.config.json", {
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.alt.md" },
     });
 
@@ -278,7 +278,7 @@ describe("runCli validate --consumer", () => {
     await mkdir(consumerDir, { recursive: true });
     await writeFile(join(consumerDir, "IDENTITY.md"), "# Consumer\n", "utf8");
     await writeConsumerConfig(consumerDir, "mono-agent.config.json", {
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       memory: {
         mode: "lite",
@@ -306,7 +306,7 @@ describe("runCli validate --consumer", () => {
     await writeFile(activeDatabase, privateSentinel, "utf8");
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeConsumerConfig(dir, "mono-agent.config.json", {
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       memory: {
         mode: "journal",

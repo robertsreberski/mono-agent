@@ -26,7 +26,7 @@ describe("app persistent subagent durable sessions", () => {
     let nativeReturned = false;
     try {
       const config = resolveJsonMonoAgentConfig({ cwd: root, json: {
-        runtime: { model: "openai-codex:gpt-5.5" },
+        runtime: { model: "openai-codex:gpt-6.1-terra" },
         context: { identityPath: resolve(root, "IDENTITY.md") },
         tools: { allowedTools: ["Agent", "AgentManage"] },
         subagents: { enabled: true, timeoutMs: mode === "late-timeout" ? 1500 : 10_000,
@@ -124,7 +124,7 @@ describe("app persistent subagent durable sessions", () => {
     const owner = createMonoRuntime();
     try {
       const config = resolveJsonMonoAgentConfig({ cwd: root, json: {
-        runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: resolve(root, "IDENTITY.md") },
+        runtime: { model: "openai-codex:gpt-6.1-terra" }, context: { identityPath: resolve(root, "IDENTITY.md") },
         tools: { allowedTools: ["Agent", "AgentManage"] },
         subagents: { enabled: true, instances: { root: resolve(root, "children") } },
       } });
@@ -159,7 +159,7 @@ describe("app persistent subagent durable sessions", () => {
     const owner = createMonoRuntime();
     try {
       const config = resolveJsonMonoAgentConfig({ cwd: root, json: {
-        runtime: { model: "openai-codex:gpt-5.5" },
+        runtime: { model: "openai-codex:gpt-6.1-terra" },
         context: { identityPath: resolve(root, "IDENTITY.md") },
         tools: { allowedTools: ["Agent", "AgentManage"] },
         subagents: { enabled: true, inline: { enabled: false }, instances: { root: resolve(root, "children") } },
@@ -207,7 +207,9 @@ describe("app persistent subagent durable sessions", () => {
       expect(JSON.stringify(users[0])).toContain("first-task");
       expect(JSON.stringify(users[1])).toContain("second-task");
       expect((await transcript()).length).toBeGreaterThan(before.length);
-      expect((await handle.get("critic"))!.usage.input).toBeGreaterThan(0);
+      // Pi 1.5 faux counts prompt tokens as cache writes, not input too.
+      expect((await handle.get("critic"))!.usage.input).toBe(0);
+      expect((await handle.get("critic"))!.usage.cacheWrite).toBeGreaterThan(0);
       await presentTool(createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0])).execute("close", { id: "critic", close: true });
       expect((await handle.get("critic"))!.status).toBe("closed");
       expect(await transcript()).toBe("");
@@ -218,7 +220,7 @@ describe("app persistent subagent durable sessions", () => {
     const owner = createMonoRuntime();
     try {
       const config = resolveJsonMonoAgentConfig({ cwd: root, json: {
-        runtime: { model: "openai-codex:gpt-5.5" },
+        runtime: { model: "openai-codex:gpt-6.1-terra" },
         context: { identityPath: resolve(root, "IDENTITY.md") },
         tools: { allowedTools: ["Agent", "AgentManage"] },
         subagents: { enabled: true, inline: { enabled: false }, instances: { root: resolve(root, "children") } },
@@ -285,7 +287,9 @@ describe("app persistent subagent durable sessions", () => {
       const questionResult = context!.messages.find((message: any) => message.role === "toolResult" && message.toolName === "AskParent") as any;
       expect(questionResult?.isError).toBe(false);
       expect((await transcript()).length).toBeGreaterThan(before.length);
-      expect((await handle.get("critic"))!.usage.input).toBeGreaterThan(0);
+      // Pi 1.5 faux counts prompt tokens as cache writes, not input too.
+      expect((await handle.get("critic"))!.usage.input).toBe(0);
+      expect((await handle.get("critic"))!.usage.cacheWrite).toBeGreaterThan(0);
       await presentTool(createAgentManageTool(resumed.runtimeOptions!.subagents as Parameters<typeof createAgentManageTool>[0])).execute("close", { id: "critic", close: true });
       expect((await handle.get("critic"))!.status).toBe("closed");
       expect(await transcript()).toBe("");
@@ -296,7 +300,7 @@ describe("app persistent subagent durable sessions", () => {
     const owner = createMonoRuntime();
     try {
       const config = resolveJsonMonoAgentConfig({ cwd: root, json: {
-        runtime: { model: "openai-codex:gpt-5.5" },
+        runtime: { model: "openai-codex:gpt-6.1-terra" },
         context: { identityPath: resolve(root, "IDENTITY.md") },
         tools: { allowedTools: ["Agent", "AgentManage"] },
         subagents: { enabled: true, instances: { root: resolve(root, "children") } },

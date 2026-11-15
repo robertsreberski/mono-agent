@@ -64,5 +64,7 @@ it("memoizes serialization clones without changing original validation or coerci
   expect(((context.messages[0] as SystemMessage).toolsAdded![0]!.parameters as { properties: { lookup: { type?: string } } }).properties.lookup.type).toBeUndefined();
   expect(validateToolArguments(original, call)).toEqual(before);
   expect(args).toEqual({ lookup: "accepted without an object type", choice: 1 });
-  expect(() => validateToolArguments(original, { ...call, arguments: { lookup: "accepted", choice: "1" } })).toThrow();
+  expect(validateToolArguments(original, { ...call, arguments: { lookup: "accepted", choice: "1" } }))
+    .toEqual({ lookup: "accepted", choice: 1 });
+  expect(() => validateToolArguments(original, { ...call, arguments: { choice: "3" } })).toThrow();
 });

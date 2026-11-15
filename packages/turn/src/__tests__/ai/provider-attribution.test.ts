@@ -51,6 +51,19 @@ describe("OpenCode provider attribution", () => {
     expect(isOpenCodeModel({ provider: "custom", baseUrl: "not a URL" })).toBe(false);
   });
 
+  it("keeps run attribution when Pi would derive a header from a compaction session", async () => {
+    const fixture = captureProvider("opencode-go", {}, { "X-OpenCode-Session": "auth-session" });
+    await withOpenCodeSessionHeaders(fixture.models, "run-session").completeSimple(
+      fixture.model, CONTEXT, { sessionId: "compaction-session" },
+    );
+    expect(fixture.calls[0]?.headers).toMatchObject({ "X-OpenCode-Session": "auth-session" });
+    const defaults = captureProvider();
+    await withOpenCodeSessionHeaders(defaults.models, "run-session").completeSimple(
+      defaults.model, CONTEXT, { sessionId: "compaction-session" },
+    );
+    expect(defaults.calls[0]?.headers).toMatchObject({ "x-opencode-session": "run-session" });
+  });
+
   it("sends stable session and honest client headers at final provider dispatch", async () => {
     const fixture = captureProvider();
     const firstConversation = withOpenCodeSessionHeaders(fixture.models, "session-one");

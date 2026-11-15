@@ -156,12 +156,12 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           const receipt = [...lifecycle.values()][0];
           if (!receipt || lifecycle.size !== 1 || (context.tools?.length ?? 0) !== 0 || context.messages?.some(m => m.toolsAdded?.length)) refuse("E2_SUMMARY_NOT_AUTHORIZED");
           const outputCeiling = Math.min(model.maxTokens, estimators.resolveAgentCompactionPolicy({}, model).summaryMaxTokens + 8192);
-          const allowed = ["maxTokens", "reasoning", "thinkingBudgets", "transport", "maxRetries", "signal", "telemetryContext", "cacheRetention", "sessionId"];
+          const allowed = ["maxTokens", "reasoning", "thinkingBudgets", "transport", "maxRetries", "signal", "telemetry", "cacheRetention", "sessionId"];
           if (Object.keys(options).some(k => !allowed.includes(k)) || options.transport !== "sse" || options.maxRetries !== 0
             || options.thinkingBudgets !== undefined || options.cacheRetention !== undefined && options.cacheRetention !== "none"
             || options.signal !== undefined && !(options.signal instanceof AbortSignal)
             || options.sessionId !== undefined && (typeof options.sessionId !== "string" || !/^[a-f0-9-]{36}$/.test(options.sessionId))
-            || options.telemetryContext !== undefined && (options.telemetryContext === null || typeof options.telemetryContext !== "object")
+            || options.telemetry !== undefined
             || !Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1 || options.maxTokens > outputCeiling
             || options.reasoning !== undefined && !["off", "low"].includes(options.reasoning)) refuse("E2_SUMMARY_OPTIONS_INVALID");
           if (report.summaryRequests.length >= limits.summaryRequests || receipt.requests >= limits.summaryRequestsPerCompaction) refuse("E2_SUMMARY_REQUEST_LIMIT");

@@ -38,7 +38,7 @@ async function fixture() {
     build: { policy: "fresh-clean-head-agent-app-closure-v1", sourceHead: "b".repeat(40), command: ["pnpm", "--filter", "@mono-agent/app...", "run", "build"], packages: ["packages/app", "packages/turn"], outputRoots: ["packages/app/dist", "packages/turn/dist"], outputSha256: "a".repeat(64), node: process.version },
     catalog, source, protocol, probes, keys, soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, roles: component.roles,
     sizing, probeCounts, schedule: e2PhaseSchedule(trace.protocol, [component.sizing], probeCounts), toolPolicies: E2_TOOL_POLICIES,
-  }, descriptor: { schema: E2_PLAN_SCHEMA, retryPolicy: E2_RETRY_POLICY, assumptions: E2_ASSUMPTIONS, capUnits: "5000000000", deadlines: { requestDeadlineMs: 120000, phaseDeadlineMs: 130000, childWatchdogMs: 130000, runDeadlineMs: 600000 } } };
+  }, descriptor: { schema: E2_PLAN_SCHEMA, retryPolicy: E2_RETRY_POLICY, assumptions: E2_ASSUMPTIONS, capUnits: "10000000000", deadlines: { requestDeadlineMs: 120000, phaseDeadlineMs: 130000, childWatchdogMs: 130000, runDeadlineMs: 600000 } } };
   const outputRoot = join(root, "output"); await mkdir(outputRoot, { mode: 0o700 });
   const credentialPath = join(root, "credential.json"), account = "fictional-e2-account";
   const token = `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: account } })).toString("base64url")}.fictional`;
@@ -128,7 +128,7 @@ it("refuses pre-approved future summary digests instead of treating them as gene
 });
 
 it("rejects caps below the bound forecast floor, admitting equality without consumption", async () => {
-  const minimum = "4105809000";
+  const minimum = "9025809000";
   f.pilot.descriptor.capUnits = (BigInt(minimum) - 1n).toString(); await f.persist();
   await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
   f.pilot.descriptor.capUnits = minimum; await f.persist();

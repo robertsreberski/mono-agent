@@ -51,7 +51,9 @@ const rawModel = {
   provider: "provider-1",
   baseUrl: "https://provider.example/v1",
   reasoning: true,
-  thinkingLevelMap: { off: "none" },
+  thinkingLevelMap: { off: "none", low: undefined },
+  inputLimits: { images: { maxPerRequest: 5 } },
+  promptCache: { short: 300 },
   input: ["text"] as Array<"text" | "image">,
   cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.2 },
   contextWindow: 128_000,
@@ -79,10 +81,14 @@ describe("Pi interoperability facade", () => {
     expect(listed[0]).not.toBe(rawModel);
     expect(selected).not.toBe(rawModel);
 
+    listed[0]!.inputLimits!.images!.maxPerRequest = 99;
+    selected!.promptCache!.short = 0;
     listed[0]!.cost.input = 999;
     listed[0]!.input.push("image");
     selected!.compat!.supportsStore = true;
 
+    expect(rawModel.inputLimits.images.maxPerRequest).toBe(5);
+    expect(rawModel.promptCache.short).toBe(300);
     expect(rawModel.cost.input).toBe(1);
     expect(rawModel.input).toEqual(["text"]);
     expect(rawModel.compat.supportsStore).toBe(false);
@@ -312,6 +318,8 @@ describe("Pi interoperability facade", () => {
       expect(piMocks.getBuiltinModels).toHaveBeenCalledWith("provider-1");
 
       // Mutating the snapshot never touches the shared upstream row.
+      listed[0]!.inputLimits!.images!.maxPerRequest = 99;
+      listed[0]!.promptCache!.short = 0;
       listed[0]!.cost.input = 999;
       listed[0]!.input.push("video" as "image");
       expect(listPiBuiltinModels("provider-1")[0]).toMatchObject({

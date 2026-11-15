@@ -48,6 +48,11 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
   // quotationBackgroundRepeats is an opt-in capacity control that sizes an
   // ordinary-fit B quotation; default rehearsal bytes are unchanged.
   const background = carrier === "carry" || fallback ? sourceBackgroundRepeats ?? (carrier === "quotation" ? 650 : fallback ? 47000 : 3200) : quotationBackgroundRepeats;
+  // The historical large-carry fixture now fits Sol's 500K window. It is a
+  // coverage/no-fallback control there: a source large enough to exceed that
+  // window's input capacity would violate the retained-record 1 MiB cap.
+  const largeCarryFits = fallback && carrier === "carry" && model.contextWindow > 272000;
+  const expectsFallback = fallback && !largeCarryFits;
   const summary = (background ? `## Goal\n${"Fictional background. ".repeat(background)}\n\n` : "") + E2_PROTECTED_TEXT + "\nFictional reference: /home/example/private/marker.txt";
   let writer, repo, raw, turn, runtime, harness;
   const requests = [], setupRequests = [], events = [], warnings = [];
@@ -105,7 +110,7 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
     await onAdmission({ raw, admission, active, turn, access });
     const target = productionDefaults ? { ...faux.getModel(), ...model } : faux.getModel(), soul = await shippingSoul();
     const guarded = createRunDriver(raw, { model: target, systemPrompt: soul.text, tools: [], retainedSummaryAccess: access });
-    let exact = !refusal, observerError;
+    let exact = !refusal || largeCarryFits, observerError;
     const h = { models: { completeSimple: async (_model, context, options) => {
       requests.push({ model: `${model.provider}:${model.id}`, context: structuredClone(context), maxOutputTokens: options.maxTokens });
       try {
@@ -131,8 +136,9 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
     }
     need(result.applied);
     const successor = (await raw.getEntries()).filter(e => e.type === "compaction").at(-1);
-    need(fallback ? !successor.checkpoint.retainedSummaryCoverage && warnings.some(w => w.warning_kind === "retained_summary_legacy_fallback")
+    need(expectsFallback ? !successor.checkpoint.retainedSummaryCoverage && warnings.some(w => w.warning_kind === "retained_summary_legacy_fallback")
       : successor.checkpoint.retainedSummaryCoverage?.admissionId === admission.id);
+    if (largeCarryFits) need(!warnings.some(w => w.warning_kind === "retained_summary_legacy_fallback"));
     await guarded.endTurn("completed", { text: null, error: null, failureKind: null, cancelled: false, stopReason: "compaction" }); await raw.sync();
     return { carrier, fallback, requests, setupRequests, events, warnings, admissionKind: admission.kind, unchangedRefusalSuppressed: suppressed,
       noncommitObserved: refusal && !fallback, growthQualified: suppressed, committed: true, retainedBytes: Buffer.byteLength(active.text) };

@@ -7,6 +7,21 @@ import { buildProviderModelCatalog, selectProviderAuthCheckModel } from "../prov
 import { resolveAdvertisedModelEffortForBuiltin } from "../providers/model-effort-capabilities.js";
 
 describe("provider-model-catalog", () => {
+  it.each([
+    ["anthropic", "claude-fable-5-2", ["minimal", "low", "medium", "high", "xhigh", "max"], 1_000_000],
+    ["anthropic", "claude-haiku-5-5", ["none", "low", "medium", "high", "xhigh", "max"], 1_000_000],
+    ["openai-codex", "gpt-6.1-terra", ["none", "minimal", "low", "medium", "high", "xhigh", "max"], 500_000],
+    ["opencode-go", "kimi-k3.1-pro", ["low", "high", "max"], 1_048_576],
+    ["opencode", "muse-wonder-1.0", ["minimal", "low", "medium", "high", "xhigh", "max"], 1_048_576],
+  ] as const)("projects Pi 1.5 %s:%s into the web picker catalog", (provider, id, effortLevels, contextWindow) => {
+    const catalog = buildProviderModelCatalog({ providers: [{ id: provider }] });
+    const reference = `${provider}:${id}`;
+    const row = catalog.listModels(provider, { limit: 200 }).models.find((model) => model.id === id);
+    expect(row).toMatchObject({ id, effortLevels, contextWindow, reasoning: true });
+    const route = parseMonoRuntimeModelReference(reference);
+    expect(catalog.describe([route])[reference]).toMatchObject({ effortLevels, contextWindow });
+    if (provider === "anthropic") expect(row?.supportsContext1M).not.toBe(true); // Already native 1M, not GPT opt-in.
+  });
   it("selects the cheapest bounded check model deterministically", () => {
     const selected = selectProviderAuthCheckModel("fixture", {
       providers: [{
@@ -584,6 +599,6 @@ describe("1M context catalog advertisements", () => {
     expect(catalog.listModels("openai-codex").models.find((row) => row.id === ref.model)).toMatchObject({ supportsContext1M: true, context1M: true, contextWindow: 1_000_000 });
     expect(catalog.listModels("openai-codex").models.find((row) => row.id === "gpt-5.3-codex-spark")?.supportsContext1M).toBeUndefined();
     const off = buildProviderModelCatalog({ configuredRoutes: [ref], context1MModels: { [ref.reference]: false } });
-    expect(off.describe([ref])[ref.reference]).toMatchObject({ context1M: false, contextWindow: 272_000 });
+    expect(off.describe([ref])[ref.reference]).toMatchObject({ context1M: false, contextWindow: 500_000 });
   });
 });

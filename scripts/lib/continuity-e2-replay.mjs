@@ -419,6 +419,8 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
     }
     if (protectedMode) {
       const controls = [];
+      // `fallback` selects the historical stress input, not a promised outcome:
+      // Sol's large carry now fits 500K and explicitly proves coverage/no fallback.
       for (const catalog of await loadE2Catalog()) for (const carrier of ["quotation", "carry"]) for (const fallback of [false, true]) {
         const model = { provider: catalog.model.split(":")[0], id: catalog.model.split(":")[1], contextWindow: catalog.contextWindow, maxTokens: catalog.maxTokens };
         const measured = await rehearseE2Protected({ work: join(output, "protected-controls", `${model.id}-${carrier}-${fallback}`), model, carrier, fallback, refusal: summary === "protected-refusal" });

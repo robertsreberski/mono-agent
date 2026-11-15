@@ -33,7 +33,7 @@ SMOKE=$(mktemp -d /tmp/mono-agent-smoke.XXXX) && cd "$SMOKE"
 CLI="$REPO/packages/app/dist/cli.js"
 node $CLI init --model claude:claude-sonnet-4-6 --fallback pi:ollama:gemma4:31b
 # or hand-write a minimal IDENTITY.md + mono-agent.config.json with a real pi model
-# (e.g. pi:openai-codex:gpt-5.5), sandbox {"mode":"native","network":{"mode":"none"}},
+# (e.g. pi:openai-codex:gpt-6.1-terra), sandbox {"mode":"native","network":{"mode":"none"}},
 # console/webhook disabled unless under test.
 node $CLI validate; echo "validate exit: $?"
 echo "$SMOKE" > /tmp/mono-agent-smoke-dir

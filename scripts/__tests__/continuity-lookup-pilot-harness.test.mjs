@@ -1,3 +1,4 @@
+import { codexWireTools } from "./fixtures/codex-wire-tools.mjs";
 import { afterEach, beforeAll, afterAll, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile, lstat, symlink } from "node:fs/promises";
 import { userInfo } from "node:os";
@@ -87,11 +88,11 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
       const headers = new Headers(init.headers), bytes = headers.get("content-encoding") === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body), body = JSON.parse(bytes);
       for (const name of ["session-id", "x-client-request-id"]) expect(headers.get(name)).toBe(key);
       expect(body.prompt_cache_key).toBe(key); expect(options.sessionId).toBe(outer[index].sessionId); expect(options.nativeSessionAuthority).toBe(outer[index].nativeAuthority); expect(options.sessionId).not.toBe(key);
-      expect(body.tools.every(t => t.name.endsWith("ConversationHistory"))).toBe(true);
+      expect(codexWireTools(body).every(t => t.name.endsWith("ConversationHistory"))).toBe(true);
       if (id === "native-lookup" && index === 0) return response([message("Fictional checkpoint material.")]);
       if (round === 1) {
         expect(JSON.stringify(body.input)).toContain("Fictional checkpoint material.");
-        const tool = body.tools.find(t => t.name.endsWith("ConversationHistory")); expect(tool).toBeTruthy();
+        const tool = codexWireTools(body).find(t => t.name.endsWith("ConversationHistory")); expect(tool).toBeTruthy();
         return response([reasoning, { type: "function_call", id: "fc_fictional", call_id: "call_fictional", name: tool.name, arguments: JSON.stringify({ query: "fictional" }), status: "completed" }]);
       }
       expect(round).toBe(2); expect(body.input.find(item => item.type === "reasoning")).toEqual(reasoning);

@@ -199,7 +199,8 @@ it("pins assumed-v1 rates, strict tier threshold and output max to the installed
   const { openaiCodexProvider } = await import(pathToFileURL(join(pi, pkg.exports["./providers/*"].import.replace("*", "openai-codex"))).href);
   const provider = openaiCodexProvider();
   const selected = provider.getModels().find(m => m.id === C.model);
-  expect(selected.contextWindow).toBe(A.inputMax); expect(selected.maxTokens).toBe(A.outputMax);
+  // Pi 1.5 serves 500K, but the frozen guarded payload envelope remains 272K.
+  expect(selected.contextWindow).toBe(500000); expect(A.inputMax).toBe(272000); expect(selected.maxTokens).toBe(A.outputMax);
   for (const [key, rate] of Object.entries(A.rates)) expect(selected.cost[key]).toBe(rate);
   expect(selected.cost.tiers.every(t => t.inputTokensAbove >= A.inputMax)).toBe(true);
   expect(2 * (A.inputMax * Math.max(A.rates.input, A.rates.cacheRead, A.rates.cacheWrite) + A.outputMax * A.rates.output) / 1000000).toBe(A.rmax);
@@ -482,4 +483,26 @@ it("registers exactly one forwarded observer", () => {
   expect(() => observer.register(null)).toThrow("lookup_pilot_capability_invalid");
   observer.register(fn); expect(() => observer.register(fn)).toThrow("lookup_pilot_capability_invalid");
   observer.notify("fictional-context", 1); expect(fn).toHaveBeenCalledExactlyOnceWith("fictional-context", 1);
+});
+
+it("counts native additional_tools schema framing without enlarging the frozen envelope", async () => {
+  const body = payload(), tool = { type: "function", name: "FictionalLookup", parameters: { type: "object", properties: { title: { type: "string" } } } };
+  body.input.unshift({ type: "additional_tools", role: "developer", tools: [tool] });
+  expect(lookupInputEnvelope(body).H).toBe(A.framing.base + 2 * A.framing.inputItem + A.framing.tool + A.framing.schemaProperty + A.framing.instructions);
+  const f = fixture({ body }); await f.call(); expect(f.send).toHaveBeenCalledOnce();
+  for (const item of [
+    { type: "additional_tools", role: "user", tools: [tool] },
+    { type: "additional_tools", role: "developer", tools: [{ type: "web_search" }] },
+    { type: "additional_tools", role: "developer", tools: [{ ...tool, unlisted: true }] },
+  ]) {
+    const refused = fixture({ body: { ...payload(), input: [item] } });
+    await expect(refused.call()).rejects.toThrow("lookup_payload_forbidden");
+    expect(refused.permit.events).toEqual([]); expect(refused.send).not.toHaveBeenCalled();
+  }
+});
+it("rejects custom identity and telemetry data before a hold or send", async () => {
+  for (const options of [{ identity: { userAgent: { custom: "Fictional custom identity" } } }, { telemetry: {} }]) {
+    const f = fixture(); expect(() => f.call(options)).toThrow("lookup_option_forbidden");
+    expect(f.permit.events).toEqual([]); expect(f.send).not.toHaveBeenCalled();
+  }
 });

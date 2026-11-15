@@ -7,7 +7,7 @@ export function lookupGuardedModelPolicy(codes, LookupGuardError) {
   }
   function assertLookupChildSafety(settings) { assertLookupAuxiliaryCallersOff(settings); }
   const REQUEST_OPTION_KEYS = new Set([
-    "temperature", "samplingParams", "maxTokens", "signal", "telemetryContext", "apiKey",
+    "identity", "temperature", "samplingParams", "maxTokens", "signal", "telemetry", "apiKey",
     "transport", "cacheRetention", "sessionId", "headers", "onPayload", "onResponse",
     "onProviderStreamEvent", "timeoutMs", "websocketConnectTimeoutMs", "maxRetries",
     "maxRetryDelayMs", "metadata", "env", "reasoning", "model", "piMaxRetries",
@@ -17,12 +17,17 @@ export function lookupGuardedModelPolicy(codes, LookupGuardError) {
   function assertIdentity(model, contract) {
     if (model?.provider !== contract.provider || (model?.id ?? model?.model) !== contract.model
       || (model.api !== undefined && model.api !== contract.api) || (model.baseUrl !== undefined && model.baseUrl !== contract.baseUrl)
-      || (model.contextWindow !== undefined && model.contextWindow !== 272000)
+      || (model.contextWindow !== undefined && ![272000, 500000].includes(model.contextWindow))
       || (model.maxTokens !== undefined && model.maxTokens > 128000)) refuse(codes.route_mismatch);
   }
   function assertRoute(model, options, contract) {
     if (Object.hasOwn(options, "fetch")) refuse(codes.external_fetch_forbidden);
     for (const key of Object.keys(options)) if (!REQUEST_OPTION_KEYS.has(key)) refuse(codes.option_forbidden);
+    // Pi 1.4+ names this optional slot telemetry; no span data is permitted.
+    if (options.telemetry !== undefined) refuse(codes.option_forbidden);
+    // Pi Agent Core 1.4+ adds only this public attribution by default. Reject
+    // custom identities (including user-agent strings), not just unknown keys.
+    if (options.identity !== undefined && JSON.stringify(options.identity) !== JSON.stringify({ attribution: { name: "pi", url: "https://pi.dev", categories: ["cli-agent"] } })) refuse(codes.option_forbidden);
     if (options.headers != null) {
       let count;
       try { count = [...new Headers(options.headers)].length; } catch { refuse(codes.headers_forbidden); }
@@ -56,11 +61,17 @@ export function lookupGuardedModelPolicy(codes, LookupGuardError) {
     if (payload.include !== undefined && (!Array.isArray(payload.include) || payload.include.some(x => x !== "reasoning.encrypted_content"))) refuse(codes.payload_forbidden);
     if (payload.instructions !== undefined && typeof payload.instructions !== "string") refuse(codes.payload_forbidden);
     if (payload.tools !== undefined && !Array.isArray(payload.tools)) refuse(codes.payload_forbidden);
-    for (const tool of payload.tools ?? []) {
+    const additional = payload.input.filter(item => item?.type === "additional_tools");
+    for (const item of additional) {
+      keysOnly(item, ["type", "role", "tools"]);
+      if (item.role !== "developer" || !Array.isArray(item.tools)) refuse(codes.payload_forbidden);
+    }
+    for (const tool of [...(payload.tools ?? []), ...additional.flatMap(item => item.tools)]) {
       keysOnly(tool, ["type", "name", "description", "parameters", "strict"]);
       if (tool.type !== "function") refuse(codes.payload_forbidden);
     }
     for (const item of payload.input) {
+      if (item?.type === "additional_tools") continue; // Validated above, including every tool.
       if (item?.type === "reasoning") {
         keysOnly(item, ["type", "id", "summary", "encrypted_content", "status", "content"]);
         if (round === 1) refuse(codes.initial_reasoning_forbidden);

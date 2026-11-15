@@ -73,8 +73,11 @@ it.each(["WebSocket error", "WebSocket closed 1006", "WebSocket stream closed be
     expect(context).toHaveLength(1); expect(context[0]!.content).toEqual([{ type: "text", text: "Fictional final answer" }]);
     // Partial paid usage is still billed to the run.
     const sum = (key: "input" | "output") => assistants.reduce((total, message) => total + message.usage[key], 0);
-    expect(assistants[0]!.usage.input).toBeGreaterThan(0);
-    expect(result.usage.input_tokens).toBe(sum("input")); expect(result.usage.output_tokens).toBe(sum("output"));
+    // Pi 1.5 no longer double-counts faux cache writes as uncached input.
+    expect(assistants[0]!.usage.input).toBe(0);
+    expect(assistants[0]!.usage.cacheWrite).toBeGreaterThan(0);
+    expect(result.usage.cache_creation_tokens).toBe(assistants.reduce((total, message) => total + message.usage.cacheWrite, 0));
+    expect(result.usage.input_tokens).toBe(sum("input") || null); expect(result.usage.output_tokens).toBe(sum("output"));
     expect(retryWarnings(result)).toEqual([expect.objectContaining({ source: "pi", attempt: 2, max_attempts: 4, reason: expect.any(String) })]);
     expect(result.diagnostics.pi_request_retries).toBe(1);
   });

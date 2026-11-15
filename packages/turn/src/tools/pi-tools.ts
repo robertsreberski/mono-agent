@@ -7,7 +7,6 @@ import { normalizeBashTimeoutMs, normalizeProcessTimeoutMs, readToolImpl, writeT
 import { objectSchema } from "./shared/tool-schema.js";
 import { existsSync, readFileSync } from "node:fs";
 import { formatSkillBodyWithPathNote } from "../agent/prompt/skill-index.js";
-import { Type } from "@earendil-works/pi-ai";
 import { MAX_TOOL_RESULT_BYTES, wrapToolsWithBloatGuard } from "../agent/tool-bloat.js";
 import { startPreparedProcess } from "./commands/process-runner.js";
 import { passthroughSandbox } from "../agent/sandbox-seam.js";
@@ -341,13 +340,13 @@ function readSkillTool(skillNames: any[] = [], { skillsRoot, dataDir, skills = [
 }
 
 
-export function createStructuredOutputTool(outputSchema: any, onStructuredOutput: any): { name: string; label: string; description: string; parameters: Type.TUnsafe<unknown>; executionMode: string; execute(_toolCallId: any, params: any): Promise<{ content: { type: string; text: string }[]; details: any; terminate: boolean }> } | null {
+export function createStructuredOutputTool(outputSchema: any, onStructuredOutput: any): { name: string; label: string; description: string; parameters: object; executionMode: string; execute(_toolCallId: any, params: any): Promise<{ content: { type: string; text: string }[]; details: any; terminate: boolean }> } | null {
   if (!outputSchema) return null;
   return {
     name: "StructuredOutput",
     label: "Structured Output",
     description: "Submit the final structured result object. Call this once when the response is complete.",
-    parameters: Type.Unsafe(outputSchema),
+    parameters: outputSchema,
     executionMode: "sequential",
     async execute(_toolCallId: any, params: any) {
       onStructuredOutput?.(params);

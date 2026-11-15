@@ -523,7 +523,7 @@ describe("wizard model discovery", () => {
     expect(values).toContain("openai-codex:gpt-5.6-terra");
     expect(values).toContain("openai-codex:gpt-5.6-sol");
     expect(values.indexOf("openai-codex:gpt-5.6-terra"))
-      .toBeLessThan(values.indexOf("openai-codex:gpt-5.3-codex-spark"));
+      .toBeLessThan(values.indexOf("openai-codex:gpt-6.1-terra"));
     expect(result.statuses[0]).toMatchObject({ provider: "Pi", status: "detected" });
   });
 

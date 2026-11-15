@@ -1,3 +1,4 @@
+import { codexWireTools } from "./fixtures/codex-wire-tools.mjs";
 import { expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -33,7 +34,7 @@ it.each([false, true])("real host turn with reasoning replay/tool or outage refu
       expect(body.prompt_cache_key).toBe(promptCacheKey);
       let output;
       if (rounds === 1) {
-        const tool = body.tools.find(t => t.name.toLowerCase() === "read"); expect(tool).toBeTruthy();
+        const tool = codexWireTools(body).find(t => t.name.toLowerCase() === "read"); expect(tool).toBeTruthy();
         output = { type: "function_call", id: "fc_fictional", call_id: "call_fictional", name: tool.name,
           arguments: JSON.stringify({ file_path: join(work, "fictional.txt") }), status: "completed" };
       } else {

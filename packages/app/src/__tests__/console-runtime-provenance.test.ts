@@ -35,7 +35,7 @@ async function agentFolder(): Promise<{ cwd: string; configPath: string; dotenvP
   const configPath = join(cwd, "mono-agent.config.json");
   await writeFile(join(cwd, "IDENTITY.md"), "# Fictional Agent\n");
   await writeFile(configPath, JSON.stringify({
-    runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" },
+    runtime: { model: "openai-codex:gpt-6.1-terra" }, context: { identityPath: "IDENTITY.md" },
     tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] },
   }));
   return { cwd, configPath, dotenvPath: join(cwd, ".env"), env: {} };

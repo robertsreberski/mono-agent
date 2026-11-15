@@ -24,7 +24,7 @@ describe("app channel capability composition", () => {
     fixtures.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
     await writeFile(configReadPath, JSON.stringify({
-      runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
+      runtime: { model: "openai-codex:gpt-6.1-terra", workspace: "." },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       artifacts: { dir: "./artifacts" },
@@ -116,7 +116,7 @@ describe("app channel capability composition", () => {
       fixtures.push(cwd);
       const configReadPath = join(cwd, "mono-agent.config.json");
       await writeFile(configReadPath, JSON.stringify({
-        runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
+        runtime: { model: "openai-codex:gpt-6.1-terra", workspace: "." },
         context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
         tools: { allowedTools: [], disallowedTools: [] },
         artifacts: { dir: "./artifacts" },
@@ -197,7 +197,7 @@ it.each([
   fixtures.push(cwd);
   const configReadPath = join(cwd, "mono-agent.config.json");
   const config = {
-    runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
+    runtime: { model: "openai-codex:gpt-6.1-terra", workspace: "." },
     context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
     tools: { allowedTools: allowed, disallowedTools: [] },
     subagents: { enabled: true, definitions: [{ name: "researcher", description: "A synthetic researcher.", prompt: "Synthetic instructions." }] },

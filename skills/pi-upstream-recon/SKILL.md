@@ -42,7 +42,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 ## Version pins (keep them exact)
 
 - `packages/turn`: `@earendil-works/pi-ai` and `@earendil-works/pi-agent-core`
-  at `1.2.0`.
+  at `1.5.2`.
   Pi 1.x removed the experimental upstream harness and session repository.
   The mono-agent engine owns admission, steering and storage over the installed
   `runAgentLoop`; the runtime adapter owns provider and tool integration.
@@ -100,6 +100,13 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   it never wraps stream consumption. Do not replace that safe native fallback.
   New assistant-error retry patterns must not enable response-level retries in
   the runtime: checks, compaction and handoffs keep SSE and `maxRetries: 0`.
+- Pi 1.5.2 no longer exports TypeBox builders. Forward plain JSON Schema for
+  tools; pi-schema now coerces every schema, including MCP schemas. Preserve
+  runtime guards and test `argumentsError` rejection before execution. Snapshot
+  catalog data types from upstream rather than copying its optional-map shape.
+  Codex GPT-6.1 Sol/Terra now default to 500K; Haiku 5.5 admits `off`.
+  Native OpenCode headers derive from request `sessionId`, so keep compaction
+  attribution aligned without overriding explicit auth/request headers.
 - Pi's standalone OAuth registry remains unavailable at runtime.
   `packages/turn/src/providers/pi/oauth-compat.ts` owns the compatibility
   surface over `provider.auth.oauth`; do not bypass it with private upstream
@@ -111,7 +118,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   `resolvePiOAuthApiKey`, and `loginPiOAuth`. The model APIs return cloned
   snapshots, and the OAuth APIs do not expose Pi provider instances.
   A consumer test that still imports Pi's faux helpers must use an isolated
-  fixture or the runtime/harness exact Pi AI `1.2.0` and Pi Agent Core `1.2.0`
+  fixture or the runtime/harness exact Pi AI `1.5.2` and Pi Agent Core `1.5.2`
   compatibility pins as development-only pins; a floating
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
@@ -122,7 +129,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   idle legacy v3/v4 main context with source-bound restartable staging, fsync the
   new transcript/publication before archiving the source, and cold-replay legacy files
   with open operations. Never test migration against real session directories.
-- A packed consumer should resolve Pi AI `1.2.0` from the runtime and from
+- A packed consumer should resolve Pi AI `1.5.2` from the runtime and from
   Pi Agent Core itself. The release guard verifies both resolution paths so
   Core's upstream floating range cannot be rewired by a host dependency.
 

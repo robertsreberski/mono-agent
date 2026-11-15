@@ -60,7 +60,7 @@ describe("ensureStartable (start/restart preflight gate)", () => {
   it("refuses with code 1 when the config loads but a section errors", async () => {
     // Valid model, but the referenced identity file does not exist → context error.
     await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
     });
 
@@ -79,7 +79,7 @@ describe("ensureStartable (start/restart preflight gate)", () => {
 
   it("does not block existing starts solely for duplicate keys", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
-    await writeFile(join(dir, "mono-agent.config.json"), '{"runtime":{"model":"openai-codex:gpt-5.5"},"context":{"identityPath":"./IDENTITY.md"},"processJobs":{"enabled":false,"enabled":false}}');
+    await writeFile(join(dir, "mono-agent.config.json"), '{"runtime":{"model":"openai-codex:gpt-6.1-terra"},"context":{"identityPath":"./IDENTITY.md"},"processJobs":{"enabled":false,"enabled":false}}');
     const result = await ensureStartable(parseCliArgs(["start"]));
     expect(result.ok).toBe(true);
   });
@@ -92,7 +92,7 @@ describe("ensureStartable (start/restart preflight gate)", () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     await seedManagedMemory(join(dir, "mem"), "bujo", "ollama:nomic-embed-text:v1.5");
     await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-6.1-terra" },
       context: { identityPath: "./IDENTITY.md" },
       memory: {
         mode: "bujo",

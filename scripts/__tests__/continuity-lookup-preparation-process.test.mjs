@@ -9,11 +9,11 @@ const suite = pilotSuite(), children = [];
 beforeAll(async () => { const parent = join(suite.fixture.base, "node_modules/@modelcontextprotocol"); await fs.mkdir(parent, { recursive: true }); await fs.symlink(join(ROOT, "node_modules/@modelcontextprotocol/sdk"), join(parent, "sdk")); });
 afterEach(async () => { for (const c of children.splice(0)) { if (c.child.exitCode === null && c.child.signalCode === null) c.child.kill("SIGKILL"); await c.exit; } });
 async function run(fault) {
-  const f = suite.fixture, options = await runOptions(f, [], fault === "hang" ? 1500 : fault === "lease-home" ? 120000 : 15000);
+  const f = suite.fixture, options = await runOptions(f, [], fault === "hang" ? 1500 : fault === "lease-home" ? 180000 : 15000);
   if (fault === "lease-home") {
     const spaced = `${options.outputRoot} with space`; await fs.rename(options.outputRoot, spaced);
     options.outputRoot = options.authorization.outputRoot = spaced;
-    options.pilot = structuredClone(options.pilot); options.pilot.descriptor.deadlines.runDeadlineMs = 180000;
+    options.pilot = structuredClone(options.pilot); options.pilot.descriptor.deadlines.runDeadlineMs = 300000;
     options.authorization.pilotSha256 = (await import("../lib/continuity-dataset.mjs")).digest(options.pilot);
   }
   // Consumption requires an otherwise empty root; evidence belongs alongside it.
@@ -70,11 +70,13 @@ it("cannot mint/verify from the assigned preparation even with the entry gate mo
 }, 60000);
 
 it("production probe reacquires preparation's leftover lease-home without inheriting its owner", async () => {
-  const r = await run("lease-home"), prep = r.evidence.find(e => e.preparing), probe = r.evidence.find(e => e.pid === r.reply.pid);
-  expect(r.reply, JSON.stringify(r.evidence)).toMatchObject({ verified: true }); expect(prep.leftoverOwner).toBe(prep.pid);
+  // Full root-gate CPU contention includes preparation plus a shipping SDK replay.
+  const r = await run("lease-home"), prep = r.evidence.find(e => e.preparing);
+  expect(r.reply, JSON.stringify({ evidence: r.evidence, state: r.state })).toMatchObject({ verified: true });
+  const probe = r.evidence.find(e => e.pid === r.reply.pid); expect(prep.leftoverOwner).toBe(prep.pid);
   expect(Object.values(probe.snapshotReads).length).toBeGreaterThan(0); expect(Object.values(probe.snapshotReads).every(n => n === 2)).toBe(true);
   expect(probe.leaseOwners, JSON.stringify(r.evidence)).toEqual([probe.pid]); expect(probe.pid).not.toBe(prep.pid);
-}, 240000);
+}, 360000);
 
 it("preparation child reports its fixed failure before exiting with status one", async () => {
   const r = await run("prepare-failure"), prep = r.evidence.find(e => e.preparing);

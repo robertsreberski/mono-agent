@@ -1,3 +1,4 @@
+import { codexWireTools } from "./fixtures/codex-wire-tools.mjs";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -38,7 +39,7 @@ beforeAll(async () => {
     const raw = Buffer.concat(chunks), bytes = request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(raw) : raw, body = JSON.parse(bytes);
     const key = request.headers["session-id"], round = (arrivals.get(key)?.length ?? 0) + 1;
     arrivals.set(key, [...(arrivals.get(key) ?? []), { round, digest: sha(bytes), marker: bytes.includes(MARKER), consumed: state.slots[0].holds.at(-1)?.consumed === true }]);
-    const tool = body.tools.find(t => t.name.endsWith("ConversationHistory"));
+    const tool = codexWireTools(body).find(t => t.name.endsWith("ConversationHistory"));
     // Round one puts the marker into the NEXT context through the model's own tool arguments.
     const item = round === 1
       ? { type: "function_call", id: "fc_fictional", call_id: "call_fictional", name: tool.name, arguments: JSON.stringify({ action: "search", query: MARKER, limit: 3 }), status: "completed" }
