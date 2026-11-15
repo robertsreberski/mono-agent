@@ -13,6 +13,7 @@ import { CREDENTIAL_CARDS, CredentialSetupError, parseCredentialRequest, parseCr
 import { readVerifiedFile } from "../durable-state/secure-file-replace.js";
 import { mergeSecretEnvFile } from "./secret-env.js";
 import { validateMonoAgentFolder } from "../doctor/doctor.js";
+import { processRuntimeProvenanceDetail, type RuntimeProvenanceSource } from "../provenance/process-runtime-provenance.js";
 
 const channelDefinitions = {
   telegram: { section: "telegram", prefix: "MONO_AGENT_TELEGRAM_", keys: { bot: resolveCredentialEnvironmentName("telegram-bot") }, allow: "allowedChatIds", allowEnv: "MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS", allowAll: "allowAllChats", allowAllEnv: "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS" },
@@ -30,6 +31,8 @@ export function createCredentialSetupService(input: {
 }, dependencies: {
   readonly merge?: typeof mergeSecretEnvFile;
   readonly writeConfig?: typeof writeSettingsJson;
+  /** Informational runtime provenance; defaults to the process-lifetime memo, never a per-validation closure re-hash. */
+  readonly runtimeProvenanceDetail?: RuntimeProvenanceSource;
 } = {}): CredentialSetupService {
   const dotenvPath = input.dotenvPath === undefined ? undefined : resolve(input.cwd, input.dotenvPath);
   const identity = { pid: process.pid, startedAt: new Date(performance.timeOrigin).toISOString() };
@@ -38,6 +41,12 @@ export function createCredentialSetupService(input: {
   let busy = false;
   const shadowed = new Map<string, boolean>();
   const merge = dependencies.merge ?? mergeSecretEnvFile;
+  const runtimeProvenance = dependencies.runtimeProvenanceDetail ?? processRuntimeProvenanceDetail;
+  /** Structural folder validation of a config path; console saves never re-hash the managed runtime per call. */
+  const structurallyValid = async (configPath: string, env: Record<string, string | undefined>): Promise<boolean> => (await validateMonoAgentFolder({
+    cwd: input.cwd, configPath, env, allowFilesystemWrites: false, liveness: false, subprocessProbes: false,
+    verifiedRuntimeProvenanceDetail: await runtimeProvenance(),
+  })).structurallyValid;
   const safe = async <T>(work: () => Promise<T>): Promise<T> => {
     try { return await work(); } catch (error) { if (error instanceof CredentialSetupError) throw error; throw new CredentialSetupError("credential_unavailable", 409); }
   };
@@ -106,8 +115,7 @@ export function createCredentialSetupService(input: {
   };
   const validateUnchangedPrerequisites = async (env: Record<string, string | undefined>): Promise<void> => {
     await loadMonoAgentConfig({ cwd: input.cwd, jsonPath: input.configPath, warnOnDeprecatedConfig: false, warnOnDuplicateConfig: false });
-    const report = await validateMonoAgentFolder({ cwd: input.cwd, configPath: input.configPath, env, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
-    if (!report.structurallyValid) fail();
+    if (!await structurallyValid(input.configPath, env)) fail();
   };
   const prevalidateExtra = async (source: Awaited<ReturnType<typeof readSource>>, changes: SettingsJson, id: CredentialCardId, env: Record<string, string | undefined>) => {
     const checked = new Error("Private credential preflight complete");
@@ -115,8 +123,7 @@ export function createCredentialSetupService(input: {
       await writeSettingsJson({ path: input.configPath, patch: changes, guarded: { expectedVersion: source.config.version,
         validate: async (candidate, candidatePath) => {
           await validate(id, candidate, env, candidatePath);
-          const report = await validateMonoAgentFolder({ cwd: input.cwd, configPath: candidatePath, env, allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
-          if (!report.structurallyValid) fail();
+          if (!await structurallyValid(candidatePath, env)) fail();
           throw checked; // E1 owns private temp/ignore/lock cleanup. Never publish config or a backup in preflight.
         },
       } });
@@ -149,8 +156,7 @@ export function createCredentialSetupService(input: {
           const latest = await readSource();
           if (latest.fence !== current.fence) fail("credential_conflict");
           await validate(intent.card, candidate, effectiveEnv(latest.env), candidatePath);
-          const report = await validateMonoAgentFolder({ cwd: input.cwd, configPath: candidatePath, env: effectiveEnv(latest.env), allowFilesystemWrites: false, liveness: false, subprocessProbes: false });
-          if (!report.structurallyValid) fail();
+          if (!await structurallyValid(candidatePath, effectiveEnv(latest.env))) fail();
         },
       } });
       pending.delete(intent.card);

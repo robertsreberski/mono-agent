@@ -2,6 +2,7 @@ import { createCredentialSetupService } from "../setup/credential-setup.js";
 import { createCapabilityActionsService } from "../setup/capability-actions.js";
 import { isAgentToolAllowed } from "../tools/known-tools.js";
 import { createCapabilityStatusService } from "../setup/capability-status.js";
+import { consoleRuntimeProvenanceSource } from "../provenance/process-runtime-provenance.js";
 import type { ProviderUsageOperator } from "@mono-agent/contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
@@ -52,6 +53,8 @@ export interface ChannelsControllerPort {
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   readonly providerAuthObservations?: ProviderAuthObservationTracker;
   readonly restartAuthority?: TuiRestartAuthority | undefined;
+  /** Launch-verified managed-runtime provenance; absent means the lazy process memo. */
+  readonly verifiedRuntimeProvenanceDetail?: string | undefined;
   providerUsageFor?(config: MonoAgentConfig): ProviderUsageOperator;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
   rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
@@ -276,6 +279,8 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       input,
       observations: controller.providerAuthObservations ?? createProviderAuthObservationTracker(),
     }) : undefined;
+    // Console validations never re-verify the runtime closure per call.
+    const runtimeProvenanceDetail = consoleRuntimeProvenanceSource(controller.verifiedRuntimeProvenanceDetail);
     const appOwnedTuiStart = startAppOwnedTuiChannel(
       driver,
       channelStartInput,
@@ -283,7 +288,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       providerAuth,
       controller.providerUsageFor?.(coreConfig),
       controller.restartAuthority,
-      driver.id === "tui" ? createCapabilityStatusService({ ...input, drivers: controller.drivers }) : undefined,
+      driver.id === "tui" ? createCapabilityStatusService({ ...input, drivers: controller.drivers }, { runtimeProvenanceDetail }) : undefined,
       driver.id === "tui" ? createCapabilityActionsService({
         cwd: controller.cwd,
         configPath: controller.configPath,
@@ -301,11 +306,12 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
           if (controller.logger?.info) controller.logger.info(message);
           else console.info(message);
         },
+        runtimeProvenanceDetail,
       }) : undefined,
       driver.id === "tui" ? createCredentialSetupService({
         cwd: controller.cwd, configPath: controller.configPath, env: controller.env,
         ...(controller.dotenvPath === undefined ? {} : { dotenvPath: controller.dotenvPath }),
-      }) : undefined,
+      }, { runtimeProvenanceDetail }) : undefined,
     );
     const runningChannel = await (appOwnedTuiStart ?? driver.start(channelStartInput));
     if (!isCurrentGeneration()) {
