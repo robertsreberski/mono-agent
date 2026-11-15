@@ -3,7 +3,10 @@ import { DatabaseSync } from "node:sqlite";
 import { snapshots, CONVERSATION, AT } from "./continuity-recorded/snapshots.mjs";
 import { readRecordedSource } from "../../lib/continuity-recorded-import.mjs";
 import { validateProtocol, SOL, LUNA } from "../../lib/continuity-e2-protocol.mjs";
-export async function registrationTrace(root) {
+// `assistantAttachments` adds metadata-only rows to a reply. Each one is an
+// item-tier coverage gap listed by every checkpoint, so a genuine sizing report
+// grows by tens of bytes per row without lengthening any replayed context.
+export async function registrationTrace(root, { assistantAttachments = 0 } = {}) {
   const f = snapshots(root), db = new DatabaseSync(f.web);
   db.exec("DELETE FROM turns; DELETE FROM messages;");
   for (let i = 0; i < 8; i++) {
@@ -17,6 +20,10 @@ export async function registrationTrace(root) {
     const parts = [...(marker ? [marker] : []), { type: "text", text: "Fictional response" }];
     db.prepare("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)").run(`assistant-${i}`, "thread-one", id, "assistant", JSON.stringify(parts), end, end, i === 2 ? "cancelled" : "complete", 0, 0);
   }
+  const attachment = db.prepare("INSERT INTO attachments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
+  db.exec("BEGIN");
+  for (let i = 0; i < assistantAttachments; i++) attachment.run(`fictional-attachment-${i}`, "thread-one", "assistant-0", "fictional-file", "text/plain", 1, "document", "complete", 1, "never-open-fictional-file", AT, AT, "upload");
+  db.exec("COMMIT");
   db.close();
   const { source } = await readRecordedSource(f.manifest, CONVERSATION);
   const message = turn => source.web.messages.findIndex(m => m.id === `assistant-${turn}`);

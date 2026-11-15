@@ -990,6 +990,19 @@ it.each(["faux-short", "faux-max"])("writes a genuine harness validation TypeErr
   expect(raw).not.toMatch(/fictional-canary|FICTIONAL_PRIVATE_CODE|\/Users\//); expect(fs.statSync(file).mode & 0o777).toBe(0o600);
 });
 
+it.each(["faux-short", "faux-max"])("refuses a sizing child without a delivered result and a clean exit (%s)", async summary => {
+  const { source, protocol } = await trace(), parent = await mkdtemp(join(tmpdir(), "e2-fictional-silent-")); await fs.promises.chmod(parent, 0o700); cleanup.push(() => rm(parent, { recursive: true, force: true }));
+  await writeFile(join(parent, "source.json"), JSON.stringify(source)); await writeFile(join(parent, "protocol.json"), JSON.stringify(protocol));
+  // Genuine production fork options and IPC path; only the entry is substituted.
+  const fork = subprocess.fork;
+  const launch = vi.spyOn(subprocess, "fork").mockImplementation((entry, args, options) => {
+    expect(entry).toBe(join(ROOT, "scripts/lib/continuity-e2-sizing-child.mjs"));
+    return fork(new URL("./fixtures/e2-sizing-silent-child.mjs", import.meta.url), args, options);
+  }); syncBuiltinESMExports();
+  const out = [], err = [];
+  expect(await main(["size", "--source", parent, "--protocol", join(parent, "protocol.json"), "--output", join(parent, "result"), "--summary", summary], { stdout: s => out.push(s), stderr: s => err.push(s) })).toBe(1);
+  expect(launch).toHaveBeenCalledOnce(); expect(out).toEqual([]); expect(err).toEqual(["E2_REFUSED\n"]);
+});
 it("selects the first native dist frame before a later script frame", () => {
   const error = new TypeError("fictional-canary");
   error.stack = `TypeError: fictional-canary\n at validateRequest (file://${ROOT}/packages/conversation/dist/harness/validation.js:59:15)\n at caller (${ROOT}/scripts/continuity-e2.mjs:44:3)`;

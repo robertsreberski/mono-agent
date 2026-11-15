@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, realpath, readFile, writeFile, rm, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execFile } from "node:child_process";
+import { execFile, fork } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { registrationTrace } from "./fixtures/continuity-e2-registration.mjs";
@@ -17,6 +17,7 @@ import { normalizeE2Sizing, requireProtectedE2Sizing, estimateE2SizingSet, E2_MA
 import { e2PhaseSchedule } from "../lib/continuity-e2-registration.mjs";
 import { loadE2Catalog } from "../lib/continuity-e2-pricing.mjs";
 import { parseE2Args } from "../continuity-e2.mjs";
+import { runE2SizingProcess } from "../lib/continuity-e2-sizing-process.mjs";
 import { historicalTuples } from "../../packages/turn/dist/engine/compaction-kit/historical-preservation.js";
 vi.mock("../lib/continuity-e2-sizing-identity.mjs", async original => {
   const actual = await original(); return { ...actual, e2SizingIdentity: vi.fn(actual.e2SizingIdentity) };
@@ -200,3 +201,56 @@ it("delegates an argv-spoofing warm wrapper to a genuinely clean sizing child", 
   expect(record.qualification).toBe(true); // Measurement was in the clean child, not the spoofing process.
   expect(record.sizingIdentity).toMatchObject({ sourceHead: expect.stringMatching(/^[a-f0-9]{40}$/u), buildOutputSha256: expect.stringMatching(/^[a-f0-9]{64}$/u) });
 }, 180000);
+
+// Real-source reports are hundreds of KiB. The clean child once disconnected
+// right after sending its result, and Node dropped the in-flight message, so
+// the parent refused every such draw. Exercise the shipping fork/child/IPC
+// path, unmocked, with genuine fictional reports of real-source scale.
+describe.sequential("delivers real-source-scale reports over the sizing child IPC", () => {
+  const MiB = 1024 * 1024, inputs = {};
+  const prepare = async (name, assistantAttachments) => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), `e2-ipc-sizing-${name}-`))); roots.push(root);
+    const snapshots = join(root, "snapshots"); await mkdir(snapshots);
+    const { source, protocol } = await registrationTrace(snapshots, { assistantAttachments });
+    protocol.probeLookupRounds = 3;
+    for (const branch of protocol.branches) { branch.limits.probeRequests = 64; branch.exclusions.coverage = source.coverage.flatMap((gap, i) => gap.tier === "replay" ? [i] : []); }
+    return inputs[name] = { root, source, protocol };
+  };
+  it.each([["medium", 13000, 256 * 1024, 2 * MiB], ["large", 48000, MiB, 8 * MiB]])("receives and qualifies a %s report", async (name, attachments, minimum, maximum) => {
+    const { root, source, protocol } = await prepare(name, attachments), output = join(root, "sizing"), diagnostics = [];
+    vi.stubEnv("HOME", root);
+    try {
+      const report = await runE2SizingProcess({ source, protocol, output, summary: "faux-short", replayArm: "continuity" }, value => diagnostics.push(value));
+      const written = await readFile(join(output, "sizing.json"), "utf8");
+      expect(Buffer.byteLength(written)).toBeGreaterThanOrEqual(minimum); expect(Buffer.byteLength(written)).toBeLessThan(maximum);
+      // The parent holds the complete promoted artifact, byte for byte.
+      expect(`${JSON.stringify(report)}\n`).toBe(written);
+      expect(report).toMatchObject({ schema: "continuity-e2-sizing-v3", summary: "faux-short", qualification: true,
+        sizingIdentity: { sourceHead: expect.stringMatching(/^[a-f0-9]{40}$/u), buildOutputSha256: expect.stringMatching(/^[a-f0-9]{64}$/u), node: process.version } });
+      expect(report.branches.flatMap(b => b.checkpoints).every(c => c.excludedCoverageInHistory.length >= attachments)).toBe(true);
+      expect(diagnostics.length).toBeGreaterThan(0);
+    } finally { vi.unstubAllEnvs(); }
+  }, 180000);
+  it("fails closed, without a qualifying artifact, when the result cannot be delivered", async () => {
+    const { root, source, protocol } = await prepare("disconnect", 0), output = join(root, "sizing"), types = [];
+    const env = { ...process.env, HOME: root }; delete env.NODE_OPTIONS;
+    // The shipping child and fork options; the peer leaves at its first diagnostic.
+    const child = fork(join(ROOT, "scripts/lib/continuity-e2-sizing-child.mjs"), [], { execPath: process.execPath, execArgv: [], env, stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json" });
+    const exit = new Promise(resolve => child.on("exit", resolve));
+    child.on("message", message => { types.push(message.type); if (child.connected) child.disconnect(); });
+    child.send({ source, protocol, output, summary: "faux-short", replayArm: "continuity" });
+    expect(await exit).toBe(1);
+    expect(types[0]).toBe("diagnostic"); expect(types).not.toContain("result");
+    await expect(access(output)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 180000);
+  it("returns the large report through the shipping CLI instead of E2_REFUSED", async () => {
+    const { root, protocol } = inputs.large ?? await prepare("large", 48000), input = join(root, "input"), output = join(root, "cli");
+    await mkdir(input); await writeFile(join(input, "source.json"), JSON.stringify(inputs.large.source)); await writeFile(join(input, "protocol.json"), JSON.stringify(protocol));
+    const { stdout, stderr } = await promisify(execFile)(process.execPath, ["scripts/continuity-e2.mjs", "size", "--source", input, "--protocol", join(input, "protocol.json"), "--output", output, "--summary", "faux-short"],
+      { cwd: ROOT, env: { ...process.env, HOME: root, NODE_OPTIONS: "" }, maxBuffer: 1024 * 1024 });
+    expect(stderr).toBe("");
+    expect(JSON.parse(stdout)).toEqual({ schema: "continuity-e2-sizing-v3", branches: 2, checkpoints: 4, summaryRequests: 0 });
+    const record = JSON.parse(await readFile(join(output, "sizing.json"), "utf8"));
+    expect(record.qualification).toBe(true);
+  }, 180000);
+});
