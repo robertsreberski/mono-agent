@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Raise the cold continuity-pack (handover) ceiling from 8,000 to a fixed
+  16,000 estimated tokens (at most 47,952 rendered UTF-8 bytes), still lowered
+  by the destination's real headroom and skipped below 500 tokens. A whole
+  retained summary of roughly 10k–15k tokens can now be quoted instead of omitted.
+  Cold rebuilds can therefore pay up to about 8,000 more input tokens per seeded
+  request (on every replayed turn in per-message mode). The 4k ledger prefix,
+  marker and tool reservations, snapshot bounds, upkeep budgets and
+  configuration are unchanged. Seeds persisted under the old ceiling are not
+  rewritten.
+
 - Fix stale setup copy: `mono-agent init --help` now says Capabilities can
   enable supported features with a previewed save that applies on the next
   start, the console Subagents card asks for a `subagents` config block

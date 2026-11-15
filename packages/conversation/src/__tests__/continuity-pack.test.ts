@@ -1,4 +1,4 @@
-import { PACK_HEADER, PACK_RETRIEVAL_GUIDANCE, packTokens } from "../continuity/render-fit.js";
+import { CONTINUITY_PACK_MAX_TOKENS, PACK_HEADER, PACK_RETRIEVAL_GUIDANCE, packTokens } from "../continuity/render-fit.js";
 import { createDurableHistoryStore } from "../history/canonical/store.js";
 import { bindContinuityQuotation, continuityQuotation } from "../tool-history/continuity-input.js";
 import { createHash } from "node:crypto";
@@ -243,7 +243,7 @@ it("reserves tools before crowded owner requests and prioritizes send/draft over
   expect(pack.text!.indexOf('name="mail_send"')).toBeLessThan(pack.text!.indexOf('name="mail_draft"'));
   expect(pack.text!.indexOf('name="mail_draft"')).toBeLessThan(pack.text!.indexOf('name="mail_get_draft"'));
   expect(pack.toolReserved).toBeGreaterThanOrEqual(2); expect(pack.counts.owner).toBeGreaterThan(0);
-  expect(pack.omitted).toBeGreaterThan(0); expect(pack.tokens).toBeLessThanOrEqual(8000);
+  expect(pack.omitted).toBeGreaterThan(0); expect(pack.tokens).toBeLessThanOrEqual(CONTINUITY_PACK_MAX_TOKENS);
   expect(renderContinuityPack({ records, omitted: 0, gaps: 0 }, [])).toEqual(pack);
   expect(renderContinuityPack({ records, omitted: 0, gaps: 0 }, [], 1600).tokens).toBeLessThanOrEqual(1600);
 });
@@ -280,7 +280,7 @@ it("compacts effect heads so the oldest read survives a crowded pack; content-fr
   const firstFiller = text.indexOf('name="mail_search"');
   if (firstFiller !== -1) expect(text.indexOf('id="id-150"')).toBeLessThan(firstFiller);
   expect(pack.toolReserved).toBeGreaterThanOrEqual(8); expect(pack.counts.owner).toBeGreaterThan(0);
-  expect(pack.omitted).toBeGreaterThan(0); expect(pack.tokens).toBeLessThanOrEqual(8000);
+  expect(pack.omitted).toBeGreaterThan(0); expect(pack.tokens).toBeLessThanOrEqual(CONTINUITY_PACK_MAX_TOKENS);
   expect(renderContinuityPack(source, [])).toEqual(pack);
 });
 
@@ -351,7 +351,7 @@ it.each(["Plain fictional summary.", 'Quote "\\" and newline\nwith 🦊 Ω.'.rep
 });
 
 it("preserves coverage-gap degradation while disclosing whole-summary omission", () => {
-  const summary = { ...record(900, "Oversized fictional summary. ".repeat(1000), "summary"), provenance: "generated" as const };
+  const summary = { ...record(900, "Oversized fictional summary. ".repeat(2000), "summary"), provenance: "generated" as const };
   const pack = renderContinuityPack({ records: [summary], omitted: 0, gaps: 1 }, []);
   expect(pack.degradedReason).toBe("coverage_gap");
   expect(pack.text).toContain("degraded=coverage_gap");
@@ -367,9 +367,11 @@ it("retains a redacted summary exactly, including its retained digest and JSON q
   const pack = renderContinuityPack({ records: [summary], omitted: 0, gaps: 0 }, []);
   expect(pack.text).toContain(`sha256=${JSON.stringify(retained.sha256)}: ${JSON.stringify(retained.text)}\n`);
   expect(pack.text).not.toContain("/home/example/private");
-  const expanded = { ...summary, text: '"\\\n'.repeat(6000) };
+  // Raw bytes alone would fit the default 16k ceiling (47,952 bytes); JSON
+  // quotation doubles them, so the whole entry must be omitted, not clipped.
+  const expanded = { ...summary, text: '"\\\n'.repeat(12000) };
   const overflow = renderContinuityPack({ records: [expanded], omitted: 0, gaps: 0 }, []);
-  expect(Buffer.byteLength(expanded.text)).toBeLessThan(24000);
+  expect(Buffer.byteLength(expanded.text)).toBeLessThan(47952);
   expect(overflow.counts.summary).toBe(0); expect(overflow.omitted).toBe(1);
   expect(overflow.text).toContain("whole entry required");
 });
@@ -394,7 +396,7 @@ it("carries the pinned summary through a >512-tool shortlist and crowded pack, w
   expect(pack.counts.summary).toBe(1); expect(pack.counts.owner).toBeGreaterThan(0); expect(pack.counts.tool).toBeGreaterThan(0);
   expect(pack.text).toContain(JSON.stringify(snapshot.records[0]!.text));
   expect(pack.text!.indexOf("Generated summary evidence")).toBeLessThan(pack.text!.indexOf("Historical owner request"));
-  expect(pack.tokens).toBeLessThanOrEqual(8000); expect(pack.omitted).toBeGreaterThan(snapshot.omitted);
+  expect(pack.tokens).toBeLessThanOrEqual(CONTINUITY_PACK_MAX_TOKENS); expect(pack.omitted).toBeGreaterThan(snapshot.omitted);
 }, 30_000);
 
 it.each(["unpinned", "prepared", "purged", "cross-bucket", "current-run", "future"])("never substitutes an older summary for an ineligible %s pin", async mode => {

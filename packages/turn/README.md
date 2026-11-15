@@ -1946,8 +1946,11 @@ detached router attempt. With explicit ledger upkeep enabled, the host may perfo
 one bounded completion under the exclusive conversation hold (up to 60 seconds
 of extra first-token latency), outside the owner transaction; default behavior
 is still local deterministic evidence. It runs only at actual cold seed decisions. Its allowance
-uses the resolved target window, tool/instruction overhead, input and output
-reserve. Returned messages persist with the seed and count toward ordinary
+is `min(16000, min(window, trigger) − instructions/tools − input − max(4096,
+model.maxTokens) − 4096)`, floored at zero, and below 500 tokens the host is
+offered 0. The fixed 16,000-token ceiling matches the conversation renderer's
+clamp. Converted evidence estimated above the offered allowance is omitted with
+a `continuity_pack_degraded`/`headroom` warning. Returned messages persist with the seed and count toward ordinary
 provider input usage; true native resumes skip the supplier. Router detached
 attempts retain the supplier and reuse the conversation-owned source snapshot.
 It does not change native model-switch handoff preparation.

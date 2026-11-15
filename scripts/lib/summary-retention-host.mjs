@@ -12,7 +12,7 @@ const need = (condition, message) => { if (!condition) throw Error(message); };
  * durable runtime. Reopen it through another host/runtime to prove restart. The
  * summary is caller-generated text; the lane never consults a fixture oracle.
  */
-export async function runTrialHostReseed(summary, { authenticated = false, omitDestinationEpoch = false, rollover = false, omitResolverOnRestart = false, purgeBeforeRestart = false, automaticRefusal = false, preparedWake = false, excludeOnRestart = false, purgeBeforeAdmit = false, oversizedCandidate = false, packDisabled = false, preparedCold = false, exactSummary } = {}) {
+export async function runTrialHostReseed(summary, { authenticated = false, omitDestinationEpoch = false, rollover = false, omitResolverOnRestart = false, purgeBeforeRestart = false, automaticRefusal = false, preparedWake = false, excludeOnRestart = false, purgeBeforeAdmit = false, oversizedCandidate = false, packDisabled = false, preparedCold = false, exactSummary, coldBudgetCap } = {}) {
   const [conversation, engine, host, ai] = await Promise.all([
     built("conversation/dist/index.js"), import("@mono-agent/turn/engine"), import("@mono-agent/turn/host"),
     built("turn/node_modules/@earendil-works/pi-ai/dist/index.js"),
@@ -86,7 +86,17 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
         ...(excludeSource ? { historyBoundary: "excluded-fictional-source" } : {}) }, binding);
       const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
     } }) : reader;
+    // Optional fictional control: record the runtime-offered cold budget and
+    // render no larger than an explicit cap (e.g. the former 8k ceiling).
+    const coldBudgets = [];
     const makeHarness = async () => {
+      if (coldBudgetCap !== undefined) {
+        const run = runtime.run.bind(runtime);
+        runtime.run = (prompt, options) => run(prompt, { ...options, coldContext: options.coldContext && (async budget => {
+          coldBudgets.push(budget.maxTokens);
+          return options.coldContext({ ...budget, maxTokens: Math.min(budget.maxTokens, coldBudgetCap) });
+        }) });
+      }
       if (purgeBeforeAdmit || oversizedCandidate) {
         const run = runtime.run.bind(runtime);
         runtime.run = (prompt, options) => run(prompt, { ...options, coldContext: options.coldContext && (async budget => {
@@ -229,7 +239,7 @@ export async function runTrialHostReseed(summary, { authenticated = false, omitD
         rewindPresentProtected: true, rewindPurgedLegacy: true };
     }
     return { seedMessages, contexts, retainedText: retained.text, retainedSha256: retained.sha256, nativeSha256: hash(summary),
-      redacted: retained.redacted, truncated: retained.truncated, events, runtimeCalls: contexts.length, ...(admissionProof ? { admissionProof } : {}), ...(omitDestinationEpoch ? { noCanonicalEpochLegacy: !coldAdmission } : {}), ...(rollover ? { rolloverLegacy: !coldAdmission } : {}) };
+      redacted: retained.redacted, truncated: retained.truncated, events, runtimeCalls: contexts.length, ...(coldBudgetCap !== undefined ? { coldBudgets } : {}), ...(admissionProof ? { admissionProof } : {}), ...(omitDestinationEpoch ? { noCanonicalEpochLegacy: !coldAdmission } : {}), ...(rollover ? { rolloverLegacy: !coldAdmission } : {}) };
   } finally {
     try {
       const errors = [];

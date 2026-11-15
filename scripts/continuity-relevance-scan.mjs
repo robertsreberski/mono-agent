@@ -12,7 +12,12 @@ import { CONTINUITY_USER_VERSION } from "../packages/conversation/dist/tool-hist
 import { ToolHistoryReader } from "../packages/conversation/dist/tool-history/reader.js";
 import { TOOL_HISTORY_APPLICATION_ID } from "../packages/conversation/dist/tool-history/contracts.js";
 import { createDurableHistoryStore } from "../packages/conversation/dist/history/canonical/store.js";
-import { JsonlSessionRepo, MemorySessionRepo, createRunDriver } from "@mono-agent/turn/engine";
+import { JsonlSessionRepo, MemorySessionRepo, createRunDriver, projectContext } from "@mono-agent/turn/engine";
+import { renderContinuityPack } from "../packages/conversation/dist/continuity/pack.js";
+import { CONTINUITY_PACK_MAX_TOKENS } from "../packages/conversation/dist/continuity/render-fit.js";
+import { toAgentMessages } from "../packages/turn/dist/providers/pi/messages.js";
+import { estimateTokens } from "../packages/turn/dist/engine/compaction-kit/compaction.js";
+import { convertResponsesMessages } from "../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 import { resolveRetainedSummaryAdmission } from "../packages/turn/dist/engine/retained-summary.js";
 import { tryCompact } from "../packages/turn/dist/execution/pi/compaction/compaction-driver.js";
 import { searchRelevantContinuity } from "../packages/conversation/dist/tool-history/relevance-scan.js";
@@ -211,6 +216,60 @@ try {
       result.acceptedEnvelopeMet = result.elapsedMs <= 5000 && result.heapDeltaMiB <= 100 && result.rssDeltaMiB <= 128 && result.steadyHeapGrowthMiB <= 100;
       console.log(JSON.stringify(result)); if (!result.acceptedEnvelopeMet) process.exitCode = 1;
     } finally { await raw.close(); await repo.close(); }
+  }
+  // Maximal 16k handover: a full 512-record / ~4-MiB snapshot with a whole
+  // escaped Unicode quotation near the ceiling, the shipping renderer, runtime
+  // message conversion/estimate, Responses serialization and 30 durable
+  // reopen/projection restarts of the persisted seed. Fictional; provider-free.
+  {
+    const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", contextWindow: 272000, maxTokens: 128000, input: ["text"] };
+    const base = { generationId: "fictional-max", conversationId: "fictional-max", sequence: 0, truncated: false, redacted: false, untrusted: true };
+    const quotation = `## Historical events and corrections\n${"- Fictional \"cobalt\" \\ choice — ŻÓŁTY 🦊 <kept>.\n".repeat(640)}`;
+    const records = [{ ...base, recordId: "max-summary", runId: "max-summary", kind: "summary", provenance: "generated", ordinal: 0, sha256: sha(quotation),
+      originalBytes: Buffer.byteLength(quotation), retainedBytes: Buffer.byteLength(quotation), source: {}, text: quotation }];
+    for (let index = 1; records.length < 512; index++) {
+      const text = `Fictional ${index % 3 ? "owner request" : "lookup result"} ${index}: ${"keep cobalt, confirm before sending 🦊. ".repeat(190)}`;
+      const owner = index % 3 !== 0, inputId = `max-input-${index}`;
+      records.push({ ...base, recordId: `max-${index}`, runId: `max-run-${index}`, inputId, kind: owner ? "owner" : "tool", provenance: owner ? "host-owner" : "tool", ordinal: index,
+        sha256: sha(text), originalBytes: Buffer.byteLength(text), retainedBytes: Buffer.byteLength(text), source: owner ? { attestation: { inputId, requestDigest: sha("fictional") } } : {}, text,
+        ...(owner ? {} : { tool: { name: index % 2 ? "mail_send" : "mail_read", state: "success", arguments: '{"draft":"DRAFT-42"}', invocationId: `max-call-${index}` } }) });
+    }
+    const snapshot = { records, omitted: 0, gaps: 0 }, snapshotBytes = records.reduce((sum, record) => sum + Buffer.byteLength(record.text), 0);
+    if (snapshotBytes > 4 * 1024 * 1024) throw Error("capacity_max_snapshot_bounds");
+    global.gc(); const baseline = process.memoryUsage(), started = performance.now();
+    let peakHeap = baseline.heapUsed, peakRss = baseline.rss, pack, converted, estimate = 0, maxSerializedBytes = 0;
+    const sample = () => { const m = process.memoryUsage(); peakHeap = Math.max(peakHeap, m.heapUsed); peakRss = Math.max(peakRss, m.rss); };
+    const serialize = messages => Buffer.byteLength(JSON.stringify({ model: model.id, stream: true, store: false, instructions: "Fictional system.",
+      input: convertResponsesMessages(model, { systemPrompt: "Fictional system.", messages }, new Set(["openai-codex"]), { includeSystemPrompt: false }) }));
+    for (let cycle = 0; cycle < 30; cycle++) {
+      pack = renderContinuityPack(snapshot, [], CONTINUITY_PACK_MAX_TOKENS, undefined, false, true);
+      converted = toAgentMessages([{ role: "user", content: pack.text }], model);
+      estimate = Number(estimateTokens(converted[0]));
+      maxSerializedBytes = Math.max(maxSerializedBytes, serialize(converted)); sample();
+    }
+    const renderMs = performance.now() - started, packBytes = Buffer.byteLength(pack.text);
+    if (pack.counts.summary !== 1 || pack.tokens > CONTINUITY_PACK_MAX_TOKENS || packBytes > 47952 || estimate > CONTINUITY_PACK_MAX_TOKENS || pack.omitted === 0) throw Error("capacity_max_pack_invalid");
+    const repo = new JsonlSessionRepo({ sessionsRoot: join(root, "max-pack") });
+    let raw = await repo.create({ id: "fictional-max-pack" });
+    try {
+      await raw.appendMessage(converted[0]); await raw.sync(); const metadata = raw.metadata; await raw.close(); raw = undefined;
+      const restartStarted = performance.now(), samples = [];
+      for (let restart = 0; restart < 30; restart++) {
+        raw = await repo.open(metadata);
+        const messages = projectContext(await raw.getEntries()).messages;
+        const content = messages[0]?.content, text = typeof content === "string" ? content : content?.map(part => part.text).join("");
+        if (messages.length !== 1 || text !== pack.text) throw Error("capacity_max_pack_restart_invalid");
+        maxSerializedBytes = Math.max(maxSerializedBytes, serialize(messages)); sample();
+        await raw.close(); raw = undefined;
+        await new Promise(resolve => setImmediate(resolve)); global.gc(); samples.push(process.memoryUsage().heapUsed);
+      }
+      const result = { workload: "max-16k-pack-render-convert-restart", cycles: 30, restarts: 30, snapshotRecords: records.length, snapshotBytes, packTokens: pack.tokens, packBytes,
+        convertedEstimateTokens: estimate, quotationBytes: Buffer.byteLength(quotation), omitted: pack.omitted, maxSerializedBytes, renderConvertMs: renderMs, restartMs: performance.now() - restartStarted,
+        elapsedMs: performance.now() - started, heapDeltaMiB: (peakHeap - baseline.heapUsed) / 1024 ** 2, rssDeltaMiB: (peakRss - baseline.rss) / 1024 ** 2,
+        steadyHeapGrowthMiB: (samples.at(-1) - samples[0]) / 1024 ** 2 };
+      result.acceptedEnvelopeMet = result.elapsedMs <= 5000 && result.heapDeltaMiB <= 100 && result.rssDeltaMiB <= 128 && result.steadyHeapGrowthMiB <= 100;
+      console.log(JSON.stringify(result)); if (!result.acceptedEnvelopeMet) process.exitCode = 1;
+    } finally { await raw?.close(); await repo.close(); }
   }
   for (const result of await measureE2ControllerCapacity(root)) {
     console.log(JSON.stringify(result)); if (!result.acceptedEnvelopeMet) process.exitCode = 1;

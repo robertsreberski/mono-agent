@@ -3873,3 +3873,115 @@ Coverage: physical-bucket canonical replay scope; retained finalized v3 evidence
   },
 ]
 `;
+
+exports[`raises only the ceiling above 8k, keeping whole entries, the 220-token marker reserve and the ledger prefix: no-summary 1`] = `
+[
+  {
+    "counts": {
+      "evidence": 0,
+      "owner": 35,
+      "summary": 0,
+      "tool": 17,
+    },
+    "degradedReason": "overflow",
+    "ledgerEntries": 1,
+    "omitted": 100,
+    "ownerDeduped": 0,
+    "textSha256": "843c246ee67cb772aefe947c7fa584d77a6749cc270378a0de10155ff8281e18",
+    "tokens": 7841,
+    "toolReserved": 17,
+    "tools": 17,
+    "unknownOverlap": 0,
+  },
+  {
+    "counts": {
+      "evidence": 0,
+      "owner": 38,
+      "summary": 0,
+      "tool": 18,
+    },
+    "degradedReason": "overflow",
+    "ledgerEntries": 1,
+    "omitted": 96,
+    "ownerDeduped": 0,
+    "textSha256": "25408e87feaff8efc7cda32eec9d21012bcc7ad5c6702d27cd649b127056b6a8",
+    "tokens": 8727,
+    "toolReserved": 18,
+    "tools": 18,
+    "unknownOverlap": 0,
+  },
+  {
+    "counts": {
+      "evidence": 0,
+      "owner": 65,
+      "summary": 0,
+      "tool": 24,
+    },
+    "degradedReason": "overflow",
+    "ledgerEntries": 1,
+    "omitted": 63,
+    "ownerDeduped": 0,
+    "textSha256": "068b67c4b7d1e1cb452f15add967f752b49b97771f3bbe61194bb0f16d401ebc",
+    "tokens": 15702,
+    "toolReserved": 24,
+    "tools": 24,
+    "unknownOverlap": 0,
+  },
+]
+`;
+
+exports[`raises only the ceiling above 8k, keeping whole entries, the 220-token marker reserve and the ledger prefix: summary 1`] = `
+[
+  {
+    "counts": {
+      "evidence": 0,
+      "owner": 31,
+      "summary": 1,
+      "tool": 16,
+    },
+    "degradedReason": "overflow",
+    "ledgerEntries": 1,
+    "omitted": 105,
+    "ownerDeduped": 0,
+    "textSha256": "47836fafcd0ba374a4fb6ac399d5b4cf4d84505af90d672d277a4dcdf8854e08",
+    "tokens": 7750,
+    "toolReserved": 16,
+    "tools": 16,
+    "unknownOverlap": 0,
+  },
+  {
+    "counts": {
+      "evidence": 0,
+      "owner": 35,
+      "summary": 1,
+      "tool": 17,
+    },
+    "degradedReason": "overflow",
+    "ledgerEntries": 1,
+    "omitted": 100,
+    "ownerDeduped": 0,
+    "textSha256": "867aee5042b7a036e46322b00e63d39b93f8b9ed4196629b9b4cc546f1f3d429",
+    "tokens": 8767,
+    "toolReserved": 17,
+    "tools": 17,
+    "unknownOverlap": 0,
+  },
+  {
+    "counts": {
+      "evidence": 0,
+      "owner": 60,
+      "summary": 1,
+      "tool": 24,
+    },
+    "degradedReason": "overflow",
+    "ledgerEntries": 1,
+    "omitted": 68,
+    "ownerDeduped": 0,
+    "textSha256": "9caa6a647c0685b1a91ce58274c05516fdeb99cf3200fe1c94d1f72b5108d1f3",
+    "tokens": 15781,
+    "toolReserved": 24,
+    "tools": 24,
+    "unknownOverlap": 0,
+  },
+]
+`;

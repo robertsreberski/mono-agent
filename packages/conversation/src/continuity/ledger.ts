@@ -1,6 +1,6 @@
 import { RankedQueue, signalScore, type RankedSpan } from "./ranking.js";
 import { ledgerWindows } from "./span-geometry.js";
-import { fitsLedgerPrefix, fitsLedgerPrefixBytes } from "./render-fit.js";
+import { fitsLedgerPrefix, fitsLedgerPrefixBytes, CONTINUITY_PACK_MAX_TOKENS } from "./render-fit.js";
 import { LedgerError } from "./ledger-error.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { ContinuitySnapshot, ContinuitySnapshotRecord, LedgerProgress } from "../tool-history/continuity-contracts.js";
@@ -52,7 +52,7 @@ const emptyRendering = () => ledgerHeading + `Ledger uncovered source spans/reco
 
 /** Rank only after a complete bounded scan. Read-only legacy pack selection is
  * a different surface and never enters this extractor. */
-export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: LedgerGeneration, inputTokens: 64000 | 128000 = 64000, limits: { maxTokens: number; priorRecords?: readonly { recordId: string; text: string }[] | undefined } = { maxTokens: 8000 }): LedgerSelection {
+export function selectLedgerSources(snapshot: ContinuitySnapshot, prior?: LedgerGeneration, inputTokens: 64000 | 128000 = 64000, limits: { maxTokens: number; priorRecords?: readonly { recordId: string; text: string }[] | undefined } = { maxTokens: CONTINUITY_PACK_MAX_TOKENS }): LedgerSelection {
   const queue = new RankedQueue(), covered = coveredKeys(prior), excluded = new Set(snapshot.upkeep?.excluded);
   const supplied = snapshot.upkeep?.candidates && new Map(snapshot.upkeep.candidates.map(s => [`${s.ordinal}:${s.start}:${s.end}`, s]));
   const byOrdinal = new Map(snapshot.records.map(r => [r.ordinal, r])), accepted = new Set<string>(); let candidateCount = 0;
@@ -265,7 +265,7 @@ export function projectedLedgerPayloadBytes(selection: LedgerSelection, scope: {
  * Prompt lines/prefix are measured once, and only the final prompt is rebuilt. */
 export function fitLedgerSelection(selection: LedgerSelection, scope: { currentConversationId: string; logicalConversationId: string }, prior?: {
   generation: LedgerGeneration; records: readonly { recordId: string; text: string }[]; retainedBytes: number;
-}, limits: { maxTokens: number; deltaEntries: number } = { maxTokens: 8000, deltaEntries: 24 }): { selection: LedgerSelection; projectedBytes: number; lineageBytes: number; trimmedSpans: number; projectionAttempts: number; exclusions: Record<string, number>; reason?: "ledger_payload_budget" | "ledger_lineage_budget" | "ledger_render_budget" | "ledger_aggregate_capacity" | "ledger_scan_capacity" } {
+}, limits: { maxTokens: number; deltaEntries: number } = { maxTokens: CONTINUITY_PACK_MAX_TOKENS, deltaEntries: 24 }): { selection: LedgerSelection; projectedBytes: number; lineageBytes: number; trimmedSpans: number; projectionAttempts: number; exclusions: Record<string, number>; reason?: "ledger_payload_budget" | "ledger_lineage_budget" | "ledger_render_budget" | "ledger_aggregate_capacity" | "ledger_scan_capacity" } {
   const records = new Map(selection.records.map(record => [record.recordId, record])), spans = new Map(selection.spans.map(span => [spanKey(span), span]));
   const ranked = selection.ranked ?? selection.spans.map(span => ({ key: spanKey(span), ordinal: span.ordinal ?? records.get(span.recordId)!.ordinal, start: span.start, end: span.end, score: 0, offers: 0 }));
   const lineBytes = new Map(selection.spans.map(span => [spanKey(span), Buffer.byteLength(sourceLine(span, records.get(span.recordId)!))]));

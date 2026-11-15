@@ -24,6 +24,12 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const MODEL_REF = /^[a-z0-9-]+:[A-Za-z0-9._/-]+$/u;
 
 export const TRACE_RULES = Object.freeze({ minTurns: 30, minProbes: 10, maxProbes: 15, minToolCalls: 20 });
+// Planning copy of the fixed cold continuity-pack ceiling. The shipping owners
+// are CONTINUITY_PACK_MAX_TOKENS in packages/conversation/src/continuity/render-fit.ts
+// and packages/turn/src/execution/pi/run.ts; this dependency-free module cannot
+// import built package code. continuity-benchmark.test.mjs pins it to the built
+// conversation constant so the forecast cannot drift from the shipping ceiling.
+const PACK_PLANNING_TOKENS = 16_000;
 
 function fail(code, detail) {
   const error = new Error(detail === undefined ? code : `${code}:${detail}`);
@@ -372,10 +378,10 @@ export function estimateCost(plan, traces, prices) {
           case "restart-switch-compact": return { input: t.cold * 2, output: 2000 + ANSWER_OUTPUT_TOKENS, cacheable: t.cold };
           // Store arms: the cold or compacted context plus up to two ConversationHistory rounds.
           case "continuity-store": return { input: t.cold * 3 + 4000, output: 3 * ANSWER_OUTPUT_TOKENS, cacheable: t.cold * 3 };
-          // Same retrieval allowance, plus the bounded 8k pack on each request; no upkeep call.
+          // Same retrieval allowance, plus a full 16k-ceiling pack on each request; no upkeep call.
           case "continuity-ledger-cold":
           case "continuity-pack-cold":
-          case "continuity-pack-boundary": return { input: (t.cold + 8000) * 3 + 4000, output: 3 * ANSWER_OUTPUT_TOKENS, cacheable: (t.cold + 8000) * 3 };
+          case "continuity-pack-boundary": return { input: (t.cold + PACK_PLANNING_TOKENS) * 3 + 4000, output: 3 * ANSWER_OUTPUT_TOKENS, cacheable: (t.cold + PACK_PLANNING_TOKENS) * 3 };
           case "continuity-store-compaction": return { input: t.serialized + 3 * (2000 + 4000 + OVERHEAD_TOKENS) + 4000, output: 2000 + 3 * ANSWER_OUTPUT_TOKENS, cacheable: t.serialized };
           default: return { input: t.full, output: ANSWER_OUTPUT_TOKENS, cacheable: 0 };
         }
@@ -394,7 +400,7 @@ export function estimateCost(plan, traces, prices) {
   }
   const judgeUsd = judgePrice ? plan.workload.judgeCalls * (600 * judgePrice.input + 20 * judgePrice.output) / 1_000_000 : null;
   const sum = (key) => Object.values(rows).reduce((total, row) => total + row[key], 0) + (judgeUsd ?? 0);
-  return { status: "estimated", basis: "Pi catalog list prices; chars/4 token heuristic; summaries at their output cap and deterministic packs at 8k for the upper bound",
+  return { status: "estimated", basis: "Pi catalog list prices; chars/4 token heuristic; summaries at their output cap and deterministic packs at the 16k ceiling for the upper bound",
     upkeepCaveat: "4096 is a planning output budget, not a hard server limit under Codex stream_abort: hidden reasoning/remote work can overrun. Subscription/quota is not dollar metering.",
     arms: rows, judgeUsd: judgeUsd === null ? null : Number(judgeUsd.toFixed(4)),
     upperUsd: Number(sum("upperUsd").toFixed(2)), expectedUsd: Number(sum("expectedUsd").toFixed(2)) };

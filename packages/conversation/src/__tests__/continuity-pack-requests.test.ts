@@ -1,4 +1,4 @@
-import { PACK_RETRIEVAL_GUIDANCE } from "../continuity/render-fit.js";
+import { CONTINUITY_PACK_MAX_TOKENS, PACK_RETRIEVAL_GUIDANCE } from "../continuity/render-fit.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, writeFile, rm, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -36,7 +36,7 @@ async function fixture({ summaryCapture = false, available = false, durable = tr
   const models = createModels(); models.setProvider(faux.provider);
   const native = createMonoRuntime({ workspace: root });
   cleanup.push(async () => { await native.disposeAllSessions?.(); });
-  const coldHooks: boolean[] = [], runtimeMessageCounts: number[] = [];
+  const coldHooks: boolean[] = [], runtimeMessageCounts: number[] = [], coldBudgets: number[] = [];
   let lastSession: string | undefined;
   let interrupt: "resume-error" | "runtime-result" | "cancelled" | undefined;
   const runtime: MonoRuntimeLike = { ...native, async run(prompt, options) {
@@ -47,7 +47,8 @@ async function fixture({ summaryCapture = false, available = false, durable = tr
     if (mode === "resume-error") throw Object.assign(new Error("Fictional unavailable session."), { failureKind: "session_not_found" });
     if (mode === "runtime-result") return { text: null, failureKind: "session_not_found", error: "Fictional unavailable session." };
     if (mode === "cancelled") return { text: null, cancelled: true, ...(typeof options.sessionId === "string" ? { providerSessionId: options.sessionId } : {}) };
-    const result = await native.run(prompt, options);
+    const cold = options.coldContext;
+    const result = await native.run(prompt, cold ? { ...options, coldContext: async budget => { coldBudgets.push(budget.maxTokens); return await cold(budget); } } : options);
     if (typeof result.providerSessionId === "string") lastSession = result.providerSessionId;
     return result;
   } };
@@ -86,7 +87,7 @@ async function fixture({ summaryCapture = false, available = false, durable = tr
       ...(model ? { metadata: { source: "web", web: { model } } } : {}), ...(continuation ? { continuation } : {}), ...requestPatch, onEvent: e => { events.push(e as unknown as Record<string, unknown>); } });
     if (cancelled) expect(result.failure?.kind).toBe("cancelled"); else expect(result.failure).toBeUndefined(); return result;
   }
-  return { run, requests, events, coldHooks, runtimeMessageCounts, reader, writer, root, sessionsRoot, history, native,
+  return { run, requests, events, coldHooks, coldBudgets, runtimeMessageCounts, reader, writer, root, sessionsRoot, history, native,
     sessionId: () => lastSession,
     setCompaction: (value: typeof compaction) => { compaction = value; },
     interrupt: (mode: typeof interrupt) => { interrupt = mode; },
@@ -188,6 +189,27 @@ it.each(["outage", "purge"] as const)("keeps actual provider replay usable with 
   expect(JSON.stringify(f.requests.at(-1))).not.toContain(rule);
   expect(f.events).toContainEqual(expect.objectContaining({ warning_kind: "continuity_pack_degraded" }));
   expect(JSON.stringify(f.events)).not.toContain("private outage");
+}, 20_000);
+
+it("keeps the real runtime's offered ceiling and the renderer clamp equal at 16k (drift guard)", async () => {
+  const f = await fixture();
+  // A whole quotation between the former 8k and the 16k ceiling, published as an
+  // eligible pinned summary. Only matching ceilings carry it to the provider.
+  const summary = `## Historical events and corrections\n${"- Fictional cobalt decision; marker drift-guard.\n".repeat(560)}`;
+  const generationId = continuityGenerationId(), afterDigest = "e".repeat(64);
+  await f.writer.prepareContinuity({ generationId, conversationId: id, logicalConversationId: id, beforeDigest: null, afterDigest,
+    records: [{ recordId: continuityRecordId(id, "drift-summary"), runId: "drift-summary", kind: "user", provenance: "unknown", sequence: 0, text: summary }] });
+  await f.writer.commitContinuity({ generationId, conversationId: id, canonicalDigest: afterDigest });
+  const { DatabaseSync } = await import("node:sqlite"); const db = new DatabaseSync(f.reader.databasePath);
+  db.exec("UPDATE continuity_records SET kind='summary',provenance='generated' WHERE run_id='drift-summary'; INSERT INTO continuity_pins SELECT record_id,'summary','fictional-pack',0 FROM continuity_records WHERE run_id='drift-summary'"); db.close();
+  await f.run();
+  expect(CONTINUITY_PACK_MAX_TOKENS).toBe(16000);
+  expect(f.coldBudgets).toEqual([CONTINUITY_PACK_MAX_TOKENS]);
+  const injected = f.events.find(e => e.type === "continuity_pack_injected") as { tokens: number; summaryEntries?: number } | undefined;
+  expect(injected?.tokens).toBeGreaterThan(8000); expect(injected!.tokens).toBeLessThanOrEqual(CONTINUITY_PACK_MAX_TOKENS);
+  const outgoing = JSON.stringify(f.requests.at(-1));
+  expect(outgoing).toContain("Generated summary evidence"); expect(outgoing).not.toContain("Generated summary omitted");
+  expect(outgoing.split("marker drift-guard").length - 1).toBe(560);
 }, 20_000);
 
 it("limits optional evidence to real target headroom instead of failing the turn", async () => {

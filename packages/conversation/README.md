@@ -492,8 +492,8 @@ Cold continuity snapshots shortlist the eligible pinned summary before owners an
 tools, within the existing 512-record / 4-MiB bounds. The pack admits that complete
 generated quotation after the unchanged ledger/header prefix and before tool
 reservation or owner filling. Its JSON-quoted text and retained digest are never
-clipped or rewritten. It must fit the remaining headroom of the existing
-`min(8000, actual headroom)` estimated-token ceiling, including prefix and marker
+clipped or rewritten. It must fit the remaining headroom of the fixed
+`min(16000, actual headroom)` estimated-token ceiling, including prefix and marker
 costs; otherwise it is omitted entirely, counted, and disclosed without content
 with size/headroom estimates; the pack reports `degradedReason: summary_headroom`
 unless a snapshot, coverage or upkeep reason takes precedence. No older summary

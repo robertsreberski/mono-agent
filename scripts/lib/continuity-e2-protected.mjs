@@ -33,7 +33,7 @@ export function protectedE2Reply(context, drop = false) {
  * paid runs. onPublication/onSummary are test-only observers. completeSummary
  * optionally exercises an actual SDK response handoff in the native test fixture.
  */
-export async function rehearseE2Protected({ work, model, carrier, fallback = false, refusal = false, onPublication = async () => {}, onSummary = async () => {}, onAdmission = async () => {}, onPublicationPreparing = async () => {}, onEvent = () => {}, appendProgress, prepareInput = input => input, sourceBackgroundRepeats, productionDefaults = false, summaryReply = protectedE2Reply, completeSummary }) {
+export async function rehearseE2Protected({ work, model, carrier, fallback = false, refusal = false, onPublication = async () => {}, onSummary = async () => {}, onAdmission = async () => {}, onPublicationPreparing = async () => {}, onEvent = () => {}, appendProgress, prepareInput = input => input, sourceBackgroundRepeats, quotationBackgroundRepeats, productionDefaults = false, summaryReply = protectedE2Reply, completeSummary }) {
   need(["quotation", "carry"].includes(carrier));
   const [{ ToolHistoryWriter, ToolHistoryReader, createContinuityParticipant, createDurableHistoryStore, createConversationHarness },
     { JsonlSessionRepo, createRunDriver, projectContext }, { createMonoRuntime }, { fauxProvider, createModels, fauxAssistantMessage },
@@ -45,7 +45,10 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
   ]);
   await mkdir(work, { recursive: true, mode: 0o700 });
   const historyRoot = join(work, "history"), sessionsRoot = join(work, "sessions"), id = "web:fictional-protected-sizing", sourceKey = `openai-codex:${model.id === "gpt-6.1-sol" ? "gpt-6-luna" : "gpt-6.1-sol"}`;
-  const summary = (carrier === "carry" || fallback ? `## Goal\n${"Fictional background. ".repeat(sourceBackgroundRepeats ?? (carrier === "quotation" ? 650 : fallback ? 47000 : 3200))}\n\n` : "") + E2_PROTECTED_TEXT + "\nFictional reference: /home/example/private/marker.txt";
+  // quotationBackgroundRepeats is an opt-in capacity control that sizes an
+  // ordinary-fit B quotation; default rehearsal bytes are unchanged.
+  const background = carrier === "carry" || fallback ? sourceBackgroundRepeats ?? (carrier === "quotation" ? 650 : fallback ? 47000 : 3200) : quotationBackgroundRepeats;
+  const summary = (background ? `## Goal\n${"Fictional background. ".repeat(background)}\n\n` : "") + E2_PROTECTED_TEXT + "\nFictional reference: /home/example/private/marker.txt";
   let writer, repo, raw, turn, runtime, harness;
   const requests = [], setupRequests = [], events = [], warnings = [];
   try {

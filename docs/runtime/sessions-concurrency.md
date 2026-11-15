@@ -239,7 +239,10 @@ asserts selection of short user records on the historical bonus path. Both
 workloads include an intent query with absent multi-part terms and a 16-term
 hyphenated absent query, in addition to dense, absent, Unicode and historical
 matching queries. An absent result has no
-continuation to measure.
+continuation to measure. The same program also renders a maximal 16k cold pack
+from a full 512-record / about 4-MiB fictional snapshot, converts and
+Responses-serializes it, and reopens the persisted seed 30 times within the same
+envelope.
 
 A ranking-v3 **pre-commit** run on Node 24.18.0, Apple M3 Max / arm64 /
 48 GiB RAM completed all **60** predetermined measurements within the accepted
@@ -342,7 +345,7 @@ follow search/get cursors. Pack omission may be retrievable, but source
 redaction/truncation is irreversible here. Omitted arguments have no retrieval
 promise. The 270-byte / 90-estimate-token guidance is charged to selection,
 fallback and final size, outside the unchanged ledger-prefix admission rule.
-This can displace evidence at 4k/8k budgets without changing selection policy.
+This can displace evidence at 4k–16k budgets without changing selection policy.
 An empty snapshot with no ledger, omission, gap or degradation emits nothing.
 
 Projection record blocks are bounded before exclusions and never refilled.
@@ -357,7 +360,7 @@ events while exclusions resolve; consumers match event type/reason, not order.
 
 The complete generated summary is admitted and laid out immediately after the
 unchanged admitted prefix (including any admitted ledger), before tool reservation
-and owner selection. It must fit in the remaining `min(8000, actual headroom)`
+and owner selection. It must fit in the remaining `min(16000, actual headroom)`
 estimated-token budget including JSON quotation expansion, prefix and reserved
 coverage-marker costs. Otherwise the summary is omitted entirely, counted, and
 disclosed with content-free entry-size/headroom estimates; it is never clipped,
@@ -392,9 +395,11 @@ never clipped. Effect-ranked entries keep only their first paragraph when it fit
 only in a later effect paragraph is then left out (`result_omitted=true`) and
 may remain available through retrieval when that capability is available.
 
-The pack has an 8000 estimated-token ceiling, lowered by the actual target's
-compaction trigger (including `maxInputTokens`), instructions, tools, replay,
-current input, output reserve and safety headroom. Below 500 tokens of remaining
+The pack has a fixed 16000 estimated-token ceiling (at most 47,952 rendered
+UTF-8 bytes), lowered by the actual target's compaction trigger (including
+`maxInputTokens`), instructions, tools, replay, current input, output reserve
+and safety headroom. The ceiling is an upper bound, not an allocation; a seed
+persisted under an earlier ceiling is never rewritten. Below 500 tokens of remaining
 trigger headroom it is skipped (`trigger_headroom`); adding optional evidence
 must not cause a proactive summary. Whole entries win in priority order; newer entries are omitted first
 within each section. Coverage is bounded (512 source records / 4 MiB per read),
@@ -462,7 +467,7 @@ call for any run kind:
 | --- | --- |
 | Brand-new conversation / first turn of a new daily bucket | None; no historical pack or empty header |
 | Isolated proactive or continuation turn with no prior replay | None, even if shared retained evidence exists |
-| Cold rebuild with prior canonical history | Up to the trigger-limited 8000-token pack on the seeded request |
+| Cold rebuild with prior canonical history | Up to the trigger-limited 16000-token pack on the seeded request |
 | Pinned continuation with prior replay | Same bound per isolated execution, stopping at the origin boundary |
 | `per-message` mode | Same bound on each turn that replays prior history; no first-turn empty pack |
 | True warm resume / durable reopen | No additional injection; a previously seeded pack may remain in ordinary request/cache input accounting |

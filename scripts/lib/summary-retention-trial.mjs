@@ -342,7 +342,8 @@ export async function runTrialChain({ modules, fixture, model, cap, repetition, 
           sha256: hash(entry.summary), originalBytes: Buffer.byteLength(entry.summary), retainedBytes: Buffer.byteLength(entry.summary),
           truncated: false, redacted: false, source: {}, untrusted: true, text: entry.summary,
           summary: { model: `${model.provider}:${model.id}`, operationId: `fictional-${stage}`, trigger: "manual", coverage: { sourceDigest: hash(JSON.stringify(await raw.getEntries())) } } };
-        const pack = modules.renderContinuityPack({ records: [summaryRecord], omitted: 0, gaps: 0 }, [], 8000);
+        // Shipping renderer default: the fixed 16k pack ceiling (no explicit budget).
+        const pack = modules.renderContinuityPack({ records: [summaryRecord], omitted: 0, gaps: 0 }, []);
         need(pack.counts.summary === 1 && pack.text?.includes(JSON.stringify(entry.summary)), "Summary omitted from cold pack");
         reseeds.push({ stage, packBytes: Buffer.byteLength(pack.text), counts: pack.counts, summarySha256: hash(entry.summary) });
         await raw.close(); raw = await repo.create({ cwd: "/fictional/summary-retention" });

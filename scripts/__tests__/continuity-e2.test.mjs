@@ -270,7 +270,19 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
     expect(tools.map(t => t.name)).toEqual(i % (protocol.probeLookupRounds + 1) === protocol.probeLookupRounds ? [] : ["ConversationHistory"]);
   }
   // Main B4 and prefix B3 are genuine cold model boundaries. Restored
-  // probes must retain the same complete summary line, not an excerpt.
+  // probes must retain the same complete summary line, not an excerpt. Under
+  // the 16k ceiling a faux-max summary is either quoted whole or, when its
+  // entry exceeds the remaining headroom, omitted whole with disclosure.
+  const outcomes = new Set();
+  const whole = (pack, retained) => {
+    const line = `sha256=${JSON.stringify(retained.sha256)}: ${JSON.stringify(retained.text)}\n`;
+    if (pack.includes(line)) { expect(pack).not.toContain("Generated summary omitted"); outcomes.add("quoted"); return; }
+    expect(summary).toBe("faux-max");
+    const [, entry, headroom] = /Generated summary omitted: entry_tokens=(\d+); content_headroom_tokens=(\d+);/u.exec(pack) ?? [];
+    expect(Number(entry)).toBeGreaterThan(Number(headroom)); expect(Number(headroom)).toBeLessThan(16000);
+    expect(pack).not.toContain("Generated summary evidence"); expect(pack).not.toContain(retained.text.slice(0, 100));
+    outcomes.add("omitted");
+  };
   for (const branch of [0, 1]) {
     const candidates = contexts.filter(c => c.branch === branch && c.probe);
     const last = candidates.slice(-2 * (protocol.probeLookupRounds + 1));
@@ -278,21 +290,16 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
     for (const { context } of last) {
       const texts = context.messages.flatMap(m => typeof m.content === "string" ? [m.content] : (m.content ?? []).filter(p => p.type === "text").map(p => p.text));
       const pack = texts.find(text => text.startsWith("### Conversation continuity pack"));
-      expect(pack).toBeDefined();
-      if (summary === "faux-short") {
-        expect(pack).toContain(`sha256=${JSON.stringify(retained.sha256)}: ${JSON.stringify(retained.text)}\n`);
-      } else {
-        expect(pack).not.toContain("Generated summary evidence");
-        expect(pack).toContain("Generated summary omitted: entry_tokens=");
-        expect(pack).not.toContain(retained.text.slice(0, 100));
-      }
+      expect(pack).toBeDefined(); whole(pack, retained);
     }
     const sourcePacks = contexts.filter(c => c.branch === branch && !c.probe).flatMap(c => c.context.messages)
       .flatMap(m => typeof m.content === "string" ? [m.content] : (m.content ?? []).filter(p => p.type === "text").map(p => p.text))
       .filter(text => text.startsWith("### Conversation continuity pack"));
-    if (summary === "faux-short") expect(sourcePacks.at(-1)).toContain(`sha256=${JSON.stringify(retained.sha256)}: ${JSON.stringify(retained.text)}\n`);
-    else expect(sourcePacks.at(-1)).toContain("Generated summary omitted");
+    whole(sourcePacks.at(-1), retained);
   }
+  // Deterministic fixture: faux-max now exercises both whole quotation (the
+  // smaller maximal summary fits 16k) and whole omission (the larger does not).
+  expect([...outcomes].sort()).toEqual(summary === "faux-short" ? ["quoted"] : ["omitted", "quoted"]);
   const { e2PhaseSchedule } = await import("../lib/continuity-e2-registration.mjs");
   const { estimateE2SizingSet } = await import("../lib/continuity-e2-sizing.mjs");
   const { loadE2Catalog } = await import("../lib/continuity-e2-pricing.mjs");
@@ -300,7 +307,19 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   const probeCounts = protocol.branches.flatMap(b => b.checkpoints).map((_, checkpoint) => ({ checkpoint, questions: 1, lookupRounds: protocol.probeLookupRounds }));
   const schedule = e2PhaseSchedule(protocol, [report], probeCounts);
   expect(schedule[0].budgets.filter(b => b.paidRole !== "summary").reduce((n, b) => n + b.maxRequests, 0)).toBe(8 * (protocol.probeLookupRounds + 1));
-  const estimate = estimateE2SizingSet({ protocol, roles: component.roles, records: [report], catalog: await loadE2Catalog(), probeCounts });
+  // A whole faux-max quotation under the 16k pack ceiling displaces pack tool
+  // evidence back into the replayed projection, so its largest probe estimate
+  // exceeds the shared fixture's 12k probe registration (about 9.6k at 8k).
+  // Register a larger probe allowance here; the 12k registration must refuse.
+  const { normalizeE2Sizing } = await import("../lib/continuity-e2-sizing.mjs");
+  const probeMaximum = Math.max(...normalizeE2Sizing(protocol, report, 0).requests.filter(r => r.paidRole === "probe").map(r => r.size.maximum));
+  const roles = summary === "faux-max" ? component.roles.map(role => role.role === "probe" ? { ...role, maxInputTokens: 48_000 } : role) : component.roles;
+  const catalog = await loadE2Catalog();
+  if (summary === "faux-max") {
+    expect(probeMaximum).toBeGreaterThan(12_000); expect(probeMaximum).toBeLessThanOrEqual(48_000);
+    expect(() => estimateE2SizingSet({ protocol, roles: component.roles, records: [report], catalog, probeCounts })).toThrow("E2_ESTIMATE_INVALID");
+  } else expect(probeMaximum).toBeLessThanOrEqual(12_000);
+  const estimate = estimateE2SizingSet({ protocol, roles, records: [report], catalog, probeCounts });
   expect(estimate.fundedSchedule.checkpoints.filter(row => row.role !== "summary").reduce((n, row) => n + row.requests, 0)).toBe(8 * (protocol.probeLookupRounds + 1));
   const largestSource = Math.max(...contexts.filter(c => !c.probe).map(c => Buffer.byteLength(JSON.stringify(c.context))));
   expect(report.branches.flatMap(b => b.summaryRequests).every(r => r.size.serializedBytes < largestSource)).toBe(true);
