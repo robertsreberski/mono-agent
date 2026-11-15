@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.27.0 — Long-conversation continuity (2026-11-15)
+
+- Long-conversation continuity is on by default and passes its end-to-end
+  validation gate: retained conversation evidence with `ConversationHistory`
+  lookup, protected summaries carried across restarts, and the 16k cold handover
+  pack. Opt out with `runtime.session.continuity.enabled: false` or
+  `packEnabled: false`. The continuity ledger, paid upkeep and durable Web model
+  switching remain opt-in.
+
 - Fix E2 `size` refusing every real-source replay draw with `E2_REFUSED`: the
   clean sizing child now waits until each IPC message, including results of
   1 MiB or more, is delivered before disconnecting. An undelivered result still

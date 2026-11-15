@@ -1020,7 +1020,7 @@ from `@mono-agent/turn/ai`, not a private provider subpath.
 
 ## Version
 
-This guide describes the published `0.26.x` package contract. Keep
+This guide describes the published `0.27.x` package contract. Keep
 `@mono-agent/turn` and the other `@mono-agent/*` packages on the same lockstep
 version when upgrading. `0.26.0` renames `@mono-agent/agent-runtime` to
 `@mono-agent/turn` and folds `@mono-agent/runtime-adapter` into
