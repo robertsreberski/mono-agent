@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ContinuityRecordMetadata, ContinuitySearchInput, ContinuitySearchPage, ContinuityRelevanceContinuation } from "./continuity-contracts.js";
 import { matchedPreview } from "./relevance.js";
 import { relevancePipeline } from "./relevance-pipeline.js";
+import { sqliteText } from "./sqlite-text.js";
 
 type Row = Record<string, unknown>;
 type Descriptor = { record_id: string; generation_id: string; ordinal: number; text_sha256: string; retained_bytes: number };
@@ -105,27 +106,25 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
         if (stats.records + batch.length > MAX_RECORDS || stats.bytes + bytes > MAX_BYTES || batch.some(d => d.retained_bytes > MAX_RECORD_BYTES)) throw new Error("scan_capacity");
         const batchStarted = now();
         const rows = tx(() => db.prepare(`SELECT r.record_id,r.generation_id,r.ordinal,r.text_sha256,r.retained_bytes,r.kind,
-          CASE WHEN r.retained_bytes<=? AND length(CAST(r.retained_text AS BLOB))=r.retained_bytes THEN ${rankingVersion === 1 ? "r.retained_text" : "CAST(r.retained_text AS BLOB)"} ELSE NULL END retained_text
+          CASE WHEN r.retained_bytes<=? AND length(CAST(r.retained_text AS BLOB))=r.retained_bytes THEN CAST(r.retained_text AS BLOB) ELSE NULL END retained_text
           FROM continuity_records r CROSS JOIN continuity_generations g USING(generation_id) WHERE g.logical_id=? AND g.state='committed' AND r.finalized=1 AND ${NOT_PURGING} AND r.record_id IN (${batch.map(() => "?").join(",")})`)
           .all(MAX_RECORD_BYTES, input.logicalConversationId, ...batch.map(d => d.record_id))) as Row[];
         const byId = new Map(rows.map(row => [row.record_id, row]));
         for (const d of batch) {
           check(); const row = byId.get(d.record_id);
           if (!row || identity(row as Descriptor) !== identity(d)) throw new Error("source_changed");
-          // V2/V3 batches keep UTF-8 bodies outside the JS string heap until each
-          // record is visited. Decode one body at a time, without a Buffer copy;
-          // digest validation and disclosure still use the exact retained text.
-          if ((rankingVersion === 2 || rankingVersion === 3) && row.retained_text instanceof Uint8Array) {
-            const bytes = row.retained_text;
-            row.retained_text = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8");
-          }
+          // Batches keep UTF-8 bodies outside the JS string heap until each record
+          // is visited (and BLOB bytes survive embedded NULs on Node 24.15). Decode
+          // one body at a time, without a Buffer copy; digest validation and
+          // disclosure still use the exact retained text.
+          row.retained_text = sqliteText(row.retained_text);
           const text = reader.text(row);
           if (Buffer.byteLength(text) !== d.retained_bytes) throw new Error("source_changed");
           examined.update(identity(d)); stats.records++; stats.bytes += d.retained_bytes;
           const match = pipeline.match(text, row.kind as ContinuityRecordMetadata["kind"]);
           // No candidate retains a row or its full body. Release the batch's
           // decoded reference before the next body, even on a non-match.
-          if ((rankingVersion === 2 || rankingVersion === 3)) row.retained_text = undefined;
+          row.retained_text = undefined;
           if (!match) continue;
           const score = query.mode === "literal" ? 1 : match.score;
           const rank = { score, ordinal: d.ordinal, recordId: d.record_id };
@@ -150,9 +149,10 @@ export function searchRelevantContinuity(db: DatabaseSync, input: ContinuitySear
         check(); const d = candidate.descriptor;
         const row = db.prepare(`SELECT r.record_id,r.generation_id,r.ordinal,r.text_sha256,r.retained_bytes,r.run_id,r.input_id,r.kind,r.seq,
           r.original_bytes,r.redacted,r.truncated,r.provenance,r.source_json,r.summary_json,g.conversation_id,
-          CASE WHEN r.retained_bytes<=? AND length(CAST(r.retained_text AS BLOB))=r.retained_bytes THEN r.retained_text ELSE NULL END retained_text
+          CASE WHEN r.retained_bytes<=? AND length(CAST(r.retained_text AS BLOB))=r.retained_bytes THEN CAST(r.retained_text AS BLOB) ELSE NULL END retained_text
           FROM continuity_records r CROSS JOIN continuity_generations g USING(generation_id) WHERE g.logical_id=? AND g.state='committed' AND r.finalized=1 AND ${NOT_PURGING} AND r.record_id=?`).get(MAX_RECORD_BYTES, input.logicalConversationId, d.record_id) as Row | undefined;
         if (!row || identity(row as Descriptor) !== identity(d)) throw new Error("source_changed");
+        row.retained_text = sqliteText(row.retained_text);
         const text = reader.text(row); // Revalidate selected digest/visibility at disclosure.
         // Materialize previews only for emitted items, not candidates later
         // evicted from top. Bodies are bounded to 1 MiB and at most 10 are emitted.

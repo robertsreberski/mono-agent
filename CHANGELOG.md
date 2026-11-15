@@ -10,6 +10,13 @@
   is pending the page says it is checking the agent's configuration.
   `mono-agent validate` and `mono-agent doctor` still verify on every run.
 
+- Fix retained continuity evidence that contains a NUL character on Node
+  24.15: `ConversationHistory` search, record reads, summaries, snapshots, the
+  ledger and upkeep now read the full stored text instead of failing its digest
+  check, which made the whole lookup unavailable or skipped the record. Node
+  24.16 and later already read it correctly; the stored data and the text the
+  model sees are unchanged.
+
 ## 0.27.0 — Long-conversation continuity (2026-11-15)
 
 - Long-conversation continuity is on by default and passes its end-to-end

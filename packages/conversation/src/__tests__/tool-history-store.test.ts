@@ -88,6 +88,7 @@ beforeAll(async () => {
     "tool-history/continuity-storage",
     "tool-history/continuity-reader",
     "tool-history/ranked-scan",
+    "tool-history/sqlite-text",
     "tool-history/reader",
     "tool-history/writer",
     "tool-history/paths",

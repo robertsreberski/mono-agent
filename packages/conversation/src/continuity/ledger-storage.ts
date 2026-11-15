@@ -6,6 +6,7 @@ import { LedgerError } from "./ledger-error.js";
 import type { DatabaseSync } from "node:sqlite";
 import { ledgerHash, spanKey, normalizeLedger, LEDGER_PAYLOAD_BYTES, LEDGER_LINEAGE_BYTES, type LedgerGeneration } from "./ledger.js";
 import type { ContinuityScope } from "../tool-history/continuity-contracts.js";
+import { retainedTextColumn, sqliteText } from "../tool-history/sqlite-text.js";
 
 type Row = Record<string, unknown>;
 export function ledgerBytes(database: DatabaseSync): number {
@@ -50,11 +51,12 @@ export function readLedger(database: DatabaseSync, scope: ContinuityScope): { ge
 function verifyInputs(database: DatabaseSync, generation: LedgerGeneration): { records: Map<string, Row>; retainedBytes: number } {
   const records = new Map<string, Row>(); let bytes = 0;
   for (const input of generation.inputs) {
-    const row = database.prepare(`SELECT r.ordinal,r.record_id,r.text_sha256,r.retained_text,r.kind,r.provenance,r.input_id,
+    const row = database.prepare(`SELECT r.ordinal,r.record_id,r.text_sha256,${retainedTextColumn()},r.kind,r.provenance,r.input_id,
       CASE WHEN length(CAST(r.source_json AS BLOB))<=65536 THEN r.source_json ELSE NULL END source_json,g.logical_id,g.conversation_id FROM continuity_records r JOIN continuity_generations g USING(generation_id)
       WHERE r.record_id=? AND g.logical_id=? AND g.conversation_id=? AND g.state='committed' AND r.finalized=1 AND r.retained_text IS NOT NULL AND length(CAST(r.retained_text AS BLOB))<=?`)
       .get(input.recordId, generation.logicalId, generation.conversationId, LEDGER_LINEAGE_BYTES - bytes) as Row | undefined;
-    if (!row || row.text_sha256 !== input.sha256 || ledgerHash(row.retained_text as string) !== input.sha256) throw new Error("ledger_source_changed");
+    if (row) row.retained_text = sqliteText(row.retained_text);
+    if (!row || typeof row.retained_text !== "string" || row.text_sha256 !== input.sha256 || ledgerHash(row.retained_text) !== input.sha256) throw new Error("ledger_source_changed");
     bytes += Buffer.byteLength(row.retained_text as string);
     if (bytes > LEDGER_LINEAGE_BYTES) throw new Error("ledger_lineage_bounds");
     records.set(input.recordId, row);
