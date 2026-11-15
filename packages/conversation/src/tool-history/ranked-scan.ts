@@ -8,6 +8,7 @@ import { readRetired, geometryKey } from "../continuity/retirement.js";
 import { ledgerWindows } from "../continuity/span-geometry.js";
 import { ledgerHash, spanKey } from "../continuity/ledger.js";
 import { RankedQueue, signalScore } from "../continuity/ranking.js";
+import { continuityRecordColumns, sqliteText } from "./sqlite-text.js";
 type Row = Record<string, any>;
 const queueMetrics = () => ({ templates: 0, repeated: 0, templateSuppressed: 0, recordSuppressed: 0, sources: 0 });
 const DEFAULT = { rows: 4096, bytes: 32 * 1024 * 1024, windows: 65536, ms: 5000 };
@@ -15,6 +16,7 @@ const VISIBLE = `g.logical_id=? AND g.conversation_id=? AND g.state='committed' 
   AND NOT EXISTS (SELECT 1 FROM continuity_generations p WHERE p.conversation_id=g.conversation_id AND p.state='prepared' AND p.action IN ('reset','delete'))`;
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 function record(row: Row, physical: string): ContinuitySnapshotRecord {
+  row.retained_text = sqliteText(row.retained_text);
   if (typeof row.retained_text !== "string" || digest(row.retained_text) !== row.text_sha256 || typeof row.source_json !== "string") throw new Error("source_changed");
   return { recordId: row.record_id, generationId: row.generation_id, conversationId: physical, runId: row.run_id,
     ...(row.input_id === null ? {} : { inputId: row.input_id }), kind: row.kind, provenance: row.provenance, ordinal: row.ordinal, sequence: row.seq,
@@ -70,7 +72,7 @@ export function scanLedgerHistory(db: DatabaseSync, input: ContinuitySnapshotInp
         const chosen: Row[] = [];
         for (const row of metadata) { if (chosen.length && size + row.bytes > 4 * 1024 * 1024) break; size += row.bytes; chosen.push(row); }
         if (stats.bytes + size > budget.bytes || stats.rows + chosen.length > budget.rows) throw new Error("scan_capacity");
-        const rows = db.prepare(`SELECT r.*,CASE WHEN length(CAST(source_json AS BLOB))<=65536 THEN source_json ELSE NULL END source_json FROM continuity_records r WHERE record_id IN (${chosen.map(() => "?").join(",")}) ORDER BY ordinal`).all(...chosen.map(r => r.record_id)) as Row[];
+        const rows = db.prepare(`SELECT ${continuityRecordColumns()},CASE WHEN length(CAST(source_json AS BLOB))<=65536 THEN source_json ELSE NULL END source_json FROM continuity_records r WHERE record_id IN (${chosen.map(() => "?").join(",")}) ORDER BY ordinal`).all(...chosen.map(r => r.record_id)) as Row[];
         const runs = [...new Set(rows.filter(r => r.kind === "tool").map(r => r.run_id))].filter(run => !boundRuns.has(run));
         if (runs.length) {
           stats.bindingQueries++;
@@ -116,7 +118,7 @@ export function scanLedgerHistory(db: DatabaseSync, input: ContinuitySnapshotInp
         bytes += size; return true;
       });
       const ids = chosen.map(ordinal => info.get(ordinal)!.recordId);
-      const rows = ids.length ? db.prepare(`SELECT r.* FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND r.retained_text IS NOT NULL AND r.record_id IN (${ids.map(() => "?").join(",")}) ORDER BY r.ordinal`).all(...args, ...ids) as Row[] : [];
+      const rows = ids.length ? db.prepare(`SELECT ${continuityRecordColumns()} FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND r.retained_text IS NOT NULL AND r.record_id IN (${ids.map(() => "?").join(",")}) ORDER BY r.ordinal`).all(...args, ...ids) as Row[] : [];
       if (rows.length !== ids.length) throw new Error("source_changed");
       const invocations = chosen.flatMap(ordinal => { const op = info.get(ordinal)!.operation; return op ? [calls.get(op)!.invocation_id] : []; });
       const payloads = new Map((invocations.length ? db.prepare(`SELECT record_id,payload_json,payload_sha256 FROM tool_records WHERE record_id IN (${invocations.map(() => "?").join(",")}) AND length(CAST(payload_json AS BLOB))<=4194304`).all(...invocations) as Row[] : []).map(row => [row.record_id, row]));

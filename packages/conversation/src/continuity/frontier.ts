@@ -3,12 +3,14 @@ import type { LedgerCursor, LedgerOffer } from "../tool-history/continuity-contr
 import { ledgerHash, spanKey } from "./ledger.js";
 import { ledgerWindows } from "./span-geometry.js";
 import { geometryKey, type RetiredOffer } from "./retirement.js";
+import { continuityRecordColumns, sqliteText } from "../tool-history/sqlite-text.js";
 type Row = Record<string, any>;
 export function progressSource(db: DatabaseSync, logical: string, physical: string, ordinal: number, toolBinding = true): Row {
-  const row = db.prepare(`SELECT r.* FROM continuity_records r JOIN continuity_generations g USING(generation_id)
+  const row = db.prepare(`SELECT ${continuityRecordColumns()} FROM continuity_records r JOIN continuity_generations g USING(generation_id)
     WHERE r.ordinal=? AND g.logical_id=? AND g.conversation_id=? AND g.state='committed' AND r.finalized=1 AND r.retained_text IS NOT NULL AND length(CAST(r.retained_text AS BLOB))<=1048576 AND length(CAST(r.source_json AS BLOB))<=65536
     AND NOT EXISTS (SELECT 1 FROM continuity_generations pending WHERE pending.conversation_id=g.conversation_id AND pending.state='prepared' AND pending.action IN ('reset','delete'))`).get(ordinal, logical, physical) as Row | undefined;
-  if (!row || ledgerHash(row.retained_text) !== row.text_sha256) throw new Error("upkeep_progress_source_changed");
+  if (row) row.retained_text = sqliteText(row.retained_text);
+  if (!row || typeof row.retained_text !== "string" || ledgerHash(row.retained_text) !== row.text_sha256) throw new Error("upkeep_progress_source_changed");
   const source = JSON.parse(row.source_json);
   row.owner = row.kind === "owner" && row.provenance === "host-owner" && !!row.input_id && source.attestation?.inputId === row.input_id;
   if (toolBinding && row.kind === "tool") {

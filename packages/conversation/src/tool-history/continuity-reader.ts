@@ -12,6 +12,7 @@ import {
 import { continuityRecordId, hasContinuitySchema } from "./continuity-storage.js";
 import { normalizeId } from "./paths.js";
 import { utf8Prefix } from "./payload.js";
+import { continuityRecordColumns, sqliteText } from "./sqlite-text.js";
 
 type Row = Record<string, unknown>;
 // A pending purge suppresses the old physical owner's evidence even across an
@@ -37,16 +38,17 @@ export function searchContinuity(database: DatabaseSync, input: ContinuitySearch
     if (input.query.trim().length === 0 || Buffer.byteLength(input.query) > 512) throw new TypeError("Continuity query must be 1 through 512 bytes.");
     // SQLite's built-in lower() folds ASCII only. Match the query's Unicode
     // lowercasing without a second retained-text copy or schema migration.
-    database.function("continuity_lower", { deterministic: true }, (value) => typeof value === "string" ? value.toLowerCase() : "");
+    // BLOB arguments keep text after an embedded NUL visible on Node 24.15.
+    database.function("continuity_lower", { deterministic: true }, (value) => { const decoded = sqliteText(value); return typeof decoded === "string" ? decoded.toLowerCase() : ""; });
     for (const term of [...new Set(input.query.toLowerCase().trim().split(/\s+/u))].slice(0, 16)) {
-      clauses.push("instr(continuity_lower(r.retained_text),?)>0"); values.push(term);
+      clauses.push("instr(continuity_lower(CAST(r.retained_text AS BLOB)),?)>0"); values.push(term);
     }
   }
   if (input.before !== undefined) {
     if (!Number.isSafeInteger(input.before) || input.before < 1) throw new TypeError("Invalid continuity search offset.");
     clauses.push("r.ordinal<?"); values.push(input.before);
   }
-  const rows = database.prepare(`SELECT r.*,g.conversation_id FROM continuity_records r
+  const rows = database.prepare(`SELECT ${continuityRecordColumns()},g.conversation_id FROM continuity_records r
     JOIN continuity_generations g USING(generation_id) WHERE ${clauses.join(" AND ")}
     ORDER BY r.ordinal DESC LIMIT ?`).all(...values, limit + 1) as Row[];
   const selected = rows.slice(0, limit);
@@ -65,7 +67,7 @@ export function getContinuity(database: DatabaseSync, input: ContinuityGetInput)
   validateScope(input);
   if (!hasContinuitySchema(database)) return { status: "unavailable", untrusted: true };
   if (!/^chr1_[A-Za-z0-9_-]{43}$/u.test(input.recordId)) return { status: "unavailable", untrusted: true };
-  const row = database.prepare(`SELECT r.*,g.conversation_id FROM continuity_records r
+  const row = database.prepare(`SELECT ${continuityRecordColumns()},g.conversation_id FROM continuity_records r
     JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND r.record_id=?`)
     .get(input.logicalConversationId, input.recordId) as Row | undefined;
   if (!row) return { status: "unavailable", untrusted: true };
@@ -144,7 +146,7 @@ function historyBoundaryOrdinal(database: DatabaseSync, input: ContinuitySnapsho
 
 function retainedSummary(database: DatabaseSync, input: ContinuitySnapshotInput, recordId: string): RetainedSummaryProof | undefined {
   if (typeof recordId !== "string" || !/^chr1_[A-Za-z0-9_-]{43}$/u.test(recordId)) return undefined;
-  const row = database.prepare(`SELECT r.*,g.conversation_id FROM continuity_records r
+  const row = database.prepare(`SELECT ${continuityRecordColumns()},g.conversation_id FROM continuity_records r
     JOIN continuity_generations g USING(generation_id) WHERE ${VISIBLE} AND g.conversation_id=? AND r.run_id<>?
     AND g.action='checkpoint' AND g.committed_at_ms IS NOT NULL AND g.before_digest IS g.after_digest
     AND g.latest_summary_record_id=r.record_id
@@ -185,10 +187,11 @@ export function continuitySnapshotVisible(database: DatabaseSync, scope: Continu
 }
 
 function text(row: Row): string {
-  if (typeof row.retained_text !== "string" || createHash("sha256").update(row.retained_text).digest("hex") !== row.text_sha256) {
+  const retained = sqliteText(row.retained_text);
+  if (typeof retained !== "string" || createHash("sha256").update(retained).digest("hex") !== row.text_sha256) {
     throw new TypeError("Retained continuity digest mismatch.");
   }
-  return row.retained_text;
+  return retained;
 }
 function metadata(row: Row): ContinuityRecordMetadata {
   return {
@@ -247,7 +250,7 @@ export function snapshotContinuity(database: DatabaseSync, input: ContinuitySnap
     if (bytes + size > 4 * 1024 * 1024) { bounded = true; if (progress) break; continue; }
     bytes += size;
     try {
-      const row = database.prepare(`SELECT r.*,g.conversation_id FROM continuity_records r
+      const row = database.prepare(`SELECT ${continuityRecordColumns()},g.conversation_id FROM continuity_records r
         JOIN continuity_generations g USING(generation_id) WHERE r.record_id=?`).get(candidate.record_id as string) as Row;
       const record = { ...metadata(row), text: text(row) };
       if (record.kind === "tool") {
