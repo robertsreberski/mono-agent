@@ -953,6 +953,30 @@ describe("WebService", () => {
     } finally { await service.stop(); }
   });
 
+  it.each(["busy", "agent_offline", "compaction_unsupported"] as const)(
+    "does not add transcript markers for repeated %s precondition rejections", async rejection => {
+      let online = true;
+      const service = await createService({
+        discoverImpl: async () => online ? [fakeDiscoveredAgent()] : [],
+        fetchImpl: operatorFetch({ supportsManualCompaction: rejection !== "compaction_unsupported" }),
+      });
+      try {
+        await service.refreshAgents();
+        const thread = service.createThread("agent-one");
+        if (rejection === "busy") service.store.beginTurn({ threadId: thread.id, text: "Fictional running turn", attachmentIds: [] });
+        if (rejection === "agent_offline") {
+          online = false;
+          for (let i = 0; i < PROBE_FAILURE_TOLERANCE; i++) await service.refreshAgents();
+        }
+        const before = service.store.getThreadDetail(thread.id)?.messages;
+        for (let i = 0; i < 2; i++) await expect(service.compactThread(thread.id)).rejects.toMatchObject({
+          code: rejection === "busy" ? "compaction_busy" : rejection,
+        });
+        expect(service.store.getThreadDetail(thread.id)?.messages).toEqual(before);
+      } finally { await service.stop(); }
+    },
+  );
+
   it("rejects an older agent without manual compaction and an unknown thread", async () => {
     const service = await createService();
     try {

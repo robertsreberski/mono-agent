@@ -2420,16 +2420,13 @@ export class WebService {
     if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
     const connection = this.connections.get(thread.sourceId);
     if (connection === undefined || !thread.canSend) {
-      this.store.recordManualCompactionFailure(threadId, "agent_offline");
       throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
     }
     if (connection.info.supportsManualCompaction !== true) {
-      this.store.recordManualCompactionFailure(threadId, "unsupported");
       throw new WebConsoleError("compaction_unsupported", "This agent does not support manual compaction.", 409);
     }
     if (thread.runState.status === "running" || this.activeTurns.has(threadId) || this.activeCompactions.has(threadId)
       || this.hostWakeReservations.has(threadId) || this.drainingLiveInputThreads.has(threadId)) {
-      this.store.recordManualCompactionFailure(threadId, "busy");
       throw new WebConsoleError("compaction_busy", "Wait for the current turn or compaction to finish.", 409);
     }
     return this.compactIdleThread(threadId, connection);

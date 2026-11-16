@@ -119,7 +119,7 @@ describe("summary request accounting", () => {
     const response = { ...answer(), stopReason };
     const requests: Array<{ costUsd: number | null; requestId: string }> = [];
     const facade = summaryModels({ completeSimple: async () => response }, { operationId: "op", focus: SUMMARY_FOCUS, requests });
-    expect(await facade.completeSimple(model, {})).toMatchObject({ ...response, errorMessage: expect.stringContaining("Compaction failure:") });
+    expect(await facade.completeSimple(model, {})).toBe(response);
     expect(requests[0]).toMatchObject({ status: "failed", costUsd: 0.11 });
   });
 

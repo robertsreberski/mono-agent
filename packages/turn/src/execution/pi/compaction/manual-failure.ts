@@ -1,4 +1,4 @@
-import { manualCompactionDiagnostic, isManualCompactionReason, type AgentManualCompactionDiagnostic } from "@mono-agent/contracts";
+import { manualCompactionDiagnostic, type AgentManualCompactionDiagnostic } from "@mono-agent/contracts";
 
 /** Inspect locally, return only an allow-listed category and numeric HTTP status. */
 export function classifyCompactionFailure(error: unknown): AgentManualCompactionDiagnostic {
@@ -7,8 +7,6 @@ export function classifyCompactionFailure(error: unknown): AgentManualCompaction
   const code = [data.code, data.name, data._tag].filter(Boolean).join(" ").toLowerCase();
   const status = data.status ?? data.statusCode ?? /\b(?:http[ :]*|status[ :]*)([45]\d\d)\b/i.exec(message)?.[1];
   const httpStatus = Number(status);
-  const safeReason = /compaction failure: ([a-z_]+)/.exec(message)?.[1];
-  if (isManualCompactionReason(safeReason)) return manualCompactionDiagnostic({ reason: safeReason, httpStatus });
   const reason = /timeout|timed out/.test(code + " " + message) ? "timeout"
     : /abort|cancel/.test(code) ? "cancelled"
     : httpStatus === 429 || /rate.limit|rate_limited/.test(message) ? "rate_limited"
