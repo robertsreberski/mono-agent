@@ -10,7 +10,7 @@ This section takes you from a new computer to an agent you are talking to in the
 Bare `mono-agent init` on a TTY names the agent, searches the provider catalogs, and runs a real no-tool check for every selected route; on macOS the strict **Agent ready** gate then also starts the managed agent and proves its live snapshot, while other platforms stop at a manual-start handoff; flag/non-TTY init creates a scaffold only. mono-agent remains config-first: one `mono-agent.config.json`, driven by the CLI.
 
 :::note
-The latest published release is `0.26.0` (registry checked 2026-10-20; all 20 current catalog packages). Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release. The browser console's Capabilities page, its Enable actions, write-only credential fields and Undo, and the console handoff at the end of guided `init` are also source-only until then. See [Release status](/reference/release-status/) for the upgrade boundary and any later source-only changes.
+The latest published release is `0.27.1` (registry checked 2026-11-16; all 20 current catalog packages). Current `main` carries unreleased changes after `v0.27.1`: console usage analytics with on-demand subscription quota history and a manual-compaction fix, shipping in the next release. The Node-version guard, `mono-agent preflight`, the browser console's Capabilities page with its Enable actions, write-only credential fields and Undo, and the console handoff at the end of guided `init` are included in the published release. See [Release status](/reference/release-status/) for the upgrade boundary and any later source-only changes.
 :::
 
 ## The path

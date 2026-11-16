@@ -7,8 +7,8 @@ sidebar:
 
 This page lists what an agent can do and where you turn each feature on. Some features have a button in the browser console. Most are one block in `mono-agent.config.json`. A few are CLI commands or are always on. For the complete list of every config key, see the [feature matrix](/reference/feature-matrix/).
 
-:::caution[Console Enable and credential fields need the next release]
-The Capabilities page, its Enable actions, credential fields, and Undo are in the current source but not in the published `0.26.0` release. On 0.26.0, use the config route in the table below. See [Release status](/reference/release-status/), or [run the tutorial from source](/getting-started/tutorial/#run-this-tutorial-from-source) to try them now.
+:::note[Console Enable and credential fields ship in the published release]
+The Capabilities page, its Enable actions, credential fields, and Undo are in the published `0.27.1` release. On older versions, use the config route in the table below. See [Release status](/reference/release-status/).
 :::
 
 ## Four ways to turn something on
@@ -87,4 +87,4 @@ After a console save, the **Configuration recovery** panel offers **Undo last co
 
 ## Not in the console
 
-These stay config or CLI only, even on a supporting agent: model routes, identity, tool policy, MCP servers, skills, the sandbox, webhook, Journal and BuJo memory setup, creating cron jobs, and plugin channels. There is no terminal Enable command; the CLI equivalent is editing the config and running `mono-agent validate`. For agents that do not report capabilities (any published release up to 0.26.0), every feature uses the config route.
+These stay config or CLI only, even on a supporting agent: model routes, identity, tool policy, MCP servers, skills, the sandbox, webhook, Journal and BuJo memory setup, creating cron jobs, and plugin channels. There is no terminal Enable command; the CLI equivalent is editing the config and running `mono-agent validate`. For agents that do not report capabilities (published releases before 0.27.0), every feature uses the config route.

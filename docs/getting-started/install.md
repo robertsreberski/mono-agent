@@ -13,8 +13,8 @@ The shipped command line lives in `@mono-agent/app`: the config-first host that 
 The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to an unrelated `monoagent` package — so the installer follows npm's `create-*` convention (`create-mono-agent`), which `npm create mono-agent` resolves natively.
 :::
 
-:::note[Published release: 0.26.0]
-All 20 current catalog packages have npm `latest` set to `0.26.0` (registry checked 2026-10-20). Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release. The console Capabilities page with its Enable actions, credential fields and Undo is also source-only until then. [Release status](/reference/release-status/) covers the package renames, deprecated-but-installable old npm names, and the upgrade boundary. Use a [source build](#run-an-unreleased-build) only when evaluating later unreleased changes.
+:::note[Published release: 0.27.1]
+All 20 current catalog packages have npm `latest` set to `0.27.1` (registry checked 2026-11-16). Current `main` carries unreleased changes after `v0.27.1`: console usage analytics with on-demand subscription quota history and a manual-compaction fix, shipping in the next release. [Release status](/reference/release-status/) covers the package renames, deprecated-but-installable old npm names, and the upgrade boundary. Use a [source build](#run-an-unreleased-build) only when evaluating later unreleased changes.
 :::
 
 ## Prerequisites
@@ -111,7 +111,7 @@ A warning identifies an older `mono-agent` that takes precedence on PATH.
 
 | Option | Behavior |
 | --- | --- |
-| `--version latest` or `--version 0.26.0` | Choose latest (default) or an exact published CLI version. Node remains pinned by the installer. |
+| `--version latest` or `--version 0.27.1` | Choose latest (default) or an exact published CLI version. Node remains pinned by the installer. |
 | `--non-interactive` | Never prompt; installs are already unattended. |
 | `--add-to-path` | Opt in to the marked Bash/Zsh PATH block. |
 | `--uninstall --yes` | Remove the CLI subtree and unchanged marked PATH blocks; refuse if detected service definitions reference it. |
@@ -138,8 +138,7 @@ cap per attempt for healthy slow transfers. No
 registry/mirror override or checksum bypass is offered.
 
 The installer invokes `mono-agent preflight --json` with a bounded timeout.
-Host preflight is on `main` and ships with the next package release; published
-0.26.0 does not provide it. Recognized host errors return nonzero **but leave the CLI
+Host preflight ships in the published release; published versions before 0.27.0 do not provide it. Recognized host errors return nonzero **but leave the CLI
 installed** and show remediation. Published versions without this command warn
 “host preflight unavailable in this version”; that is not a readiness pass. No
 provider calls, project creation or services are started by installation.
@@ -236,8 +235,7 @@ Where no usable service manager exists, the foreground command above is the supp
 ## Verify the install
 
 Confirm the CLI resolves with `mono-agent --help`. The following host checks
-are available from a source build now and ship with the next published release
-(not 0.26.0). Run them from any folder, even an empty one:
+ship with the published release. Run them from any folder, even an empty one:
 
 ```bash
 mono-agent --help
