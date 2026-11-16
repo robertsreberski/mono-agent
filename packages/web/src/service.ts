@@ -1,3 +1,4 @@
+import type { WebUsageAnalyticsQuery } from "./contracts.js";
 import { parseCredentialRequest, parseCredentialSaveRequest, type CredentialRequest, type CredentialSaveRequest } from "@mono-agent/channel-operator/client";
 import { parseCapabilityActionInput, parseCapabilityActionSaveInput, type CapabilityActionInput, type CapabilityActionSaveInput } from "@mono-agent/channel-operator/client";
 import type { CapabilitySetupSnapshot } from "@mono-agent/channel-operator/client";
@@ -9,7 +10,7 @@ import { loadVoiceConfig, type WebVoiceConfig } from "./voice-config.js";
 import { WebTranscriptions, WEB_VOICE_LIMITS, type VoiceOperation } from "./transcription.js";
 import { dataLayers, isUpkeepTelemetry, upkeepTelemetryData } from "./message-cost.js";
 import { type ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
-import type { ProviderUsageId, ProviderUsageSnapshot } from "@mono-agent/contracts";
+import type { ProviderUsageId, ProviderUsageSnapshot, ProviderUsageHistoryQuery } from "@mono-agent/contracts";
 import type { WebCancelOrigin, WebExternalConversationChannel } from "./contracts.js";
 import type { ConsoleToolScope, ConsoleToolOperation, ExternalConsoleToolScope } from "./console-tools.js";
 import type { ExternalConversationObservation } from "./external-conversations.js";
@@ -951,6 +952,8 @@ export class WebService {
       ...(connection?.info.supportsCapabilityActions === true ? { supportsCapabilityActions: true as const } : {}),
       ...(providerUsage ? { supportsProviderUsage: true as const } : {}),
       ...(providerUsage && connection?.info.supportsProviderUsageRefresh === true ? { supportsProviderUsageRefresh: true as const } : {}),
+      ...(providerUsage && connection?.info.supportsProviderUsageHistory === true ? { supportsProviderUsageHistory: true as const } : {}),
+      ...(providerUsage && connection?.info.supportsProviderUsageHistoryClear === true ? { supportsProviderUsageHistoryClear: true as const } : {}),
       ...(providerAuthChecks ? { supportsProviderAuthChecks: true as const } : {}),
     };
   }
@@ -968,6 +971,8 @@ export class WebService {
       projected.supportsCapabilityActions === true ? "capabilityActions" : "",
       projected.supportsProviderUsage === true ? "providerUsage" : "",
       projected.supportsProviderUsageRefresh === true ? "providerUsageRefresh" : "",
+      projected.supportsProviderUsageHistory === true ? "providerUsageHistory" : "",
+      projected.supportsProviderUsageHistoryClear === true ? "providerUsageHistoryClear" : "",
       projected.supportsProviderAuth === true ? "providerAuth" : "",
       projected.supportsManualCompaction === true ? "manualCompaction" : "",
       projected.supportsProviderAuthChecks === true ? "providerAuthChecks" : "",
@@ -2205,6 +2210,30 @@ export class WebService {
     if (this.connections.get(sourceId)?.generation !== connection.generation
       || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
     return snapshot;
+  }
+
+  async usageAnalytics(sourceId: string, query: WebUsageAnalyticsQuery, signal?: AbortSignal) {
+    if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    return this.store.usageAnalytics(sourceId, query, signal);
+  }
+
+  async providerUsageHistory(sourceId: string, query: ProviderUsageHistoryQuery) {
+    if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (!connection) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    if (!connection.info.supportsProviderUsageHistory) throw new WebConsoleError("provider_usage_history_unavailable", "This agent version does not expose quota history.", 409);
+    const history = await connection.client.providerUsageHistory(query, AbortSignal.timeout(15_000));
+    if (this.connections.get(sourceId)?.generation !== connection.generation || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
+    return history;
+  }
+
+  async clearProviderUsageHistory(sourceId: string, provider?: ProviderUsageId) {
+    if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (!connection) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    if (!connection.info.supportsProviderUsageHistoryClear) throw new WebConsoleError("provider_usage_history_clear_unavailable", "This agent version cannot clear quota history.", 409);
+    await connection.client.clearProviderUsageHistory(provider, AbortSignal.timeout(15_000));
+    if (this.connections.get(sourceId)?.generation !== connection.generation || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) throw new WebConsoleError("agent_generation_changed", "The agent restarted; refresh history to check the result.", 409);
   }
 
   async providerAuthStatus(sourceId: string): Promise<ProviderAuthStatusSnapshot> {

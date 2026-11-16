@@ -1,7 +1,7 @@
 import { parseCredentialSnapshot, parseCredentialSaved, type CredentialSaveRequest, type CredentialRequest } from "@mono-agent/channel-operator/client";
 import { parseCapabilityActionsSnapshot, parseCapabilityActionPreview, parseCapabilityActionSaved, MAX_CAPABILITY_ACTION_BYTES, type CapabilityActionInput, type CapabilityActionSaveInput } from "@mono-agent/channel-operator/client";
 import { parseCapabilitySetupSnapshot, MAX_CAPABILITY_SETUP_BYTES, type CapabilitySetupSnapshot } from "@mono-agent/channel-operator/client";
-import { isAgentCompactionAccounting, parseProviderUsageSnapshot, type ProviderUsageId, type ProviderUsageSnapshot } from "@mono-agent/contracts";
+import { isAgentCompactionAccounting, parseProviderUsageSnapshot, parseProviderUsageHistory, type ProviderUsageHistory, type ProviderUsageHistoryQuery, type ProviderUsageId, type ProviderUsageSnapshot } from "@mono-agent/contracts";
 import {
   AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
   AGENT_CONTEXT_IMPORT_VERSION,
@@ -191,6 +191,8 @@ export interface OperatorInfo {
   readonly supportsProviderAuth?: true;
   readonly supportsProviderUsage?: true;
   readonly supportsProviderUsageRefresh?: true;
+  readonly supportsProviderUsageHistory?: true;
+  readonly supportsProviderUsageHistoryClear?: true;
   readonly supportsProviderAuthChecks?: true;
 }
 
@@ -323,6 +325,10 @@ export class OperatorClient {
       ...(record(capabilities?.providerUsage)?.version === 1 ? {
         supportsProviderUsage: true,
         ...(record(capabilities?.providerUsage)?.refresh === true ? { supportsProviderUsageRefresh: true } : {}),
+        ...(record(record(capabilities?.providerUsage)?.history)?.version === 1 ? {
+          supportsProviderUsageHistory: true,
+          ...(record(record(capabilities?.providerUsage)?.history)?.clear === true ? { supportsProviderUsageHistoryClear: true } : {}),
+        } : {}),
       } : {}),
       ...(record(capabilities?.providerAuth)?.version === 1 ? { supportsProviderAuth: true } : {}),
       ...(record(record(capabilities?.providerAuth)?.checks)?.version === 1
@@ -435,6 +441,27 @@ export class OperatorClient {
       method: "POST", headers: this.headers(true), body: "{}", ...(signal === undefined ? {} : { signal }),
     });
     return parseProviderUsageSnapshot(JSON.parse(await readBoundedBody(response, 128 * 1024, "operator_provider_usage_too_large")));
+  }
+
+  async providerUsageHistory(query: ProviderUsageHistoryQuery, signal?: AbortSignal): Promise<ProviderUsageHistory> {
+    const search = new URLSearchParams(Object.entries(query));
+    const response = await this.request(`${this.baseUrl}/v1/provider-usage/history?${search}`, {
+      headers: this.headers(false), ...(signal === undefined ? {} : { signal }),
+    });
+    const body = await readBoundedBody(response, 2 * 1024 * 1024, "operator_provider_usage_history_too_large");
+    try { return parseProviderUsageHistory(JSON.parse(body)); }
+    catch { throw new WebConsoleError("operator_provider_usage_history_invalid", "Invalid quota history response.", 502); }
+  }
+
+  async clearProviderUsageHistory(provider?: ProviderUsageId, signal?: AbortSignal): Promise<void> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-usage/history${provider === undefined ? "" : `?provider=${encodeURIComponent(provider)}`}`, {
+      method: "DELETE", headers: this.headers(true), body: "{}", ...(signal === undefined ? {} : { signal }),
+    });
+    const body = await readBoundedBody(response, 1024, "operator_provider_usage_history_too_large");
+    let value: unknown;
+    try { value = JSON.parse(body); }
+    catch { throw new WebConsoleError("operator_provider_usage_history_invalid", "Invalid history clear response.", 502); }
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length) throw new WebConsoleError("operator_provider_usage_history_invalid", "Invalid history clear response.", 502);
   }
 
   async providerAuthStatus(signal?: AbortSignal): Promise<ProviderAuthStatusSnapshot> {

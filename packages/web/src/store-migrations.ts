@@ -381,6 +381,9 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
   { version: 43, name: "process-job-wake-admission-fence", up: ({ database }) => {
     addColumn(database, "process_job_wake_deliveries", "attempt_token", "TEXT");
   } },
+  { version: 44, name: "usage-analytics-range-index", up: ({ database }) => {
+    database.exec("CREATE INDEX IF NOT EXISTS messages_usage_range ON messages(thread_id, created_at, id)");
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -521,6 +524,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
     assertColumns(database, "process_job_wake_deliveries", ["attempt_token"]);
     for (const [index, expected] of [
       ["messages_by_thread", ["thread_id", "created_at"]],
+      ["messages_usage_range", ["thread_id", "created_at", "id"]],
       ["process_job_cards_by_state", ["state", "thread_id"]],
       ["process_job_cards_by_thread", ["thread_id"]],
       ["cron_run_messages_by_order", ["source_id", "job_id", "ordered_at", "sequence", "run_id"]],

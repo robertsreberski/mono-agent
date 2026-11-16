@@ -174,6 +174,34 @@ can reach it. After restart, dotenv credentials also remain inherited by
 Exec/Bash tools; credential entry does not prevent deliberate tool-driven
 credential access or exfiltration. There is no new authentication layer.
 
+### Retained usage analytics API
+
+`GET /api/v1/agents/:id/usage-analytics` queries retained console messages, not
+vendor bills or run-summary text. `from`/`to` are half-open instant bounds (at
+most 90 days); `bucket` is `hour` (up to 7 days) or `day`, with optional IANA
+`timeZone`. Day buckets follow actual local midnights, including DST; hourly
+boundaries remain UTC. The response echoes the effective zone and attributes
+observations to their containing message's creation time. Archived, cron and
+background conversations are included; deleted messages are not.
+
+Thread accounting stays canonical: synchronous children are inclusive, detached
+work is independent, compaction follows existing receipts, and upkeep operations
+are deduplicated over the whole thread range before bucketing. Token-only models
+remain visible; unknown price retains a known subtotal instead of becoming free.
+Top project rows separately expose the older active-member/main-only project
+summary basis, which agrees with project month figures for a UTC calendar month.
+
+Queries reuse bounded message rollups and a covering thread/date index behind
+the source-scoped join.
+They refuse ranges above 100,000 messages, 64 MiB of message parts or the bounded
+read deadline rather than returning misleading complete rankings. Output keeps
+20 models plus Other, 10 conversations/projects and a 2 MiB response cap.
+Supporting agents additionally expose no-store console history GET/DELETE at
+`/api/v1/agents/:id/provider-usage/history`, proxied to the current generation's
+operator; web never reads agent credentials or history files. Reads do not fetch
+vendor usage. New consoles retain local accounting with older/offline agents,
+while unsupported history is an explicit separate state.
+
 ### Conversation PDF export
 
 Open **Conversation actions → Export as PDF** on desktop or mobile, including

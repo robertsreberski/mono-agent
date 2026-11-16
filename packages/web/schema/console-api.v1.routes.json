@@ -173,6 +173,42 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/agents/:id/provider-usage/history",
+      "requestType": "NoBody",
+      "responseType": "ApiProviderUsageHistory",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact",
+      "queryType": "ApiProviderUsageHistoryQuery"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/agents/:id/provider-usage/history",
+      "requestType": "ApiEmpty",
+      "responseType": "ApiEmpty",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact",
+      "queryType": "ApiProviderQuery"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agents/:id/usage-analytics",
+      "requestType": "NoBody",
+      "responseType": "ApiUsageAnalytics",
+      "successStatus": [
+        200
+      ],
+      "requiresClaimedOrigin": true,
+      "originPolicy": "exact",
+      "queryType": "ApiUsageAnalyticsQuery"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/agents/:id/provider-usage",
       "requestType": "NoBody",
       "responseType": "ApiProviderUsage",

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add bounded token/cost timeline queries for retained console conversations,
+  with inclusive child accounting and timezone-aware day buckets.
+
 - Retain on-demand subscription quota history for activated providers, with
   bounded private storage and detected account-change markers.
 

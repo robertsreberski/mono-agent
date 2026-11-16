@@ -24,6 +24,10 @@ export interface WebApiDtos {
   readonly ApiCapabilityActionSaved: W.WebCapabilityActionSaved;
   readonly ApiCapabilities: W.WebCapabilitySetupSnapshot;
   readonly ApiProviderUsage: C.ProviderUsageSnapshot;
+  readonly ApiProviderUsageHistory: C.ProviderUsageHistory;
+  readonly ApiProviderUsageHistoryQuery: Omit<C.ProviderUsageHistoryQuery, "timeZone"> & { readonly timeZone?: string };
+  readonly ApiUsageAnalytics: W.WebUsageAnalytics;
+  readonly ApiUsageAnalyticsQuery: W.WebUsageAnalyticsQuery;
   readonly ApiProviderQuery: { readonly provider?: C.ProviderUsageId };
   readonly ApiRestart: W.WebAgentRestartOperation;
   readonly ApiLatestRestart: { readonly operation: W.WebAgentRestartOperation | null };
