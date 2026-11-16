@@ -14,7 +14,7 @@ The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to a
 :::
 
 :::note[Published release: 0.27.1]
-All 20 current catalog packages have npm `latest` set to `0.27.1` (registry checked 2026-11-16). Current `main` carries unreleased changes after `v0.27.1`: console usage analytics with quota history and a manual-compaction fix, shipping in the next release. [Release status](/reference/release-status/) covers the package renames, deprecated-but-installable old npm names, and the upgrade boundary. Use a [source build](#run-an-unreleased-build) only when evaluating later unreleased changes.
+All 20 current catalog packages have npm `latest` set to `0.27.1` (registry checked 2026-11-16). Current `main` carries unreleased changes after `v0.27.1`: console usage analytics with on-demand subscription quota history and a manual-compaction fix, shipping in the next release. [Release status](/reference/release-status/) covers the package renames, deprecated-but-installable old npm names, and the upgrade boundary. Use a [source build](#run-an-unreleased-build) only when evaluating later unreleased changes.
 :::
 
 ## Prerequisites
