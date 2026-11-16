@@ -59,6 +59,7 @@ describe("usage analytics", () => {
       await page.viewport(1440, 1700);
       document.querySelector(".usage-content")!.scrollTop = 0;
     }
+    const tokens = screen.getByRole("button", { name: "Tokens" }); tokens.focus(); await userEvent.keyboard("{Enter}"); expect(tokens).toHaveAttribute("aria-pressed", "true");
     if (shots && width === 390) {
       await page.viewport(390, 1600);
       costCard.scrollIntoView({ block: "start" });
@@ -67,7 +68,6 @@ describe("usage analytics", () => {
       await page.viewport(390, 1900);
       document.querySelector(".usage-content")!.scrollTop = 0;
     }
-    const tokens = screen.getByRole("button", { name: "Tokens" }); tokens.focus(); await userEvent.keyboard("{Enter}"); expect(tokens).toHaveAttribute("aria-pressed", "true");
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Inspect bucket" }), "12");
     expect(screen.getByRole("table", { name: /Model breakdown/ })).toBeVisible();
     const codex = screen.getByRole("article", { name: "Codex quota history" });

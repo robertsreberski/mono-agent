@@ -76,6 +76,8 @@ describe("analytics client and geometry", () => {
       expect(known(data.buckets.map(b => b.total))).toBeCloseTo(knownSpend(data.total)!, 8);
       expect(known(data.buckets.flatMap(b => [...b.models]))).toBeCloseTo(knownSpend(data.total)!, 8);
       expect(known(data.topConversations.map(c => c.usage))).toBeCloseTo(knownSpend(data.total)!, 8);
+      const rankedAmounts = data.topConversations.map(c => knownSpend(c.usage)!);
+      expect(rankedAmounts).toEqual([...rankedAmounts].sort((a, b) => b - a));
       for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) {
         expect(data.topConversations.reduce((n, c) => n + c.usage.tokens![key], 0)).toBe(data.total.tokens![key]);
       }

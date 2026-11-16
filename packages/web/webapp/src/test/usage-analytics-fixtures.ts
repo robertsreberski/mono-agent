@@ -13,9 +13,13 @@ export function usageAnalyticsFixture(partial = false, stale = false): { data: W
   const total = sum(buckets.map(b => b.total), partial);
   const garden = sum(buckets.map(bucket => bucket.models[0]!), false);
   const background = sum(buckets.map(bucket => bucket.models[1]!), partial);
+  const topConversations = [
+    { threadId: "fictional-garden", title: "Garden planning", usage: garden },
+    { threadId: "fictional-background", title: "Background catalog review", usage: background },
+  ].sort((a, b) => (b.usage.costUsd ?? b.usage.knownCostUsd ?? -Infinity) - (a.usage.costUsd ?? a.usage.knownCostUsd ?? -Infinity));
   return {
     data: { schema: "mono-agent.usage-analytics.v1", sourceId: "fictional-agent", from: iso(from), to: iso(to), bucket: "hour", timeZone: "UTC", computedAt: iso(to), attribution: "message-created-at", scope: "retained-conversations", total, buckets,
-      topConversations: [{ threadId: "fictional-garden", title: "Garden planning", usage: garden }, { threadId: "fictional-background", title: "Background catalog review", usage: background }],
+      topConversations,
       topProjects: [{ projectId: "fictional-project", name: "Seed catalog", usage: total, projectSummaryUsage: { costUsd: garden.costUsd! } }], unassignedUsage: {},
       coverage: { messages: 32, conversations: 2, projects: 1, containsRunningUsage: partial, tokensPartial: partial, costPartial: partial } },
     history: { schema: "mono-agent.provider-usage-history.v1", from: iso(from), to: iso(to), bucket: "hour", timeZone: "UTC", retentionDays: 90, storage: "ready", providers: (["openai-codex", "anthropic"] as const).map((providerId, providerIndex) => ({ providerId, label: providerId === "anthropic" ? "Claude" : "Codex", accountChanges: providerIndex === 0 ? [iso(from + 12 * 3_600_000)] : [], downsampled: false,
