@@ -1,3 +1,4 @@
+import { requestScopedNestedResult } from "../mcp/request-scoped-mcp.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -176,4 +177,10 @@ it("uses the actual stateless HTTP MCP boundary for invalid scopes", async () =>
 it("does not infer unified ownership from an external History server name in legacy mode", () => {
   expect(historyToolAvailabilityForRuntime({ allowedTools: ["*"], mcpServers: { "mono-agent-history": { url: "http://127.0.0.1/fictional" }, "mono-agent-conversation-history": {} } }))
     .toEqual({ conversationHistory: true, sessionHistory: false });
+});
+
+
+it.each(["History", "mcp__mono-agent-history__History", "mcp__fictional-external__History"])("omits only owned nested history in unified readers: %s", tool => {
+  expect(requestScopedNestedResult(tool, [], "Fictional evidence", undefined, false)).toBe("Fictional evidence");
+  expect(requestScopedNestedResult(tool, [], "Fictional evidence", undefined, true) === "Fictional evidence").toBe(tool === "mcp__fictional-external__History");
 });

@@ -36,7 +36,9 @@ export function unifiedHistoryAvailability(runtime: Readonly<Record<string, unkn
   const descriptor = servers?.[HISTORY_MCP_SERVER_NAME]?.appOwnedTools;
   const aliases = descriptor?.aliases?.History;
   const none = { conversationHistory: false, sessionHistory: false, history: { said: false, tools: false, runs: false } };
-  if (descriptor?.version !== 1 || !Array.isArray(aliases) || !aliases.every((alias): alias is string => typeof alias === "string")) return none;
+  if (descriptor?.version !== 1 || !isRecord(descriptor) || !isRecord(descriptor.aliases)
+    || !Object.values(descriptor.aliases).every(values => Array.isArray(values) && values.every(value => typeof value === "string"))
+    || !Array.isArray(aliases) || !aliases.every((alias): alias is string => typeof alias === "string")) return none;
   const names = [...UNIFIED_ALIASES, ...aliases];
   const denied = new Set(Array.isArray(runtime.disallowedTools) ? runtime.disallowedTools : []);
   const allowed = Array.isArray(runtime.allowedTools) ? new Set(runtime.allowedTools) : undefined;
@@ -45,4 +47,10 @@ export function unifiedHistoryAvailability(runtime: Readonly<Record<string, unkn
   return { conversationHistory: false, sessionHistory: false, history: {
     said: aliases.includes("ConversationHistory"), tools: aliases.includes("SessionHistory"), runs: aliases.includes("RunHistory"),
   } };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }

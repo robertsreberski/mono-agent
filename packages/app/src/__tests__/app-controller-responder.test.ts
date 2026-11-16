@@ -1,4 +1,4 @@
-import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
+import { resolveJsonMonoAgentConfig, DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -772,3 +772,41 @@ async function controllerSecurity(
   }
   return { ownership, registry };
 }
+
+
+it.each([undefined, false, true])("registers mutually exclusive history modes in the app controller (unified=%s)", async unified => {
+  const dir = await mkdtemp(join(tmpdir(), "controller-history-mode-")); tempDirs.push(dir);
+  await writeFile(join(dir, "IDENTITY.md"), "Fictional history fixture.");
+  const config = resolveJsonMonoAgentConfig({ cwd: dir, json: { runtime: { model: "openai-codex:gpt-5.5", session: { mode: "per-message" } },
+    context: { identityPath: "IDENTITY.md" }, tools: { ...(unified === undefined ? {} : { history: { unified } }) }, artifacts: { dir: join(dir, "artifacts") } } });
+  const security = await controllerSecurity(dir, dir);
+  let calls = 0;
+  const runtime: MonoRuntimeLike = { configureTools() {}, async run(_prompt, options) {
+    calls++;
+    const servers = options.mcpServers as Record<string, { url: string }>;
+    const actual = Object.keys(servers).filter(name => name.includes("history")).sort();
+    const expected = unified ? ["mono-agent-history"] : ["mono-agent-conversation-history", "mono-agent-run-history", "mono-agent-session-history"];
+    expect(actual).toEqual(expected);
+    for (const name of expected) {
+      const client = new Client({ name: "fictional-controller", version: "1" });
+      try { await client.connect(new StreamableHTTPClientTransport(new URL(servers[name]!.url)) as never);
+        const names = (await client.listTools()).tools.map(tool => tool.name);
+        expect(names).toEqual([unified ? "History" : name === "mono-agent-conversation-history" ? "ConversationHistory" : name === "mono-agent-run-history" ? "RunHistory" : "SessionHistory"]);
+      } finally { await client.close(); }
+    }
+    return { text: "Fictional answer." };
+  } };
+  const controller: ResponderControllerPort = {
+    cwd: dir, configPath: join(dir, "mono-agent.config.json"), configReadPath: join(dir, "mono-agent.config.json"), env: {}, logger: undefined,
+    runtime, activeRuntimes: [], interactionBridge: undefined, continuationService: undefined, processJobsService: undefined, processJobsStateDir: undefined,
+    agentRootOwnership: security.ownership, processJobsRegistry: security.registry, seenNotifyDestinations: createSeenNotifyDestinationCache(), sandboxEngineFor: () => undefined,
+    memoryStore: async () => undefined, ensureSharedMemoryRetrieval: () => undefined, reportMemoryRecallStatus: () => false,
+    adapterSendToolsRuntimeOptions: async () => ({ blockingToolNames: [] }), requestModelOverrideRuntimeOptions: () => ({ extension: async () => ({}), compactionEndpoint: async () => ({}), targetsProcessJobsPiNative: () => true }),
+    buildRuntimeForModel: () => () => runtime, observabilityContext: async () => ({}), recordSessionEvent() {},
+  };
+  const responder = await buildResponder(controller, config, "tui");
+  try {
+    const result = await responder.respond({ conversationId: "tui:fictional", text: "Fictional history lookup.", abortSignal: new AbortController().signal }, { append: async () => {} });
+    expect(result.text).toBe("Fictional answer."); expect(calls).toBe(1);
+  } finally { await (responder as { dispose?: () => Promise<void> }).dispose?.(); }
+});

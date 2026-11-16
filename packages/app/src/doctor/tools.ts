@@ -31,13 +31,11 @@ export async function toolsSection(config: MonoAgentConfig, input: ValidateMonoA
     details.push('Unified History policy: ConversationHistory → said; SessionHistory → tools; RunHistory → runs. Allowing History grants all scopes; denies win.');
     if (config.context.soulPath !== undefined) {
       try {
-        if ((await stat(config.context.soulPath)).size <= 1_000_000) {
-          const soul = await readFile(config.context.soulPath, "utf8");
-          const old = ["ConversationHistory", "SessionHistory", "RunHistory"].filter(name => soul.includes(name));
-          if (old.length > 0) {
-            status = "waiting";
-            details.push(`Custom soulPath mentions legacy history tools (${old.join(", ")}); update routing to History scopes. Custom soul text is not rewritten.`);
-          }
+        const soul = await readFile(config.context.soulPath, "utf8");
+        const old = ["ConversationHistory", "SessionHistory", "RunHistory"].filter(name => soul.includes(name));
+        if (old.length > 0) {
+          status = "waiting";
+          details.push(`Custom soulPath mentions legacy history tools (${old.join(", ")}); update routing to History scopes. Custom soul text is not rewritten.`);
         }
       } catch { /* The context section owns missing/unreadable soul diagnostics. */ }
     }

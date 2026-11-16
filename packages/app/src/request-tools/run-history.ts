@@ -1140,7 +1140,7 @@ function projectRun(
               [RUN_HISTORY_TOOL_NAME, RUN_HISTORY_LEGACY_TOOL_NAME],
               requestScopedNestedResult(linked.name, ["ConversationHistory", "conversation_history"],
                 boundedProjectedValue(normalizeToolResultContent(block.content, artifactDir), artifactDir)),
-              NESTED_RUN_HISTORY_RESULT_OMISSION,
+              unifiedHistory ? "[nested history-tool result omitted; inspect the referenced source directly]" : NESTED_RUN_HISTORY_RESULT_OMISSION,
               unifiedHistory,
             ),
             isError: block.is_error === true,
