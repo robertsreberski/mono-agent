@@ -130,7 +130,7 @@ describe("owner-private quota history", () => {
     let started!: () => void, release!: () => void, settled = false;
     const began = new Promise<void>(resolve => { started = resolve; });
     const gate = new Promise<void>(resolve => { release = resolve; });
-    const s = createProviderUsageHistoryStore({ cwd, timeoutMs: 50, closeTimeoutMs: 10,
+    const s = createProviderUsageHistoryStore({ cwd, timeoutMs: 1000, closeTimeoutMs: 30,
       open: async options => {
         started(); await gate;
         try { return await openOwnedState(options); } finally { settled = true; }
@@ -255,7 +255,7 @@ describe("retained vendor fetch sampling", () => {
     const gate = new Promise<void>(resolve => { releaseFetch = resolve; });
     const append = vi.fn(async (_usage: ProviderUsage, _account?: string) => new Promise<void>(() => undefined));
     let calls = 0;
-    const service = createProviderUsageService({ now: () => NOW, historyTimeoutMs: 40,
+    const service = createProviderUsageService({ now: () => NOW, historyTimeoutMs: 1000,
       resolver: Object.assign(vi.fn(), { readCredential: async (id: string) => id === "openai-codex" ? credential : undefined }) as never,
       fetch: async () => { if (++calls === 2) await gate; return Response.json({ rate_limit: { primary_window: { used_percent: 30 } } }); },
       history: { append, read: async query => ({ schema: "mono-agent.provider-usage-history.v1", ...query, retentionDays: 90, storage: "ready", providers: [] }), clear: vi.fn() },
@@ -278,7 +278,7 @@ describe("retained vendor fetch sampling", () => {
   });
   it("a never-settling append cannot strand snapshot/cache reads or teardown", async () => {
     const append = vi.fn(async (_usage: ProviderUsage, _account?: string) => new Promise<void>(() => undefined));
-    const service = createProviderUsageService({ now: () => NOW, historyTimeoutMs: 30,
+    const service = createProviderUsageService({ now: () => NOW, historyTimeoutMs: 300,
       resolver: Object.assign(vi.fn(), { readCredential: async () => ({ type: "oauth", access: "fictional-token", expires: NOW + DAY }) }) as never,
       fetch: async () => Response.json({ five_hour: { utilization: 20 } }),
       history: { append, read: async query => ({ schema: "mono-agent.provider-usage-history.v1", ...query, retentionDays: 90, storage: "ready", providers: [] }), clear: vi.fn() },

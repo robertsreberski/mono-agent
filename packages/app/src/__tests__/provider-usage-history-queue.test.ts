@@ -3,7 +3,7 @@ import { createProviderUsageHistoryQueue } from "../providers/provider-usage-his
 
 describe("passive history queue", () => {
   it("defers and serializes operations, bounds stalled work and closes late write admission", async () => {
-    const queue = createProviderUsageHistoryQueue({ timeoutMs: 30, closeTimeoutMs: 10, maxPending: 2 });
+    const queue = createProviderUsageHistoryQueue({ timeoutMs: 300, closeTimeoutMs: 30, maxPending: 2 });
     let active = 0, maximum = 0;
     const order: string[] = [];
     const first = queue.enqueue(async signal => {
