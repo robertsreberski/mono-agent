@@ -657,11 +657,16 @@ export class MonoAgentAppController implements MonoAgentApp {
   ): Promise<ContinuationHistoryRecordResult> { return continuationOperations.recordContinuationHistory(this, conversationId, text, deliveryKey); }
 
   async stop(shutdownDeadline?: number): Promise<void> {
-    await Promise.all([...this.providerUsageServices.values()].map(service => service.stop()));
+    // Each service aborts and clears synchronously; only its bounded history
+    // drain is awaited, after lifecycle stop entry has cleared host timers.
+    const usageStops = [...this.providerUsageServices.values()].map(service => service.stop());
     this.providerUsageServices.clear();
     try {
-      try { await this.providerUsageHistory?.close(); }
-      finally { await lifecycleOperations.stop(this, shutdownDeadline); }
+      try { await lifecycleOperations.stop(this, shutdownDeadline); }
+      finally {
+        await Promise.allSettled(usageStops);
+        await this.providerUsageHistory?.close();
+      }
     } finally {
       // A teardown failure must not strand this logical host reference. Active
       // request-generation leases still defer the physical owner-lock release.
