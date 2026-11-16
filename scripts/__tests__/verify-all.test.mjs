@@ -15,7 +15,7 @@ import {
   runVerifyAll,
 } from "../verify-all.mjs";
 
-const EXPECTED_CI_NODE_MATRIX = Object.freeze(["24.18.0"]);
+const EXPECTED_CI_NODE_MATRIX = Object.freeze(["24.15.0", "24.18.0"]);
 const CI_CHECKOUT_STEP = [
   "      - name: Checkout",
   "        uses: actions/checkout@v4",
@@ -412,7 +412,7 @@ describe("verify-all", () => {
     const mutations = [
       replaceExactly(
         source,
-        "        node-version: [\"24.18.0\"]",
+        "        node-version: [\"24.15.0\", \"24.18.0\"]",
         "        node-version: [\"22.19.0\", \"24.18.0\"]",
       ),
       replaceExactly(
@@ -970,13 +970,13 @@ describe("verify-all", () => {
 
   it("rejects every noncanonical CI Node matrix value", () => {
     const source = readCiWorkflow();
-    const matrix = "        node-version: [\"24.18.0\"]";
+    const matrix = "        node-version: [\"24.15.0\", \"24.18.0\"]";
 
-    for (const replacement of ["20", "22.19.0", "99", "future"]) {
+    for (const replacement of ['["24.18.0"]', '["24.15.0"]', '["24.18.0", "24.15.0"]', '["24.15.0", "24.15.0", "24.18.0"]', '["20"]', '["future"]']) {
       const mutation = replaceExactly(
         source,
         matrix,
-        `        node-version: ["${replacement}"]`,
+        `        node-version: ${replacement}`,
       );
       expect(() => parseCiVerifyJob(mutation)).toThrow(/must remain exactly/u);
     }
