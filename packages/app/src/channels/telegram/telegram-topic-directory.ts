@@ -1,3 +1,4 @@
+import { sqliteTextQuery } from "../../durable-state/sqlite-text.js";
 import type { DatabaseSync } from "node:sqlite";
 
 import type {
@@ -159,7 +160,7 @@ export async function openTelegramTopicDirectory(
   // Last write per key, so an unchanged sighting costs no write.
   const written = new Map<string, { readonly signature: string; readonly atMs: number }>();
 
-  const selectChat = database.prepare("SELECT * FROM chats WHERE bot_id = ? AND chat_id = ?");
+  const selectChat = sqliteTextQuery(database, "SELECT chat_id, CAST(title AS BLOB) AS title, is_forum, last_seen_at, revision FROM chats WHERE bot_id = ? AND chat_id = ?");
   const countChats = database.prepare("SELECT COUNT(*) AS n FROM chats WHERE bot_id = ?");
   const insertChat = database.prepare(`
     INSERT INTO chats (bot_id, chat_id, title, is_forum, last_seen_at) VALUES (?, ?, ?, ?, ?)
@@ -169,7 +170,7 @@ export async function openTelegramTopicDirectory(
   `);
   // A chat title is part of every topic label, so a title change re-reports them.
   const touchChatTopics = database.prepare("UPDATE topics SET revision = revision + 1 WHERE bot_id = ? AND chat_id = ?");
-  const selectTopic = database.prepare("SELECT * FROM topics WHERE bot_id = ? AND chat_id = ? AND topic_id = ?");
+  const selectTopic = sqliteTextQuery(database, "SELECT chat_id, topic_id, CAST(name AS BLOB) AS name, name_source, name_message_id, state, state_at, last_seen_at, revision FROM topics WHERE bot_id = ? AND chat_id = ? AND topic_id = ?");
   const countTopics = database.prepare("SELECT COUNT(*) AS n FROM topics WHERE bot_id = ?");
   const insertTopic = database.prepare(`
     INSERT INTO topics (bot_id, chat_id, topic_id, name, name_source, name_message_id, state, state_at, first_seen_at, last_seen_at)
@@ -201,7 +202,7 @@ export async function openTelegramTopicDirectory(
     const chatSignature = `${observation.chatTitle ?? ""}|${observation.isForum === true ? "forum" : ""}`;
     if (shouldWrite(chatKey, chatSignature, atMs)) {
       state.transaction(() => {
-        const row = selectChat.get(botId, chatId) as ChatRow | undefined;
+        const row = selectChat.get(botId, chatId) as unknown as ChatRow | undefined;
         if (row === undefined) {
           if ((countChats.get(botId) as { n: number }).n >= MAX_CHATS) return;
           insertChat.run(botId, chatId, observation.chatTitle ?? null, observation.isForum === true ? 1 : 0, atIso);
@@ -223,7 +224,7 @@ export async function openTelegramTopicDirectory(
     const topicSignature = `${topic.nameRecord?.source ?? ""}|${topic.nameRecord?.name ?? ""}|${topic.state ?? ""}`;
     if (!shouldWrite(topicKey, topicSignature, atMs)) return changed;
     state.transaction(() => {
-      const row = selectTopic.get(botId, chatId, topic.messageThreadId) as TopicRow | undefined;
+      const row = selectTopic.get(botId, chatId, topic.messageThreadId) as unknown as TopicRow | undefined;
       if (row === undefined) {
         if ((countTopics.get(botId) as { n: number }).n >= TELEGRAM_TOPIC_DIRECTORY_MAX_TOPICS) {
           markTruncated.run(botId);
@@ -264,8 +265,8 @@ export async function openTelegramTopicDirectory(
 
   return {
     knownTopicNames() {
-      const rows = database.prepare(
-        "SELECT * FROM topics WHERE bot_id = ? AND name IS NOT NULL ORDER BY last_seen_at DESC LIMIT ?",
+      const rows = sqliteTextQuery(database,
+        "SELECT chat_id, topic_id, CAST(name AS BLOB) AS name, name_source, name_message_id, state, state_at, last_seen_at, revision FROM topics WHERE bot_id = ? AND name IS NOT NULL ORDER BY last_seen_at DESC LIMIT ?",
       ).all(botId, TELEGRAM_TOPIC_DIRECTORY_MAX_TOPICS) as unknown as TopicRow[];
       return rows.flatMap((row) => {
         const nameRecord = nameRecordOf(row);
@@ -283,22 +284,22 @@ export async function openTelegramTopicDirectory(
       }
     },
     isForum(chatId) {
-      return (selectChat.get(botId, chatId) as ChatRow | undefined)?.is_forum === 1;
+      return (selectChat.get(botId, chatId) as unknown as ChatRow | undefined)?.is_forum === 1;
     },
     entry(chatId, topicId) {
-      const chat = selectChat.get(botId, chatId) as ChatRow | undefined;
+      const chat = selectChat.get(botId, chatId) as unknown as ChatRow | undefined;
       if (topicId === undefined) return chat?.is_forum === 1 ? entryOf(chat, undefined, chatId) : undefined;
-      const topic = selectTopic.get(botId, chatId, topicId) as TopicRow | undefined;
+      const topic = selectTopic.get(botId, chatId, topicId) as unknown as TopicRow | undefined;
       return topic === undefined ? undefined : entryOf(chat, topic, chatId);
     },
     pending(limit) {
-      const topics = database.prepare(
-        "SELECT * FROM topics WHERE bot_id = ? AND synced_revision < revision ORDER BY last_seen_at DESC LIMIT ?",
+      const topics = sqliteTextQuery(database,
+        "SELECT chat_id, topic_id, CAST(name AS BLOB) AS name, name_source, name_message_id, state, state_at, last_seen_at, revision FROM topics WHERE bot_id = ? AND synced_revision < revision ORDER BY last_seen_at DESC LIMIT ?",
       ).all(botId, limit) as unknown as TopicRow[];
-      const chats = database.prepare(
-        "SELECT * FROM chats WHERE bot_id = ? AND is_forum = 1 AND synced_revision < revision ORDER BY last_seen_at DESC LIMIT ?",
+      const chats = sqliteTextQuery(database,
+        "SELECT chat_id, CAST(title AS BLOB) AS title, is_forum, last_seen_at, revision FROM chats WHERE bot_id = ? AND is_forum = 1 AND synced_revision < revision ORDER BY last_seen_at DESC LIMIT ?",
       ).all(botId, Math.max(0, limit - topics.length)) as unknown as ChatRow[];
-      const chatRow = (chatId: string) => selectChat.get(botId, chatId) as ChatRow | undefined;
+      const chatRow = (chatId: string) => selectChat.get(botId, chatId) as unknown as ChatRow | undefined;
       return {
         entries: [
           ...topics.map((topic) => entryOf(chatRow(topic.chat_id), topic, topic.chat_id)),

@@ -37,7 +37,7 @@ jobs:
       matrix:
         # Node 24.19.0 regressed native ObjectWrap teardown. Restore the
         # floating "24" lane after https://github.com/nodejs/node/pull/65042 ships.
-        node-version: ["24.18.0"]
+        node-version: ["24.15.0", "24.18.0"]
 
     steps:
       # Match the checks lane checkout so tests see the same history and tags.
@@ -77,7 +77,7 @@ jobs:
       matrix:
         # Node 24.19.0 regressed native ObjectWrap teardown. Restore the
         # floating "24" lane after https://github.com/nodejs/node/pull/65042 ships.
-        node-version: ["24.18.0"]
+        node-version: ["24.15.0", "24.18.0"]
 
     steps:
       # Full history and tags are required by the changelog gate.
@@ -172,7 +172,7 @@ jobs:
         run: pnpm run release:pack -- --tag "${{ steps.release-smoke.outputs.tag }}"
 
       - name: Install packed consumer
-        run: pnpm run release:consumer -- --tag "${{ steps.release-smoke.outputs.tag }}"
+        run: pnpm run release:consumer -- --tag "${{ steps.release-smoke.outputs.tag }}" ${{ matrix.node-version == '24.15.0' && '--require-minimum' || '' }}
 
       - name: Typecheck packages
         run: pnpm run typecheck

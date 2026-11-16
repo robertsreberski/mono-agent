@@ -80,7 +80,7 @@ async function sourceRenderProof(root, unit) {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
     const scope = unit.checkpoint.conversationId;
-    const rows = db.prepare("SELECT r.* FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE g.conversation_id=? AND retained_text IS NOT NULL ORDER BY ordinal").all(scope);
+    const rows = db.prepare("SELECT r.*, CAST(r.retained_text AS BLOB) AS retained_text FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE g.conversation_id=? AND retained_text IS NOT NULL ORDER BY ordinal").all(scope).map(row => ({ ...row, retained_text: row.retained_text === null ? null : Buffer.from(row.retained_text).toString("utf8") }));
     const tools = new Map(db.prepare("SELECT run_id,tool_call_id,tool_name FROM tool_calls WHERE conversation_id=?").all(scope)
       .map(c => [`tool:${ledgerHash(JSON.stringify([scope, c.run_id, c.tool_call_id]))}`, c.tool_name]));
     const records = rows.map(r => ({ recordId: r.record_id, generationId: r.generation_id, conversationId: scope, runId: r.run_id,

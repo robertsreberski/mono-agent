@@ -1314,3 +1314,20 @@ describe("silent operator text normalization", () => {
     finally { db.close(); }
   });
 });
+
+// Native SQLite TEXT result decoding on Node 24.15 must not lose suffixes.
+it.each(["text", "error"])("preserves NUL-bearing cron %s in summary, detail and listing", async field => {
+  const { store } = await fixture();
+  const firing = store.allocateFiring({ jobId: "digest", scheduledAt: "2027-01-02T09:00:00Z",
+    observedAt: "2027-01-02T09:00:00Z", trigger: "scheduled" });
+  const text = "before\u0000after é 🐈\u0000tail";
+  store.recordResult(field === "text" ? succeeded(firing, text) : {
+    kind: "cancelled", cronRunId: firing.runId, jobId: firing.jobId, scheduledAt: firing.scheduledAt,
+    orderedAt: firing.orderedAt, sequence: firing.sequence, trigger: firing.trigger,
+    startedAt: firing.orderedAt, completedAt: firing.orderedAt, error: text,
+  });
+  for (const run of [store.getRunSummary(firing.runId), store.getRun(firing.runId),
+    store.lastRun("digest"), store.runs("digest", 10).runs[0]]) {
+    expect(run).toMatchObject({ [field]: text });
+  }
+});

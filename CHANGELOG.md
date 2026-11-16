@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep embedded NUL characters intact in stored web content, cron results and
+  offline continuity audits on all supported Node versions.
+
 - Keep the reported token model on cost-only follow-ups without changing
   conversation/project costs or repricing recorded usage.
 
