@@ -261,6 +261,18 @@ Lost/unsettled requests remain errors; accounting never changes session fences.
 
 An app-owned `ProviderUsageOperator` enables keyless `GET ${basePath}/v1/provider-usage` (optional exact `anthropic`, `openai-codex`, `opencode-go` or `github-copilot` provider filter) and `capabilities.providerUsage: {version: 1}`. This no-store read is separate from auth status and validates the secret-free v1 projection. An optional `ProviderUsageOperator.refresh()` additionally advertises `refresh: true` and enables keyless `POST ${basePath}/v1/provider-usage/refresh` (empty JSON object, same strict optional provider query). It awaits a refresh respecting backoff; snapshot-only hosts return an explicit unavailable response, never cached fallback.
 
+Optional `ProviderUsageOperator.history()` advertises `history: {version: 1}`
+within that capability and serves `GET ${basePath}/v1/provider-usage/history`.
+Queries require `from`, `to` and `bucket` (`hour` or `day`), with optional
+`timeZone` and exact `provider`. Reads are local only. Day reduction uses the
+validated IANA zone (UTC default), including DST; hour boundaries remain UTC.
+The strict history projection carries only observations and detected account
+boundary timestamps, never credentials or private fingerprints. Foreign browser
+origins are rejected; native clients may omit Origin. An optional
+`clearHistory()` adds `history.clear: true` and enables `DELETE` at that path
+with an empty JSON object and optional provider filter. Both routes are no-store;
+unsupported hosts return explicit unavailable responses without snapshot fallback.
+
 ### Data flow
 
 1. The host passes an `AgentResponder` to `startTuiAdapter` and publishes the

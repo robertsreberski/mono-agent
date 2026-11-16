@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Retain on-demand subscription quota history for activated providers, with
+  bounded private storage and detected account-change markers.
+
 ## 0.27.1 — Pi 1.5.2 (2026-11-16)
 
 - 0.27.1 supersedes 0.27.0, which was staged on npm but never promoted to

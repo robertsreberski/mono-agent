@@ -1,5 +1,6 @@
 import { WorkerActivityTracker } from "../durable-state/worker-activity.js";
 import { createAgentProviderUsage } from "../providers/provider-usage-scope.js";
+import { createProviderUsageHistoryStore } from "../providers/provider-usage-history.js";
 import { createProviderUsageService } from "../providers/provider-usage.js";
 // Internal host implementation; `app.ts` remains the stable public facade.
 import { resolve } from "node:path";
@@ -410,11 +411,13 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly seenNotifyDestinations = createSeenNotifyDestinationCache();
   /** Shared by operator reads and every channel; no request-scoped vendor caches. */
   private readonly providerUsageServices = new Map<string, ReturnType<typeof createProviderUsageService>>();
+  private providerUsageHistory: ReturnType<typeof createProviderUsageHistoryStore> | undefined;
   providerUsageFor(config: MonoAgentConfig) {
     const path = config.providers?.piAuthPath ?? "";
     let service = this.providerUsageServices.get(path);
     if (service === undefined) {
-      service = createProviderUsageService({ ...(path ? { path } : {}), outcomes: this.providerAuthObservations });
+      const history = this.providerUsageHistory ??= createProviderUsageHistoryStore({ cwd: this.cwd });
+      service = createProviderUsageService({ ...(path ? { path } : {}), outcomes: this.providerAuthObservations, history: history.forScope(path || "default-pi") });
       this.providerUsageServices.set(path, service);
     }
     return createAgentProviderUsage({
@@ -657,7 +660,8 @@ export class MonoAgentAppController implements MonoAgentApp {
     for (const service of this.providerUsageServices.values()) service.stop();
     this.providerUsageServices.clear();
     try {
-      await lifecycleOperations.stop(this, shutdownDeadline);
+      try { await this.providerUsageHistory?.close(); }
+      finally { await lifecycleOperations.stop(this, shutdownDeadline); }
     } finally {
       // A teardown failure must not strand this logical host reference. Active
       // request-generation leases still defer the physical owner-lock release.

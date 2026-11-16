@@ -5,6 +5,7 @@ import {
   PROVIDER_USAGE_ERRORS, PROVIDER_USAGE_IDS, PROVIDER_USAGE_LABELS, PROVIDER_USAGE_SCHEMA,
   type ProviderUsage, type ProviderUsageErrorCode, type ProviderUsageId, type ProviderUsageOperator,
 } from "@mono-agent/contracts";
+import type { ProviderUsageHistorySink } from "./provider-usage-history.js";
 import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { mapProviderUsage, usageRecord } from "./provider-usage-mappers.js";
 
@@ -74,9 +75,11 @@ export function createProviderUsageService(options: {
   /** Private local lookup seam; never used when a Pi Copilot credential exists. */
   readonly copilotCredential?: () => Promise<string | undefined>;
   readonly timeoutMs?: number;
+  /** Agent-owned passive storage; never consulted on a live cache read. */
+  readonly history?: ProviderUsageHistorySink;
   /** Passive evidence only, once per retained vendor fetch (never on cache reads). */
   readonly outcomes?: Pick<ProviderAuthObservationTracker, "generation" | "recordAccountSuccess" | "recordAccountFailure">;
-}): Required<ProviderUsageOperator> & { stop(): void } {
+}): ProviderUsageOperator & Required<Pick<ProviderUsageOperator, "snapshot" | "refresh">> & { stop(): void } {
   const resolver = options.resolver ?? createPiOAuthApiKeyResolver({ ...(options.path === undefined ? {} : { path: options.path }) });
   const now = options.now ?? Date.now;
   const request = options.fetch ?? fetch;
@@ -188,6 +191,18 @@ export function createProviderUsageService(options: {
       if (entry.value.error === undefined) options.outcomes?.recordAccountSuccess(provider, generation, observedAt);
       else if (entry.value.error.code === "auth_failed") options.outcomes?.recordAccountFailure(provider, generation, observedAt);
     }
+    if (entry.value?.error === undefined && entry.value !== undefined && options.history) {
+      // The memory equality key above is NEVER sent to storage. Only stable
+      // account material, when known, may become a store-private keyed digest.
+      const c = current.credential;
+      const account = provider === "anthropic" ? undefined
+        : c.type === "api_key" ? JSON.stringify([current.source, "api-key", c.key])
+        : provider === "openai-codex" && nonempty(c.accountId) ? JSON.stringify(["codex", c.accountId])
+        : provider === "github-copilot" ? JSON.stringify([current.source, "github", c.refresh, copilotHost(c.enterpriseUrl)])
+        : undefined;
+      // Keep storage errors outside the vendor catch, including injected sinks.
+      await options.history.append(structuredClone(entry.value), account, () => !lifetime.signal.aborted).catch(() => undefined);
+    }
     return entry.value;
   }
   async function read(provider: ProviderUsageId, manual = false): Promise<ProviderUsage | undefined> {
@@ -230,6 +245,10 @@ export function createProviderUsageService(options: {
       const results = await Promise.all((provider === undefined ? PROVIDER_USAGE_IDS : [provider]).map((id) => read(id, true)));
       return { schema: PROVIDER_USAGE_SCHEMA, providers: results.filter((p): p is ProviderUsage => p !== undefined) };
     },
+    ...(options.history === undefined ? {} : {
+      history: (query: Parameters<NonNullable<ProviderUsageOperator["history"]>>[0]) => options.history!.read(query, query.provider === undefined ? PROVIDER_USAGE_IDS : [query.provider]),
+      clearHistory: (provider?: ProviderUsageId) => options.history!.clear(provider === undefined ? PROVIDER_USAGE_IDS : [provider]),
+    }),
     stop() { lifetime.abort(); entries.clear(); },
   };
 }

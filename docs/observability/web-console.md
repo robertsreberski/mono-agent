@@ -566,8 +566,53 @@ The independent read routes are agent `${basePath}/v1/provider-usage` and consol
 They are no-store, use the existing owner/operator and same-origin protections,
 and return `mono-agent.provider-usage.v1`. Usage failures never block the auth
 rows. The web server never reads credentials; vendor identifiers and secrets
-are dropped on the agent host before transport. No subscription usage is
-persisted by the service, and no quota purchase/reset endpoint is called.
+are dropped on the agent host before transport. Successful retained fetches also enter the agent-owned quota history below;
+no quota purchase/reset endpoint is called.
+
+### Quota history
+
+Quota history is sampled only when an existing real vendor usage fetch succeeds:
+opening the existing usage surface, calling `ProviderUsage`, or explicitly
+refreshing. Cache reads and failed/discarded requests do not record samples.
+There is no background sampler. History reads do not fetch live usage. Failures
+retain the last actual successful observation, not a synthetic zero; after a
+restart the exact failed attempts are unknown.
+
+The agent stores owner-private SQLite under `.mono-agent/provider-usage-v1/`,
+separate from console conversation usage. Retention is 90 days, capped at 50,000
+compressed sample rows, 64 auth-scope/provider partitions and a 128 MiB database
+plus bounded rollback journal. Consecutive identical observations share a daily
+payload; first/last timestamps are actual checks, and gap/count metadata is not
+evidence of continuous monitoring. Reductions retain first/last, extrema and
+reset/account boundaries. Capacity truncation is explicit. Missing intervals
+are not zero usage.
+
+History belongs to this agent and configured sign-in scope, not the rotating
+access token. It remains readable for activated providers after sign-out.
+“Quota history for this agent's sign-in. A marker shows where a different account
+was detected.” Codex account id, Copilot device token/host and API key replacement
+can detect a change through store-private HMAC fingerprints. Raw identifiers,
+credentials and fingerprints never reach the browser. Anthropic has no stable
+identifier in this credential interface, so re-login/account changes cannot be
+detected there; its timeline remains continuous. The live cache's credential
+race fence is unchanged, and a discarded fetch never writes history.
+
+Supporting agents advertise `capabilities.providerUsage.history.version: 1`.
+`GET ${basePath}/v1/provider-usage/history` requires `from`, `to`, `bucket` and
+optionally `timeZone`/`provider`; the bounds are half-open instants, at most
+90 days (7 days for hourly queries). Day reduction uses the validated IANA
+viewer zone, default UTC; hourly boundaries stay UTC. The response echoes the
+effective zone. Detected account markers are timestamps only, and lines must not
+connect across them. `DELETE` on that path with `{}` clears activated providers'
+history in this scope when `history.clear: true` is advertised. An in-flight
+real fetch may legitimately create a fresh post-clear sample. Existing agents
+without history keep their current snapshot routes unchanged.
+
+Conversation/session reset does not clear quota history. For a damaged history
+store, stop the agent before removing only `.mono-agent/provider-usage-v1/`, then
+start it normally under owner control; there is no automatic destructive repair.
+Storage errors affect history availability, not successful vendor quota or its
+backoff. These percentages are not a console spend ledger or dollar conversion.
 
 Copilot uses the agent’s Pi `github-copilot` credential. For OAuth, quota reads
 send the underlying GitHub device-flow token in `credential.refresh`, never the

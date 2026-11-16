@@ -148,3 +148,33 @@ describe("provider usage burn projection", () => {
     expect(projected[0]?.projection.severity).toBe("unsustainable");
   });
 });
+
+describe("usage history ranges", () => {
+  it("uses DST-correct local days and UTC hours", async () => {
+    const { parseUsageHistoryRange, usageHistoryBucket } = await import("../provider-usage.js");
+    const range = parseUsageHistoryRange({ from: "2026-10-24T00:00:00Z", to: "2026-10-27T00:00:00Z", bucket: "day", timeZone: "Europe/Berlin" });
+    const fall = usageHistoryBucket(Date.parse("2026-10-25T12:00:00Z"), range);
+    expect(new Date(fall.start).toISOString()).toBe("2026-10-24T22:00:00.000Z");
+    expect(fall.end - fall.start).toBe(25 * 3_600_000);
+    const spring = usageHistoryBucket(Date.parse("2026-03-29T12:00:00Z"), range);
+    expect(spring.end - spring.start).toBe(23 * 3_600_000);
+    expect(usageHistoryBucket(Date.parse("2026-10-25T01:30:00Z"), { ...range, bucket: "hour" })).toEqual({ start: Date.parse("2026-10-25T01:00:00Z"), end: Date.parse("2026-10-25T02:00:00Z") });
+  });
+  it("rejects invalid ranges, zones and extra fields", async () => {
+    const { parseProviderUsageHistoryQuery } = await import("../provider-usage.js");
+    const q = { from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", bucket: "day" };
+    expect(parseProviderUsageHistoryQuery(q).timeZone).toBe("UTC");
+    for (const patch of [{ timeZone: "fictional/not-a-zone" }, { from: q.to }, { bucket: "week" }, { to: "2027-01-01T00:00:00Z" }, { accountId: "fictional-account" }, { provider: "other" }]) {
+      expect(() => parseProviderUsageHistoryQuery({ ...q, ...patch })).toThrow();
+    }
+  });
+  it("closes history envelopes and reuses window validation", async () => {
+    const { parseProviderUsageHistory } = await import("../provider-usage.js");
+    const h = { schema: "mono-agent.provider-usage-history.v1", from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", bucket: "day", timeZone: "UTC", retentionDays: 90, storage: "ready", providers: [{ providerId: "anthropic", label: "Claude", samples: [], accountChanges: [], downsampled: false }] };
+    expect(parseProviderUsageHistory(h).providers).toHaveLength(1);
+    expect(() => parseProviderUsageHistory({ ...h, fingerprint: "fictional-secret" })).toThrow();
+    expect(() => parseProviderUsageHistory({ ...h, providers: [{ ...h.providers[0], fingerprint: "fictional-secret" }] })).toThrow();
+    const sample = { fetchedAt: "2026-01-01T12:00:00Z", observedThrough: "2026-01-01T12:00:00Z", observations: 1, maxGapMs: 0, windows: [{ kind: "session", label: "Session", usedPercent: 101, periodMs: 18000000 }] };
+    expect(() => parseProviderUsageHistory({ ...h, providers: [{ ...h.providers[0], samples: [sample] }] })).toThrow();
+  });
+});

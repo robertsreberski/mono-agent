@@ -102,6 +102,9 @@ export interface ProviderUsageOperator {
   snapshot(provider?: ProviderUsageId): Promise<ProviderUsageSnapshot>;
   /** Explicit account-usage refresh; awaits shared fetches, never bypasses error backoff. */
   refresh?(provider?: ProviderUsageId): Promise<ProviderUsageSnapshot>;
+  /** Local persisted history only; never fetches vendor usage. */
+  history?(query: ProviderUsageHistoryQuery): Promise<ProviderUsageHistory>;
+  clearHistory?(provider?: ProviderUsageId): Promise<void>;
 }
 export function isProviderUsageId(value: unknown): value is ProviderUsageId {
   return typeof value === "string" && (PROVIDER_USAGE_IDS as readonly string[]).includes(value);
@@ -157,4 +160,133 @@ export function parseProviderUsageSnapshot(value: unknown): ProviderUsageSnapsho
       ...(p.plan === undefined ? {} : { plan: p.plan as string }), ...(error === undefined ? {} : { error }) };
   });
   return { schema: PROVIDER_USAGE_SCHEMA, providers };
+}
+
+export const PROVIDER_USAGE_HISTORY_SCHEMA = "mono-agent.provider-usage-history.v1" as const;
+export const USAGE_HISTORY_RETENTION_DAYS = 90;
+export interface UsageHistoryRange {
+  readonly from: string;
+  readonly to: string;
+  readonly bucket: "hour" | "day";
+  /** Day boundaries use this IANA zone; hourly boundaries always use UTC. */
+  readonly timeZone: string;
+}
+export interface ProviderUsageHistoryQuery extends UsageHistoryRange {
+  readonly provider?: ProviderUsageId;
+}
+export interface ProviderUsageHistorySample {
+  readonly fetchedAt: string;
+  readonly observedThrough: string;
+  readonly observations: number;
+  readonly maxGapMs: number;
+  readonly plan?: string;
+  readonly windows: readonly ProviderUsageWindow[];
+}
+export interface ProviderUsageHistoryProvider {
+  readonly providerId: ProviderUsageId;
+  readonly label: string;
+  readonly samples: readonly ProviderUsageHistorySample[];
+  /** Detected account boundaries only, never account fingerprints. */
+  readonly accountChanges: readonly string[];
+  readonly downsampled: boolean;
+  readonly truncatedBefore?: string;
+}
+export interface ProviderUsageHistory extends UsageHistoryRange {
+  readonly schema: typeof PROVIDER_USAGE_HISTORY_SCHEMA;
+  readonly retentionDays: 90;
+  readonly storage: "ready" | "unavailable";
+  readonly providers: readonly ProviderUsageHistoryProvider[];
+}
+
+/** Shared bounded query validation for quota and conversation analytics. */
+export function parseUsageHistoryRange(value: unknown): UsageHistoryRange {
+  const q = record(value, ["from", "to", "bucket", "timeZone"]);
+  assert(date(q.from) && date(q.to) && (q.bucket === "hour" || q.bucket === "day"));
+  assert(/(?:Z|[+-]\d\d:\d\d)$/u.test(q.from) && /(?:Z|[+-]\d\d:\d\d)$/u.test(q.to));
+  const span = Date.parse(q.to) - Date.parse(q.from);
+  assert(span > 0 && span <= (q.bucket === "hour" ? 7 : 90) * 86_400_000);
+  assert(q.timeZone === undefined || typeof q.timeZone === "string" && q.timeZone.length > 0 && q.timeZone.length <= 100);
+  let timeZone: string;
+  try { timeZone = new Intl.DateTimeFormat("en", { timeZone: q.timeZone as string | undefined ?? "UTC" }).resolvedOptions().timeZone; }
+  catch { throw new Error("Invalid usage history time zone."); }
+  return { from: new Date(q.from).toISOString(), to: new Date(q.to).toISOString(), bucket: q.bucket, timeZone: q.bucket === "hour" ? "UTC" : timeZone };
+}
+export function parseProviderUsageHistoryQuery(value: unknown): ProviderUsageHistoryQuery {
+  const q = record(value, ["from", "to", "bucket", "timeZone", "provider"]);
+  assert(q.provider === undefined || isProviderUsageId(q.provider));
+  const { provider, ...range } = q;
+  return { ...parseUsageHistoryRange(range), ...(provider === undefined ? {} : { provider: provider as ProviderUsageId }) };
+}
+
+const dayFormatters = new Map<string, Intl.DateTimeFormat>();
+const dayBounds = new Map<string, { start: number; end: number }>();
+function localDay(at: number, timeZone: string): number {
+  let formatter = dayFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+    if (dayFormatters.size >= 32) dayFormatters.delete(dayFormatters.keys().next().value!);
+    dayFormatters.set(timeZone, formatter);
+  }
+  const parts = formatter.formatToParts(at);
+  const part = (type: string) => Number(parts.find(p => p.type === type)!.value);
+  return Date.UTC(part("year"), part("month") - 1, part("day"));
+}
+/** First instant of a local date, including midnight DST transitions/skipped dates. */
+function startOfLocalDay(day: number, timeZone: string): number {
+  let low = day - 36 * 3_600_000, high = day + 36 * 3_600_000;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (localDay(mid, timeZone) < day) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+/** Boundaries are instants, not a fixed 24-hour approximation of a local day. */
+export function usageHistoryBucket(at: number, range: Pick<UsageHistoryRange, "bucket" | "timeZone">): { start: number; end: number } {
+  if (range.bucket === "hour") {
+    const start = Math.floor(at / 3_600_000) * 3_600_000;
+    return { start, end: start + 3_600_000 };
+  }
+  const day = localDay(at, range.timeZone), key = `${range.timeZone}:${day}`;
+  const cached = dayBounds.get(key);
+  if (cached) return { ...cached };
+  const bounds = { start: startOfLocalDay(day, range.timeZone), end: startOfLocalDay(day + 86_400_000, range.timeZone) };
+  if (dayBounds.size >= 1024) dayBounds.delete(dayBounds.keys().next().value!);
+  dayBounds.set(key, bounds);
+  return { ...bounds };
+}
+
+/** Closed and bounded history boundary: accepts no vendor or storage identities. */
+export function parseProviderUsageHistory(value: unknown): ProviderUsageHistory {
+  const h = record(value, ["schema", "from", "to", "bucket", "timeZone", "retentionDays", "storage", "providers"]);
+  assert(h.schema === PROVIDER_USAGE_HISTORY_SCHEMA && h.retentionDays === 90 && (h.storage === "ready" || h.storage === "unavailable"));
+  const range = parseUsageHistoryRange({ from: h.from, to: h.to, bucket: h.bucket, timeZone: h.timeZone });
+  assert(Array.isArray(h.providers) && h.providers.length <= 4 && Object.keys(h.providers).length === h.providers.length);
+  const seen = new Set<string>();
+  const providers = h.providers.map((input): ProviderUsageHistoryProvider => {
+    const p = record(input, ["providerId", "label", "samples", "accountChanges", "downsampled", "truncatedBefore"]);
+    assert(isProviderUsageId(p.providerId) && !seen.has(p.providerId) && p.label === PROVIDER_USAGE_LABELS[p.providerId]);
+    seen.add(p.providerId);
+    const providerId = p.providerId;
+    assert(typeof p.downsampled === "boolean" && (p.truncatedBefore === undefined || date(p.truncatedBefore)));
+    assert(Array.isArray(p.accountChanges) && p.accountChanges.length <= 2048 && Object.keys(p.accountChanges).length === p.accountChanges.length && p.accountChanges.every(date));
+    assert(Array.isArray(p.samples) && p.samples.length <= 2048 && Object.keys(p.samples).length === p.samples.length);
+    let previous = -Infinity;
+    const samples = p.samples.map((input): ProviderUsageHistorySample => {
+      const s = record(input, ["fetchedAt", "observedThrough", "observations", "maxGapMs", "plan", "windows"]);
+      assert(date(s.fetchedAt) && date(s.observedThrough));
+      const at = Date.parse(s.fetchedAt), through = Date.parse(s.observedThrough);
+      assert(at >= previous && through >= at && at >= Date.parse(range.from) && through < Date.parse(range.to));
+      previous = at;
+      assert(Number.isSafeInteger(s.observations) && (s.observations as number) > 0 && Number.isSafeInteger(s.maxGapMs) && (s.maxGapMs as number) >= 0);
+      const usage = parseProviderUsageSnapshot({ schema: PROVIDER_USAGE_SCHEMA, providers: [{ providerId, label: p.label,
+        windows: s.windows, fetchedAt: s.fetchedAt, stale: false, ...(s.plan === undefined ? {} : { plan: s.plan }) }] }).providers[0]!;
+      return { fetchedAt: s.fetchedAt, observedThrough: s.observedThrough, observations: s.observations as number, maxGapMs: s.maxGapMs as number,
+        windows: usage.windows, ...(usage.plan === undefined ? {} : { plan: usage.plan }) };
+    });
+    assert(h.storage !== "unavailable" || samples.length === 0 && p.accountChanges.length === 0);
+    return { providerId, label: PROVIDER_USAGE_LABELS[providerId], samples, accountChanges: [...p.accountChanges] as string[], downsampled: p.downsampled,
+      ...(p.truncatedBefore === undefined ? {} : { truncatedBefore: p.truncatedBefore as string }) };
+  });
+  return { schema: PROVIDER_USAGE_HISTORY_SCHEMA, ...range, retentionDays: 90, storage: h.storage, providers };
 }
