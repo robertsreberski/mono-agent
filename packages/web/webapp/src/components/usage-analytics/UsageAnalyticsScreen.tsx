@@ -8,7 +8,7 @@ import { UsageAnalyticsView, type AnalyticsRange } from "./UsageAnalyticsView";
 
 interface State { owner: string; data: WebUsageAnalytics | null; history: ProviderUsageHistory | null; dataError: string | null; historyError: string | null; loading: boolean }
 const days = { "6h": 0.25, "24h": 1, "7d": 7, "30d": 30, "90d": 90 };
-export function UsageAnalyticsScreen({ onClose, onOpenConversation, onOpenProject }: { readonly onClose: () => void; readonly onOpenConversation: () => void; readonly onOpenProject: (id: string) => void }) {
+export function UsageAnalyticsScreen({ onClose, onOpenConversation, onOpenProject }: { readonly onClose: () => void; readonly onOpenConversation: (id: string) => void; readonly onOpenProject: (id: string) => void }) {
   const store = useConsoleStore(), agent = store.selectedAgent;
   const [range, setRange] = useState<AnalyticsRange>("24h"), [revision, setRevision] = useState(0);
   const owner = `${agent?.sourceId}:${agent?.generation}:${range}`;
@@ -49,14 +49,17 @@ export function UsageAnalyticsScreen({ onClose, onOpenConversation, onOpenProjec
       }
       if (!controller.signal.aborted && current.current === owner) setRevision(before => before + 1);
     } catch (error) {
+      if (controller.signal.aborted || current.current !== owner) {
+        throw new DOMException("Usage action interrupted; refresh history to check its state.", "AbortError");
+      }
       if (!controller.signal.aborted && current.current === owner) setFeedback(kind === "clear" ? "Clear was not confirmed. Refresh history to check the result." : "Usage could not be refreshed. Existing backoff still applies.");
       if (kind === "clear") throw error;
     } finally { if (current.current === owner) setBusy(false); }
   }
   if (!agent) return <section className="usage-analytics" data-modal-surface="settings"><h1>Usage analytics</h1><p>{consoleHandoffTarget(window.location.href) ? "Waiting for the requested agent to be discovered. No other agent has been selected." : "Select an agent first."}</p><button type="button" onClick={onClose}>Close analytics</button></section>;
   return <div ref={root} className="usage-screen"><UsageAnalyticsView key={`${agent.sourceId}:${agent.generation}`} agentLabel={agent.label} range={range} {...visible} busy={busy} feedback={feedback}
-    onRange={setRange} onRefresh={() => setRevision(before => before + 1)} onClose={onClose}
-    onOpenConversation={id => { store.selectThread(id); onOpenConversation(); }} onOpenProject={onOpenProject}
-    {...(agent.status !== "offline" && agent.supportsProviderUsageRefresh ? { onVendorRefresh: () => { void mutate("refresh"); } } : {})}
+    onRange={setRange} onRefresh={() => { if (current.current === owner) setRevision(before => before + 1); }} onClose={onClose}
+    onOpenConversation={onOpenConversation} onOpenProject={onOpenProject}
+    {...(agent.status !== "offline" && agent.supportsProviderUsageRefresh ? { onVendorRefresh: () => { void mutate("refresh").catch(() => undefined); } } : {})}
     {...(agent.status !== "offline" && agent.supportsProviderUsageHistoryClear ? { onClear: () => mutate("clear") } : {})} /></div>;
 }

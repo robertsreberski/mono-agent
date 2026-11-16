@@ -104,6 +104,36 @@ describe("usage analytics", () => {
     expect(screen.getByText(/No activated provider history/)).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Use 6h range" })); expect(actions.onRange).toHaveBeenCalledWith("6h");
   });
+  it("shows unknown prices without known-zero summaries, rankings, tables or bars", async () => {
+    await commands.prepareUsageAnalyticsScreenshots(); await page.viewport(390, 1900);
+    const fixture = usageAnalyticsFixture();
+    const unknown = { ...fixture.data, total: { ...fixture.data.total, costUsd: null }, coverage: { ...fixture.data.coverage, costPartial: true },
+      buckets: fixture.data.buckets.map(b => ({ ...b, total: { ...b.total, costUsd: null }, models: b.models.map(m => ({ ...m, costUsd: null })) })),
+      topConversations: fixture.data.topConversations.map(c => ({ ...c, usage: { costUsd: null } })),
+      topProjects: fixture.data.topProjects.map(p => ({ ...p, usage: { costUsd: null }, projectSummaryUsage: { costUsd: null } })),
+    };
+    render(<UsageAnalyticsView {...actions} agentLabel="Fictional unknown prices · synthetic data" range="24h" data={unknown} history={null} />);
+    expect(screen.getByText("No known prices to plot. Cost is unknown.")).toBeVisible();
+    expect(screen.getAllByText("unknown").length).toBeGreaterThan(3);
+    expect(document.body.textContent).not.toContain("$0.00");
+    expect(screen.queryByRole("img", { name: /Known cost by model/ })).not.toBeInTheDocument();
+    if (shots) await page.screenshot({ path: `${shots}/usage-analytics-fictional-390-unknown-price.png` });
+    await userEvent.click(screen.getByText("All bucket totals"));
+    expect(screen.getByRole("region", { name: "All usage bucket totals" })).toBeVisible();
+    const names = [...document.querySelectorAll(".usage-table-scroll[role=region]")].map(region => region.getAttribute("aria-label"));
+    expect(new Set(names).size).toBe(names.length);
+    await userEvent.click(screen.getByRole("button", { name: "Tokens" }));
+    expect(screen.getByRole("img", { name: /Reported tokens by model/ })).toBeVisible();
+  });
+  it("treats an aborted clear as interrupted and refreshes rather than claiming failure", async () => {
+    actions.onClear.mockRejectedValueOnce(new DOMException("Owner changed", "AbortError"));
+    show();
+    await userEvent.click(screen.getByRole("button", { name: "Clear quota history" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm clear" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.queryByText(/Could not clear history/)).not.toBeInTheDocument();
+    expect(actions.onRefresh).toHaveBeenCalledTimes(1);
+  });
   it("only reads local queries on open/range changes; vendor refresh is explicit", async () => {
     await page.viewport(1000, 1000);
     render(<UsageAnalyticsScreen onClose={actions.onClose} onOpenConversation={actions.onClose} onOpenProject={actions.onOpenProject} />);
@@ -114,6 +144,23 @@ describe("usage analytics", () => {
     await userEvent.click(screen.getByRole("button", { name: "Refresh usage" }));
     await waitFor(() => expect(api.refreshProviderUsage).toHaveBeenCalledTimes(1)); await waitFor(() => expect(api.providerUsageHistory).toHaveBeenCalledTimes(3));
     expect(api.providerUsage).not.toHaveBeenCalled();
+  });
+  it("refetches the new owner after an interrupted clear without reporting a failed DELETE", async () => {
+    api.clearProviderUsageHistory.mockImplementationOnce((_source: string, signal: AbortSignal) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new DOMException("Owner changed", "AbortError")), { once: true });
+    }));
+    const view = render(<UsageAnalyticsScreen onClose={actions.onClose} onOpenConversation={actions.onClose} onOpenProject={actions.onOpenProject} />);
+    await waitFor(() => expect(screen.getByText("Usage analytics loaded.")).toBeVisible());
+    await userEvent.click(screen.getByRole("button", { name: "Clear quota history" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm clear" }));
+    await waitFor(() => expect(api.clearProviderUsageHistory).toHaveBeenCalledTimes(1));
+    store.selectedAgent = agent("other", { supportsProviderUsageHistory: true });
+    view.rerender(<UsageAnalyticsScreen onClose={actions.onClose} onOpenConversation={actions.onClose} onOpenProject={actions.onOpenProject} />);
+    await waitFor(() => expect(screen.getByText("Usage analytics loaded.")).toBeVisible());
+    expect(api.providerUsageHistory).toHaveBeenLastCalledWith("other", expect.anything(), expect.anything());
+    expect(api.usageAnalytics).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Could not clear history|Clear was not confirmed/)).not.toBeInTheDocument();
   });
   it("discards old source responses and leaves local accounting available offline", async () => {
     const fixture = usageAnalyticsFixture(); let finish!: (history: typeof fixture.history) => void;

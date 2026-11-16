@@ -2,6 +2,7 @@ import type {
   ProviderUsageHistoryProvider,
   UsageHistoryRange,
 } from "@mono-agent/contracts/provider-usage";
+import { formatUsageCost } from "../../usage";
 import type { WebUsageSlice } from "../../../../src/contracts";
 
 // Axes live in HTML. SVG coordinates describe only the fixed-height data plot.
@@ -15,8 +16,13 @@ export const CHART = {
 };
 export const MIN_LONG_GAP_MS = 6 * 3_600_000;
 export const modelColor = (index: number) => `var(--usage-color-${index % 8})`;
-export const knownSpend = (slice: WebUsageSlice) =>
-  slice.costUsd ?? slice.knownCostUsd ?? 0;
+export const knownSpend = (slice: WebUsageSlice): number | null =>
+  slice.costUsd ?? slice.knownCostUsd ?? null;
+export const formatAnalyticsCost = (slice: WebUsageSlice): string => {
+  if (slice.costUnknown) return formatUsageCost({ ...slice, costUsd: null });
+  if (slice.costUsd === undefined && slice.knownCostUsd === undefined && !slice.pending) return "Not reported";
+  return formatUsageCost(slice);
+};
 export const tokenTotal = (slice: WebUsageSlice) => slice.tokens
   ? slice.tokens.input + slice.tokens.output + slice.tokens.cacheRead + slice.tokens.cacheWrite
   : 0;

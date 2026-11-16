@@ -1,18 +1,18 @@
 import type { ReactNode } from "react";
 import type { ProviderUsageHistoryProvider } from "@mono-agent/contracts/provider-usage";
 import type { WebUsageAnalytics } from "../../../../src/contracts";
-import { formatTokenCount, formatUsd } from "../../usage";
-import { knownSpend, partialSpend, tokenTotal } from "./usage-chart-geometry";
+import { formatTokenCount } from "../../usage";
+import { formatAnalyticsCost, tokenTotal } from "./usage-chart-geometry";
 import { localTime } from "./UsageChartFrame";
 
 type UsageBucket = WebUsageAnalytics["buckets"][number];
 
-function ScrollableTable({ children }: { readonly children: ReactNode }) {
+function ScrollableTable({ children, label }: { readonly children: ReactNode; readonly label: string }) {
   return (
     <div
       className="usage-table-scroll"
       role="region"
-      aria-label="Scrollable usage data table"
+      aria-label={label}
       tabIndex={0}
     >
       {children}
@@ -42,7 +42,7 @@ export function QuotaObservationTable({ provider, zone, page, onPage }: {
           ))}
         </ul>
       )}
-      <ScrollableTable>
+      <ScrollableTable label={`${provider.label} quota observations`}>
         <table>
           <caption>
             {provider.label} · {provider.downsampled ? "Reduced observations" : "Observed endpoints"}
@@ -106,7 +106,7 @@ export function ModelBucketTable({ bucket, zone }: {
   readonly zone: string;
 }) {
   return (
-    <ScrollableTable>
+    <ScrollableTable label={`Model breakdown for ${localTime(bucket.start, zone)}`}>
       <table>
         <caption>Model breakdown · {localTime(bucket.start, zone)}</caption>
         <thead>
@@ -132,9 +132,7 @@ export function ModelBucketTable({ bucket, zone }: {
                 </td>
               ))}
               <td>
-                {partialSpend(model)
-                  ? `${formatUsd(knownSpend(model))} known · incomplete`
-                  : model.costUsd === undefined ? "Not reported" : formatUsd(model.costUsd!)}
+                {formatAnalyticsCost(model)}
                 {model.tokensPartial && <small>Token counters incomplete</small>}
               </td>
             </tr>
@@ -154,7 +152,7 @@ export function BucketTotalsTable({ data, zone }: {
   return (
     <details>
       <summary>All bucket totals</summary>
-      <ScrollableTable>
+      <ScrollableTable label="All usage bucket totals">
         <table>
           <caption>
             Times displayed in {zone}; hourly boundaries are UTC, day boundaries follow {data.timeZone}.
@@ -174,9 +172,7 @@ export function BucketTotalsTable({ data, zone }: {
                 </td>
                 <td>{bucket.total.tokens ? formatTokenCount(tokenTotal(bucket.total)) : "Not reported"}</td>
                 <td>
-                  {bucket.total.costUsd === undefined && bucket.total.knownCostUsd === undefined
-                    ? "Not reported" : formatUsd(knownSpend(bucket.total))}
-                  {partialSpend(bucket.total) ? " · incomplete" : ""}
+                  {formatAnalyticsCost(bucket.total)}
                 </td>
               </tr>
             ))}

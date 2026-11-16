@@ -34,7 +34,7 @@ const RestartOwnerBridge = memo(function RestartOwnerBridge({ agent, onChange }:
 });
 
 export function AgentSettingsScreen({ section, intent = 0, layout, onClose, onNotice }: {
-  readonly section: SettingsSection | null;
+  readonly section: Exclude<SettingsSection, "usage"> | null;
   readonly intent?: number;
   readonly layout: "split" | "stacked";
   readonly onClose: () => void;
@@ -64,7 +64,7 @@ export function AgentSettingsScreen({ section, intent = 0, layout, onClose, onNo
 }
 
 function SettingsContent({ agent, section, intent, layout, provider, restart, onClose, onNotice, runningCount }: {
-  readonly agent: AgentSummary; readonly section: SettingsSection | null; readonly intent: number; readonly layout: "split" | "stacked";
+  readonly agent: AgentSummary; readonly section: Exclude<SettingsSection, "usage"> | null; readonly intent: number; readonly layout: "split" | "stacked";
   readonly provider: ProviderState | null; readonly restart: RestartState | null;
   readonly onClose: () => void; readonly onNotice: (message: string) => void; readonly runningCount: number | undefined;
 }) {

@@ -26,6 +26,7 @@ const storeMock = vi.hoisted(() => ({
   showOfflineAgents: false,
   hiddenOfflineAgentCount: 0,
   createThread: vi.fn(),
+  selectThread: vi.fn(),
   renameThread: vi.fn(),
   setAgentPinned: vi.fn(),
   setAgentRunDefaults: vi.fn(),
@@ -538,7 +539,7 @@ describe("settings screen navigation", () => {
     expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
   });
 
-  it("targets an open section without adding history and keeps the initial section on Forward", async () => {
+  it("targets an open section without adding history and restores the latest section on Forward", async () => {
     await page.viewport(390, 844);
     render(<App />);
     const start = position();
@@ -552,7 +553,8 @@ describe("settings screen navigation", () => {
     window.history.back();
     await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
     window.history.forward();
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Providers" })));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Restart" })));
+    expect(window.history.state.monoAgentMobileNavigation.section).toBe("agent");
   });
   it("repeats the same section intent after a user scrolls away without pushing history", async () => {
     await page.viewport(390, 844);
@@ -616,4 +618,29 @@ it("opens the usage settings handoff without mounting the live provider owner", 
     expect(document.querySelector('[data-modal-surface="settings"]')).not.toBeNull();
     expect(document.querySelector(".settings-content")).toBeNull();
   } finally { local.mockRestore(); history.mockRestore(); vendor.mockRestore(); }
+});
+
+it.each(["conversation", "project"] as const)("returns from an analytics %s destination to Usage analytics on mobile Back", async destination => {
+  const { usageAnalyticsFixture } = await import("./test/usage-analytics-fixtures");
+  const fixture = usageAnalyticsFixture();
+  await page.viewport(390, 844);
+  const local = vi.spyOn(api, "usageAnalytics").mockResolvedValue({ ...fixture.data, sourceId: "atlas" });
+  const view = render(<App />);
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
+    fireEvent.click(screen.getByRole("button", { name: "Usage analytics" }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Top conversations" })).toBeVisible());
+    expect(window.history.state.monoAgentMobileNavigation.section).toBe("usage");
+    const usagePosition = position();
+    if (destination === "project") {
+      fireEvent.click(screen.getByRole("button", { name: "Seed catalog" }));
+      storeMock.openProjectId = "fictional-project"; view.rerender(<App />);
+    } else fireEvent.click(screen.getByRole("link", { name: "Garden planning" }));
+    await waitFor(() => expect(position()).toBe(usagePosition + 1));
+    expect(window.history.state.monoAgentMobileNavigation.surface).toBe(destination);
+    window.history.back();
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Usage analytics" })).toBeVisible());
+    expect(position()).toBe(usagePosition);
+    expect(window.history.state.monoAgentMobileNavigation.section).toBe("usage");
+  } finally { local.mockRestore(); }
 });

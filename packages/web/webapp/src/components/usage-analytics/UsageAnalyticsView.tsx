@@ -1,10 +1,10 @@
 import { useState, type ReactNode } from "react";
 import { Dialog } from "@base-ui/react/dialog";
 import type { ProviderUsageHistory } from "@mono-agent/contracts/provider-usage";
-import type { WebUsageAnalytics, WebUsageSlice } from "../../../../src/contracts";
-import { formatTokenCount, formatUsd } from "../../usage";
+import type { WebUsageAnalytics } from "../../../../src/contracts";
+import { formatTokenCount } from "../../usage";
 import { QuotaHistoryChart, UsageBucketChart } from "./UsageCharts";
-import { knownSpend, partialSpend, tokenTotal } from "./usage-chart-geometry";
+import { formatAnalyticsCost, knownSpend, partialSpend, tokenTotal } from "./usage-chart-geometry";
 import "./usage-analytics.css";
 
 export type AnalyticsRange = "6h" | "24h" | "7d" | "30d" | "90d";
@@ -27,10 +27,7 @@ export interface UsageAnalyticsViewProps {
   readonly onClear?: () => Promise<void>;
 }
 
-const spend = (usage: WebUsageSlice) =>
-  usage.costUsd === undefined && usage.knownCostUsd === undefined
-    ? "Not reported"
-    : `${formatUsd(knownSpend(usage))}${partialSpend(usage) ? " known · incomplete" : ""}`;
+const spend = formatAnalyticsCost;
 
 function RangeToolbar(props: Pick<
   UsageAnalyticsViewProps, "range" | "onRange" | "onRefresh" | "loading" | "busy"
@@ -68,7 +65,7 @@ function SummaryCards({ data }: { readonly data: WebUsageAnalytics }) {
   return (
     <div className="usage-summary">
       <article>
-        <h2>{partialSpend(data.total) ? "Known spend" : "Recorded spend"}</h2>
+        <h2>{partialSpend(data.total) && knownSpend(data.total) !== null ? "Known spend" : "Recorded spend"}</h2>
         <strong>{spend(data.total)}</strong>
         {data.coverage.costPartial && <p>Total cost is incomplete.</p>}
       </article>
@@ -284,7 +281,12 @@ export function UsageAnalyticsView(props: UsageAnalyticsViewProps) {
               onOpenChange={setConfirm}
               onConfirm={() => {
                 setClearError(false);
-                void props.onClear!().then(() => setConfirm(false)).catch(() => setClearError(true));
+                void props.onClear!().then(() => setConfirm(false)).catch(error => {
+                  if ((error as { name?: unknown } | null)?.name === "AbortError") {
+                    setConfirm(false);
+                    props.onRefresh();
+                  } else setClearError(true);
+                });
               }}
             />
           ) : null}

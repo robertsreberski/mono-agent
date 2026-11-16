@@ -173,14 +173,13 @@ function ModelPatterns({ id, models }: { readonly id: string; readonly models: r
   );
 }
 
-function BucketBars({ id, data, models, max, value, formatted, onSelect }: {
+function BucketBars({ id, data, models, max, value, formatted }: {
   readonly id: string;
   readonly data: WebUsageAnalytics;
   readonly models: readonly string[];
   readonly max: number;
-  readonly value: (slice: WebUsageSlice) => number;
+  readonly value: (slice: WebUsageSlice) => number | null;
   readonly formatted: (amount: number) => string;
-  readonly onSelect: (index: number) => void;
 }) {
   const width = (CHART.width - CHART.left - CHART.right) / Math.max(1, data.buckets.length);
   const plotHeight = CHART.height - CHART.top - CHART.bottom;
@@ -190,6 +189,7 @@ function BucketBars({ id, data, models, max, value, formatted, onSelect }: {
       <g key={bucket.start}>
         {bucket.models.map((model, j) => {
           const amount = value(model);
+          if (amount === null) return null; // Unknown prices are omitted, never plotted as free work.
           const height = amount / max * plotHeight;
           stacked += amount;
           return (
@@ -200,7 +200,6 @@ function BucketBars({ id, data, models, max, value, formatted, onSelect }: {
               width={Math.max(0.5, width - 2)}
               height={height}
               fill={`url(#${id}-model-${models.indexOf(modelKey(model))})`}
-              onClick={() => onSelect(i)}
             >
               <title>{model.model ?? "Unknown model"}: {formatted(amount)}</title>
             </rect>
@@ -243,8 +242,12 @@ export function UsageBucketChart({ data }: { readonly data: WebUsageAnalytics })
   const models = [...new Set(data.buckets.flatMap(bucket => bucket.models.map(modelKey)))];
   const value = metric === "cost" ? knownSpend : tokenTotal;
   const max = Math.max(0.000001, ...data.buckets.map(bucket => (
-    bucket.models.reduce((sum, model) => sum + value(model), 0)
+    bucket.models.reduce((sum, model) => sum + (value(model) ?? 0), 0)
   )));
+  const hasUnknownCost = data.buckets.some(item => item.models.some(model =>
+    knownSpend(model) === null && partialSpend(model)
+  ));
+  const hasKnownCost = data.buckets.some(item => item.models.some(model => knownSpend(model) !== null));
   const bucket = data.buckets[Math.min(selected, data.buckets.length - 1)];
   const formatted = (amount: number) => metric === "cost"
     ? formatUsd(amount) : formatTokenCount(amount);
@@ -267,7 +270,12 @@ export function UsageBucketChart({ data }: { readonly data: WebUsageAnalytics })
           ? "Known spend only; total cost is incomplete. " : ""}
         Stacked by recorded model. Synchronous child tokens stay in their inclusive parent model.
       </p>
-      <UsageChartFrame
+      {metric === "cost" && hasUnknownCost && (
+        <p className="usage-warning">Unknown prices are omitted from bars; only known amounts are plotted.</p>
+      )}
+      {metric === "cost" && hasUnknownCost && !hasKnownCost ? (
+        <p className="usage-empty" role="status">No known prices to plot. Cost is unknown.</p>
+      ) : <UsageChartFrame
         title={`${metric === "cost" ? "Known cost" : "Reported tokens"} by model and bucket`}
         description={
           `${data.buckets.length} time buckets. Use the bucket selector or table for exact values `
@@ -284,9 +292,8 @@ export function UsageBucketChart({ data }: { readonly data: WebUsageAnalytics })
           max={max}
           value={value}
           formatted={formatted}
-          onSelect={setSelected}
         />
-      </UsageChartFrame>
+      </UsageChartFrame>}
       <ModelLegend models={models} />
       <label className="usage-bucket-select">
         Inspect bucket

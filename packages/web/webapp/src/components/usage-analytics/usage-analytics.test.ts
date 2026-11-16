@@ -3,7 +3,7 @@ import { api, parseUsageAnalytics } from "../../api";
 import { usageAnalyticsFixture } from "../../test/usage-analytics-fixtures";
 import { browserCostWire } from "../../../../src/cost-wire";
 import { parseSettingsParam } from "../../settings-navigation";
-import { displayTimeZone, MIN_LONG_GAP_MS, quotaPaths } from "./usage-chart-geometry";
+import { displayTimeZone, formatAnalyticsCost, knownSpend, MIN_LONG_GAP_MS, quotaPaths } from "./usage-chart-geometry";
 
 afterEach(() => vi.unstubAllGlobals());
 describe("analytics client and geometry", () => {
@@ -64,6 +64,23 @@ describe("analytics client and geometry", () => {
     }));
     expect(quotaPaths(compressed, "weekly", history).uncertain).toBe("");
     expect(quotaPaths({ ...withHours([0, 12]), downsampled: true }, "weekly", history).uncertain).toBe("");
+  });
+  it("never invents a known zero price and keeps fictional totals/rankings reconciled", () => {
+    expect(knownSpend({ costUsd: null })).toBeNull();
+    expect(formatAnalyticsCost({ costUsd: null })).toBe("unknown");
+    expect(knownSpend({ costUsd: 0 })).toBe(0);
+    expect(formatAnalyticsCost({ costUsd: 0 })).toBe("$0.00");
+    for (const partial of [false, true]) {
+      const { data } = usageAnalyticsFixture(partial);
+      const known = (rows: Array<{ costUsd?: number | null; knownCostUsd?: number }>) => rows.reduce((n, row) => n + (knownSpend(row) ?? 0), 0);
+      expect(known(data.buckets.map(b => b.total))).toBeCloseTo(knownSpend(data.total)!, 8);
+      expect(known(data.buckets.flatMap(b => [...b.models]))).toBeCloseTo(knownSpend(data.total)!, 8);
+      expect(known(data.topConversations.map(c => c.usage))).toBeCloseTo(knownSpend(data.total)!, 8);
+      for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) {
+        expect(data.topConversations.reduce((n, c) => n + c.usage.tokens![key], 0)).toBe(data.total.tokens![key]);
+      }
+      expect(data.topProjects[0]?.usage).toEqual(data.total);
+    }
   });
   it("recognizes the existing settings handoff for analytics", () => {
     expect(parseSettingsParam("https://console.invalid/?agent=fictional&settings=usage")).toBe("usage");
