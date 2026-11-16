@@ -10,14 +10,14 @@ This documentation follows the current `main` source. Published packages can lag
 | | Version |
 | --- | --- |
 | Latest published npm release (registry rechecked 2026-11-16) | `create-mono-agent@0.27.1` and all 19 current `@mono-agent/*` catalog packages, published 2026-11-16 |
-| Published-baseline source audit | [`4f9b7650`](https://github.com/robertsreberski/mono-agent/commit/4f9b765048fc0c0f6b837bd28fd918f905f773ed) (historical; current `main` includes the unreleased changes below) |
+| Published-baseline source audit | Tag `v0.27.1` ([`3e298145`](https://github.com/robertsreberski/mono-agent/commit/3e2981459ab38b1c99648ad5543a443249b877db)); current `main` includes the unreleased changes below |
 | Minimum Node.js for both | `>=24.15.0` |
 
 ## Published baseline
 
 All 20 packages in the current release catalog have npm `latest` set to `0.27.1`. Install the CLI with `npm i -g create-mono-agent`; the installer delegates to `@mono-agent/app`.
 
-The published release includes the owned Pi harness, renamed packages, framework contract simplification, and the Phoenix/OTLP, Supermemory, and terminal-renderer retirements. Those retirements are no longer source-only. Local memory tiers, local JSONL observability, the browser console, and bounded `runs list` / `runs show` diagnostics remain available. See the [v0.27.1 release notes](https://github.com/robertsreberski/mono-agent/releases/tag/v0.27.1) for the breaking changes and complete upgrade notes.
+The published release includes the owned Pi harness, renamed packages, framework contract simplification, and the Phoenix/OTLP, Supermemory, and terminal-renderer retirements. Those retirements are no longer source-only. Local memory tiers, local JSONL observability, the browser console, and bounded `runs list` / `runs show` diagnostics remain available. See the [v0.26.0 release notes](https://github.com/robertsreberski/mono-agent/releases/tag/v0.26.0) for those breaking changes and upgrade notes, and the [v0.27.1 release notes](https://github.com/robertsreberski/mono-agent/releases/tag/v0.27.1) and `CHANGELOG.md` 0.27.0 section for what 0.27.x adds. 0.27.0 was staged but never promoted to `latest`; install 0.27.1.
 
 Browser-first onboarding and the safer console-network defaults are also in the published release:
 
@@ -32,9 +32,7 @@ Neither the 0.27.1 console nor the current source console has application login.
 
 ## Source-only delta
 
-Current `main` carries unreleased changes after `v0.27.1`: console usage analytics with quota history and a manual-compaction fix, shipping in the next release.
-
-The next release also carries on-demand subscription quota history for activated providers and unchanged-cost token-model follow-ups. None of these changes is in published 0.27.1. See `CHANGELOG.md` `## Unreleased` for the exact list.
+Current `main` carries unreleased changes after `v0.27.1`: console usage analytics with on-demand subscription quota history, a fix for long manual compactions disconnecting before their deadline, and a reported-token-model fix for cost-only follow-ups. None of these is in published 0.27.1. See `CHANGELOG.md` `## Unreleased` for the exact list.
 
 The previous delta is now published: the early Node-version guard, `mono-agent preflight`, the Capabilities page with its Enable actions, write-only credential fields and one-level Undo, the optional console handoff after guided `init`, and the operator API-key removal all shipped in 0.27.0 and are included in 0.27.1. The Node requirement itself remains `>=24.15.0`; the guard improves early diagnostics.
 

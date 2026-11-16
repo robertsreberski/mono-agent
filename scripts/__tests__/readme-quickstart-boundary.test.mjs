@@ -213,7 +213,7 @@ describe("root README Quickstart boundary", () => {
     const releaseStatus = readRepoFile("docs/reference/release-status.md");
     expect(releaseStatus).toContain("registry rechecked 2026-11-16");
     expect(releaseStatus).toContain("All 20 packages in the current release catalog");
-    const sourceDelta = "Current `main` carries unreleased changes after `v0.27.1`: console usage analytics with quota history and a manual-compaction fix, shipping in the next release.";
+    const sourceDelta = "Current `main` carries unreleased changes after `v0.27.1`: console usage analytics with on-demand subscription quota history";
     expect(releaseStatus).toContain(sourceDelta);
     expect(releaseStatus).not.toContain("no package-behavior delta");
     expect(releaseStatus).toContain("The shell installer is served from the site, not npm, and installs the published CLI");
