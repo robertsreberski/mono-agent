@@ -8,6 +8,7 @@ import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { sqliteTextQuery, webTextColumns } from "./sqlite-text.js";
 import { isDeepStrictEqual } from "node:util";
 
 import { normalizeWakeTerminalReply, hasWakeReplyContent, wakeReplyText } from "./wake-reply.js";
@@ -993,24 +994,24 @@ export class WebStore {
   }
 
   restartOperation(id: string): StoredRestartOperation | undefined {
-    const row = this.database.prepare("SELECT * FROM restart_operations WHERE id = ?").get(id) as unknown as RestartOperationRow | undefined;
+    const row = sqliteTextQuery(this.database, `SELECT ${webTextColumns("restart_operations")} FROM restart_operations WHERE id = ?`).get(id) as unknown as RestartOperationRow | undefined;
     return row === undefined ? undefined : storedRestartOperation(row);
   }
 
   latestRestartOperation(sourceId: string): StoredRestartOperation | undefined {
-    const row = this.database.prepare(`SELECT * FROM restart_operations WHERE source_id = ?
+    const row = sqliteTextQuery(this.database, `SELECT ${webTextColumns("restart_operations")} FROM restart_operations WHERE source_id = ?
       ORDER BY requested_at DESC, rowid DESC LIMIT 1`).get(sourceId) as unknown as RestartOperationRow | undefined;
     return row === undefined ? undefined : storedRestartOperation(row);
   }
 
   activeRestartOperation(sourceId: string): StoredRestartOperation | undefined {
-    const row = this.database.prepare("SELECT * FROM restart_operations WHERE source_id = ? AND outcome IS NULL LIMIT 1")
+    const row = sqliteTextQuery(this.database, `SELECT ${webTextColumns("restart_operations")} FROM restart_operations WHERE source_id = ? AND outcome IS NULL LIMIT 1`)
       .get(sourceId) as unknown as RestartOperationRow | undefined;
     return row === undefined ? undefined : storedRestartOperation(row);
   }
 
   pendingRestartOperations(): readonly StoredRestartOperation[] {
-    return (this.database.prepare("SELECT * FROM restart_operations WHERE outcome IS NULL").all() as unknown as RestartOperationRow[])
+    return (sqliteTextQuery(this.database, `SELECT ${webTextColumns("restart_operations")} FROM restart_operations WHERE outcome IS NULL`).all() as unknown as RestartOperationRow[])
       .map(storedRestartOperation);
   }
 
@@ -1302,21 +1303,21 @@ export class WebStore {
   }
 
   listAgents(): WebAgentSummary[] {
-    const rows = this.database.prepare(agentSelectSql(
+    const rows = sqliteTextQuery(this.database, agentSelectSql(
       "WHERE a.discovered = 1 ORDER BY pinned DESC, a.label COLLATE NOCASE, a.source_id",
     )).all() as unknown as AgentRow[];
     return rows.map((row) => this.withGeneration(mapAgent(row)));
   }
 
   getAgent(sourceId: string): WebAgentSummary | undefined {
-    const row = this.database.prepare(agentSelectSql(
+    const row = sqliteTextQuery(this.database, agentSelectSql(
       "WHERE a.source_id = ? AND a.discovered = 1",
     )).get(sourceId) as unknown as AgentRow | undefined;
     return row === undefined ? undefined : this.withGeneration(mapAgent(row));
   }
 
   private getStoredAgent(sourceId: string): WebAgentSummary | undefined {
-    const row = this.database.prepare(agentSelectSql("WHERE a.source_id = ?"))
+    const row = sqliteTextQuery(this.database, agentSelectSql("WHERE a.source_id = ?"))
       .get(sourceId) as unknown as AgentRow | undefined;
     return row === undefined ? undefined : this.withGeneration(mapAgent(row));
   }
@@ -1883,9 +1884,9 @@ export class WebStore {
     runId: string,
     snapshotKind: WebCronReplySnapshotKind,
   ): CronReplySnapshotCandidate {
-    const row = this.database.prepare(`
+    const row = sqliteTextQuery(this.database, `
       SELECT r.payload_json, m.parts_json, m.cron_suppressed,
-        t.text, t.error_code, t.error_message
+        CAST(t.text AS BLOB) AS text, t.error_code, CAST(t.error_message AS BLOB) AS error_message
       FROM cron_run_messages r
       JOIN cron_channels c ON c.source_id = r.source_id AND c.job_id = r.job_id AND c.thread_id = r.thread_id
       JOIN messages m ON m.id = r.message_id AND m.thread_id = r.thread_id
@@ -1976,7 +1977,7 @@ export class WebStore {
 
   cronReplyOperation(operationId: string): CronReplyReservationResult | undefined {
     return this.transaction(() => {
-      const row = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
+      const row = sqliteTextQuery(this.database, `SELECT ${webTextColumns("cron_reply_operations")} FROM cron_reply_operations WHERE operation_id = ?`)
         .get(operationId) as unknown as CronReplyOperationRow | undefined;
       return row === undefined ? undefined : this.cronReplyState(row);
     });
@@ -1987,14 +1988,14 @@ export class WebStore {
     candidate: CronReplySnapshotCandidate,
   ): CronReplyReservationResult {
     return this.transaction(() => {
-      const existing = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
+      const existing = sqliteTextQuery(this.database, `SELECT ${webTextColumns("cron_reply_operations")} FROM cron_reply_operations WHERE operation_id = ?`)
         .get(operationId) as unknown as CronReplyOperationRow | undefined;
       if (existing !== undefined) {
         this.assertCronReplyIdentity(existing, candidate.sourceId, candidate.jobId, candidate.runId);
         return this.cronReplyState(existing);
       }
-      const pending = this.database.prepare(`
-        SELECT * FROM cron_reply_operations
+      const pending = sqliteTextQuery(this.database, `
+        SELECT ${webTextColumns("cron_reply_operations")} FROM cron_reply_operations
         WHERE source_id = ? AND job_id = ? AND run_id = ? AND state = 'pending'
       `).get(candidate.sourceId, candidate.jobId, candidate.runId) as unknown as CronReplyOperationRow | undefined;
       if (pending !== undefined) return { kind: "pending", operation: mapCronReplyOperation(pending) };
@@ -2225,9 +2226,9 @@ export class WebStore {
         const status = cronMessageStatus(run.status);
         const turnStatus = status === "running" ? "running" : status;
         const finishedAt = status === "running" ? null : run.completedAt ?? run.orderedAt;
-        const existingTurn = this.database.prepare(`
-          SELECT thread_id, status, text, assistant_message_id, started_at, finished_at,
-            error_code, error_message FROM turns WHERE id = ?
+        const existingTurn = sqliteTextQuery(this.database, `
+          SELECT thread_id, status, CAST(text AS BLOB) AS text, assistant_message_id, started_at, finished_at,
+            error_code, CAST(error_message AS BLOB) AS error_message FROM turns WHERE id = ?
         `).get(turnId) as unknown as {
           thread_id: string;
           status: string;
@@ -2430,8 +2431,8 @@ export class WebStore {
       throw new WebConsoleError("invalid_notification", "The process job response must contain 1 to 8000 characters.", 413);
     }
 
-    const existing = this.database.prepare(`
-      SELECT * FROM process_job_cards WHERE source_id = ? AND job_id = ?
+    const existing = sqliteTextQuery(this.database, `
+      SELECT ${webTextColumns("process_job_cards")} FROM process_job_cards WHERE source_id = ? AND job_id = ?
     `).get(input.sourceId, projection.jobId) as unknown as ProcessJobCardRow | undefined;
     const projectionJson = JSON.stringify(projection);
     let projectionSha256 = createHash("sha256").update(projectionJson).digest("hex");
@@ -2945,7 +2946,7 @@ export class WebStore {
     if (input.tagId !== undefined) values.push(input.tagId);
     if (cursor !== undefined) values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
     values.push(limit + 1);
-    const rows = this.database.prepare(threadSelectSql(`
+    const rows = sqliteTextQuery(this.database, threadSelectSql(`
       WHERE t.source_id = ? AND ${archivedSql} ${scopeSql} ${projectSql} ${tagSql} ${beforeSql}
       ORDER BY t.updated_at DESC, t.id DESC LIMIT ?
     `)).all(...values) as unknown as ThreadRow[];
@@ -3071,7 +3072,7 @@ export class WebStore {
       ...titleIds.slice(titleBudget),
     ];
 
-    const selectThread = this.database.prepare(threadSelectSql("WHERE t.id = ?"));
+    const selectThread = sqliteTextQuery(this.database, threadSelectSql("WHERE t.id = ?"));
     const hits: WebThreadSearchHit[] = [];
     for (const threadId of ordering) {
       if (hits.length >= limit) break;
@@ -3154,8 +3155,8 @@ export class WebStore {
     // them: a section refreshed about once a second cannot afford to expand
     // fifty conversations one at a time. See `mapThreads`.
     const carded = rows.slice(0, WEB_ACTIVE_THREAD_LIMIT).map((row) => row.id);
-    const byId = new Map((this.database
-      .prepare(threadSelectSql("WHERE t.id IN (SELECT value FROM json_each(?))"))
+    const byId = new Map((sqliteTextQuery(this.database,
+      threadSelectSql("WHERE t.id IN (SELECT value FROM json_each(?))"))
       .all(JSON.stringify(carded)) as unknown as ThreadRow[]).map((row) => [row.id, row]));
     const threads = this.mapThreads(carded.flatMap((id) => {
       const row = byId.get(id);
@@ -3187,7 +3188,7 @@ export class WebStore {
 
   getThread(id: string): WebThread | undefined {
     const resolved = this.resolveThreadId(id);
-    const row = this.database.prepare(threadSelectSql("WHERE t.id = ?")).get(resolved) as unknown as ThreadRow | undefined;
+    const row = sqliteTextQuery(this.database, threadSelectSql("WHERE t.id = ?")).get(resolved) as unknown as ThreadRow | undefined;
     return row === undefined ? undefined : this.mapThread(row);
   }
 
@@ -3229,13 +3230,13 @@ export class WebStore {
     signal?.throwIfAborted();
     // Redirects migrate every message and delete the source thread; aliases are not another ledger.
     // Include non-assistant rows only for the exact historical project-summary basis.
-    const rows = this.database.prepare(`WITH candidate AS MATERIALIZED (
+    const rows = sqliteTextQuery(this.database, `WITH candidate AS MATERIALIZED (
       SELECT m.id FROM threads t JOIN messages m ON m.thread_id=t.id
       WHERE t.source_id=? AND m.created_at>=? AND m.created_at<?
       ORDER BY m.created_at,m.id LIMIT 100001
     ) SELECT m.rowid AS rowid,m.id,m.seq,m.status,m.turn_id,m.role,m.created_at,
       length(CAST(m.parts_json AS BLOB)) AS bytes, r.model AS executed_model,
-      t.id AS thread_id,t.title,t.project_id,t.archived_at,p.name AS project_name
+      t.id AS thread_id,CAST(t.title AS BLOB) AS title,t.project_id,t.archived_at,CAST(p.name AS BLOB) AS project_name
       FROM candidate c JOIN messages m ON m.id=c.id JOIN threads t ON t.id=m.thread_id
       LEFT JOIN turns r ON r.id=m.turn_id LEFT JOIN projects p ON p.id=t.project_id
       ORDER BY m.created_at,m.id`).all(sourceId, range.from, range.to) as unknown as Array<{
@@ -3631,8 +3632,8 @@ export class WebStore {
     if (this.getAgent(sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
-    const rows = this.database.prepare(`
-      SELECT * FROM projects WHERE source_id = ? ORDER BY updated_at DESC, id DESC
+    const rows = sqliteTextQuery(this.database, `
+      SELECT ${webTextColumns("projects")} FROM projects WHERE source_id = ? ORDER BY updated_at DESC, id DESC
     `).all(sourceId) as unknown as ProjectRow[];
     return rows.map((row) => this.mapProject(row));
   }
@@ -3950,8 +3951,8 @@ export class WebStore {
           : { name: snapshot.name, context: snapshot.context, ...(tags.length === 0 ? {} : { tags: tags as string[] }) };
       } catch { throw new WebConsoleError("storage_corrupt", "The active project context snapshot is invalid.", 500); }
     }
-    const row = this.database.prepare(`
-      SELECT p.name AS name, p.context AS context
+    const row = sqliteTextQuery(this.database, `
+      SELECT CAST(p.name AS BLOB) AS name, CAST(p.context AS BLOB) AS context
         FROM threads t JOIN projects p ON p.id = t.project_id
        WHERE t.id = ?
     `).get(this.resolveThreadId(threadId)) as unknown as { name: string; context: string } | undefined;
@@ -4254,7 +4255,7 @@ export class WebStore {
 
   /** Freeze both project and tags at admission so steering cannot adopt later edits. */
   private captureProjectContext(turnId: string, threadId: string): void {
-    const row = this.database.prepare(`SELECT p.name, p.context FROM projects p JOIN threads t ON t.project_id = p.id WHERE t.id = ?`)
+    const row = sqliteTextQuery(this.database, `SELECT CAST(p.name AS BLOB) AS name, CAST(p.context AS BLOB) AS context FROM projects p JOIN threads t ON t.project_id = p.id WHERE t.id = ?`)
       .get(threadId) as { name: string; context: string } | undefined;
     this.database.prepare("UPDATE turns SET project_context_json = ? WHERE id = ?").run(JSON.stringify({ name: row?.name ?? "", context: row?.context ?? "", tags: this.tagNamesForThread(threadId) }), turnId);
   }
@@ -4310,7 +4311,7 @@ export class WebStore {
   }
 
   private getProjectRow(id: string): ProjectRow | undefined {
-    return this.database.prepare("SELECT * FROM projects WHERE id = ?").get(id) as unknown as ProjectRow | undefined;
+    return sqliteTextQuery(this.database, `SELECT ${webTextColumns("projects")} FROM projects WHERE id = ?`).get(id) as unknown as ProjectRow | undefined;
   }
 
   private requireProject(id: string): ProjectRow {
@@ -4933,7 +4934,7 @@ export class WebStore {
         || row.state !== "active" || thread.archivedAt !== null || !thread.canSend || !ready()) return null;
       if (this.database.prepare("SELECT 1 FROM turns WHERE thread_id = ? AND status = 'running'").get(thread.id) !== undefined
         || (!afterCompaction && this.database.prepare("SELECT 1 FROM live_inputs WHERE thread_id = ? AND status = 'queued'").get(thread.id) !== undefined)) return null;
-      const occurrence = this.database.prepare(`SELECT id, scheduled_at, message FROM wake_occurrences
+      const occurrence = sqliteTextQuery(this.database, `SELECT id, scheduled_at, CAST(message AS BLOB) AS message FROM wake_occurrences
         WHERE thread_id = ? AND schedule_id = ? AND generation = ? AND state = 'pending'
         ORDER BY scheduled_at LIMIT 1`).get(thread.id, row.schedule_id, row.generation) as
         { id: string; scheduled_at: string; message: string | null } | undefined;
@@ -5289,8 +5290,8 @@ export class WebStore {
 
   cancelLiveInputs(threadId: string): WebMessage[] {
     threadId = this.resolveThreadId(threadId);
-    const rows = this.database.prepare(
-      "SELECT * FROM live_inputs WHERE thread_id = ? ORDER BY created_at, rowid",
+    const rows = sqliteTextQuery(this.database,
+      `SELECT ${webTextColumns("live_inputs")} FROM live_inputs WHERE thread_id = ? ORDER BY created_at, rowid`,
     ).all(threadId) as unknown as LiveInputRow[];
     if (rows.length === 0) return [];
     const now = this.now();
@@ -5334,8 +5335,8 @@ export class WebStore {
       "SELECT id FROM turns WHERE thread_id = ? AND status = 'running'",
     ).get(threadId);
     if (active !== undefined) return undefined;
-    const row = this.database.prepare(`
-      SELECT * FROM live_inputs
+    const row = sqliteTextQuery(this.database, `
+      SELECT ${webTextColumns("live_inputs")} FROM live_inputs
       WHERE thread_id = ? AND status = 'queued'
       ORDER BY created_at, rowid LIMIT 1
     `).get(threadId) as unknown as LiveInputRow | undefined;
@@ -6815,8 +6816,8 @@ export class WebStore {
   }
 
   private recoverLiveInputs(): void {
-    const rows = this.database.prepare(
-      "SELECT * FROM live_inputs WHERE status = 'offered' ORDER BY created_at, rowid",
+    const rows = sqliteTextQuery(this.database,
+      `SELECT ${webTextColumns("live_inputs")} FROM live_inputs WHERE status = 'offered' ORDER BY created_at, rowid`,
     ).all() as unknown as LiveInputRow[];
     if (rows.length === 0) return;
     const now = this.now();
@@ -7285,8 +7286,8 @@ export class WebStore {
       normalizeRole(row.role) === "assistant" && row.turn_id !== null ? [row.turn_id] : []))];
     const turns = turnIds.length === 0
       ? new Map<string, TurnRow>()
-      : new Map((this.database.prepare(`
-          SELECT * FROM turns WHERE id IN (SELECT value FROM json_each(?))
+      : new Map((sqliteTextQuery(this.database, `
+          SELECT ${webTextColumns("turns")} FROM turns WHERE id IN (SELECT value FROM json_each(?))
         `).all(JSON.stringify(turnIds)) as unknown as TurnRow[]).map((turn) => [turn.id, turn]));
 
     return rows.map((row) => {
@@ -7329,9 +7330,9 @@ export class WebStore {
 
   /** The newest turn of each listed conversation, by thread id. */
   private latestRunStates(threadIds: readonly string[]): Map<string, WebRunState> {
-    const latest = this.database.prepare(`
+    const latest = sqliteTextQuery(this.database, `
       SELECT * FROM (
-        SELECT t.*, ROW_NUMBER() OVER (
+        SELECT ${webTextColumns("turns", "t")}, ROW_NUMBER() OVER (
           PARTITION BY t.thread_id ORDER BY t.started_at DESC, t.rowid DESC
         ) AS rn
         FROM turns t WHERE t.thread_id IN (SELECT value FROM json_each(?))
@@ -7533,7 +7534,7 @@ export class WebStore {
   }
 
   private requireTurn(id: string): TurnRow {
-    const row = this.database.prepare("SELECT * FROM turns WHERE id = ?").get(id) as unknown as TurnRow | undefined;
+    const row = sqliteTextQuery(this.database, `SELECT ${webTextColumns("turns")} FROM turns WHERE id = ?`).get(id) as unknown as TurnRow | undefined;
     if (row === undefined) throw new WebConsoleError("turn_not_found", "Turn not found.", 404);
     return row;
   }
@@ -7558,7 +7559,7 @@ export class WebStore {
   }
 
   private getLiveInput(id: string): LiveInputRow | undefined {
-    return this.database.prepare("SELECT * FROM live_inputs WHERE id = ?")
+    return sqliteTextQuery(this.database, `SELECT ${webTextColumns("live_inputs")} FROM live_inputs WHERE id = ?`)
       .get(id) as unknown as LiveInputRow | undefined;
   }
 
@@ -7757,7 +7758,7 @@ export class WebStore {
   }
 
   private requireCronReplyOperationRow(operationId: string): CronReplyOperationRow {
-    const row = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
+    const row = sqliteTextQuery(this.database, `SELECT ${webTextColumns("cron_reply_operations")} FROM cron_reply_operations WHERE operation_id = ?`)
       .get(operationId) as unknown as CronReplyOperationRow | undefined;
     if (row === undefined) {
       throw new WebConsoleError("cron_reply_operation_not_found", "Cron reply operation not found.", 404);
@@ -7971,8 +7972,8 @@ function priorOutcomeCandidateSql(): string {
 
 function threadSelectSql(suffix: string): string {
   return `
-    SELECT t.id, t.source_id, t.project_id, p.name AS project_name,
-           t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision, t.read_revision,
+    SELECT t.id, t.source_id, t.project_id, CAST(p.name AS BLOB) AS project_name,
+           CAST(t.title AS BLOB) AS title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision, t.read_revision,
            t.run_model, t.run_effort, t.run_context_1m,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
@@ -7991,7 +7992,7 @@ function threadSelectSql(suffix: string): string {
 
 function agentSelectSql(suffix: string): string {
   return `
-    SELECT a.*,
+    SELECT ${webTextColumns("agents", "a")},
            o.model AS override_model,
            o.effort AS override_effort,
            o.context_1m AS override_context_1m,

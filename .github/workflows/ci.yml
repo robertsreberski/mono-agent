@@ -172,7 +172,7 @@ jobs:
         run: pnpm run release:pack -- --tag "${{ steps.release-smoke.outputs.tag }}"
 
       - name: Install packed consumer
-        run: pnpm run release:consumer -- --tag "${{ steps.release-smoke.outputs.tag }}"
+        run: pnpm run release:consumer -- --tag "${{ steps.release-smoke.outputs.tag }}" ${{ matrix.node-version == '24.15.0' && '--require-minimum' || '' }}
 
       - name: Typecheck packages
         run: pnpm run typecheck

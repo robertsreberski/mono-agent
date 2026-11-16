@@ -1,3 +1,4 @@
+import { sqliteTextQuery } from "../durable-state/sqlite-text.js";
 import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename } from "node:fs/promises";
@@ -575,17 +576,17 @@ export async function openCronControlStore(
     },
     lastRun(jobId) {
       requireOpen();
-      const row = database.prepare(`${RUN_SELECT} WHERE job_id = ? ORDER BY ordered_at DESC, sequence DESC, run_id DESC LIMIT 1`)
-        .get(jobId) as RunRow | undefined;
+      const row = sqliteTextQuery(database, `${RUN_SELECT} WHERE job_id = ? ORDER BY ordered_at DESC, sequence DESC, run_id DESC LIMIT 1`)
+        .get(jobId) as unknown as RunRow | undefined;
       return row === undefined ? undefined : operatorRunSummary(row);
     },
     runs(jobId, limit, before) {
       requireOpen();
       const cursor = before === undefined ? undefined : decodeCursor(before);
       const rows = (cursor === undefined
-        ? database.prepare(`${RUN_SELECT} WHERE job_id = ? ORDER BY ordered_at DESC, sequence DESC, run_id DESC LIMIT ?`)
+        ? sqliteTextQuery(database, `${RUN_SELECT} WHERE job_id = ? ORDER BY ordered_at DESC, sequence DESC, run_id DESC LIMIT ?`)
           .all(jobId, limit + 1)
-        : database.prepare(`${RUN_SELECT} WHERE job_id = ? AND (
+        : sqliteTextQuery(database, `${RUN_SELECT} WHERE job_id = ? AND (
               ordered_at < ? OR (ordered_at = ? AND sequence < ?)
               OR (ordered_at = ? AND sequence = ? AND run_id < ?)
             ) ORDER BY ordered_at DESC, sequence DESC, run_id DESC LIMIT ?`)
@@ -1067,12 +1068,12 @@ interface RunRow {
 }
 
 const RUN_SELECT = `SELECT run_id, job_id, scheduled_at, ordered_at, sequence, trigger, status,
-  started_at, completed_at, artifact_run_id, text, error, failure_kind,
+  started_at, completed_at, artifact_run_id, CAST(text AS BLOB) AS text, CAST(error AS BLOB) AS error, failure_kind,
   reply_part_outcomes_json, turn_disposition, blocked_by_run_id, blocked_by_trigger, queue_depth,
   event_count, events_truncated FROM cron_runs`;
 
 function runRow(database: DatabaseSync, runId: string): RunRow | undefined {
-  return database.prepare(`${RUN_SELECT} WHERE run_id = ?`).get(runId) as RunRow | undefined;
+  return sqliteTextQuery(database, `${RUN_SELECT} WHERE run_id = ?`).get(runId) as unknown as RunRow | undefined;
 }
 
 function firingFromRow(row: RunRow): CronFiringIdentity {

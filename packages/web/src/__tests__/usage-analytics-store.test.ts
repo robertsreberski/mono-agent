@@ -110,3 +110,15 @@ describe("indexed usage analytics store", () => {
     } finally { f.db.close(); }
   }, 20_000);
 });
+
+it("keeps NUL-bearing conversation and project labels in usage analytics", async () => {
+  const f = await fixture(), text = "before\u0000after é 🐈\u0000tail";
+  try {
+    f.store.patchThread(f.first.id, { title: text });
+    f.store.patchProject(f.project.id, { name: text });
+    f.append(f.first.id, 1);
+    const analytics = await f.store.usageAnalytics("fictional", query);
+    expect(analytics.topConversations[0]?.title).toBe(text);
+    expect(JSON.stringify(analytics.topProjects)).toContain(JSON.stringify(text).slice(1, -1));
+  } finally { f.db.close(); }
+});

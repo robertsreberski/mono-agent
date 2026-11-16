@@ -109,8 +109,8 @@ export function analyze(options, hooks = {}) {
     let rows;
     const database = new DatabaseSync(dbPath, { readOnly: true });
     try {
-      rows = database.prepare(`SELECT r.*, g.state, g.conversation_id, g.logical_id FROM continuity_records r
-        JOIN continuity_generations g USING(generation_id) WHERE r.kind='tool'`).all();
+      rows = database.prepare(`SELECT r.*, CAST(r.retained_text AS BLOB) AS retained_text, g.state, g.conversation_id, g.logical_id FROM continuity_records r
+        JOIN continuity_generations g USING(generation_id) WHERE r.kind='tool'`).all().map(row => ({ ...row, retained_text: row.retained_text === null ? null : Buffer.from(row.retained_text).toString("utf8") }));
     } finally { database.close(); }
     const retained = new Map(rows.map(r => [r.record_id, r]));
     for (const file of files) {

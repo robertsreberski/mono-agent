@@ -420,3 +420,17 @@ describe("project context end to end", () => {
     expect(JSON.stringify(history)).not.toContain("Prefer aisle seats");
   });
 });
+
+it("preserves NUL-bearing directory chat titles and topic names across all readers", async () => {
+  const store = await directory();
+  const text = "before\u0000after é 🐈\u0000tail";
+  store.observe({ ...topic(text), chatTitle: text });
+  expect(store.entry("-1001", 77)).toMatchObject({ chatTitle: text, topicName: text });
+  expect(store.knownTopicNames()[0]?.nameRecord.name).toBe(text);
+  expect(store.pending(100).entries).toContainEqual(expect.objectContaining({ chatTitle: text, topicName: text }));
+  store.acknowledge(store.pending(100).acknowledgement);
+  // Force the comparison path rather than the in-memory signature throttle.
+  store.refreshOnNextSighting("-1001", 77);
+  store.observe({ ...topic(text), chatTitle: text });
+  expect(store.entry("-1001", 77)).toMatchObject({ chatTitle: text, topicName: text });
+});

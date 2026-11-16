@@ -276,3 +276,15 @@ it('recognizes existing hardlink identity and preserves destination symlink refu
   expect(cli([...args(f), '--out', link]).status).toBe(2); expect(existsSync(absent)).toBe(false);
   expect(readFileSync(f.options.routes)).toEqual(before);
 });
+
+it('digest-checks complete retained tool text containing NUL without modifying inputs', () => {
+  const text = `${SENTINEL}\u0000${'x'.repeat(50000)}\u0000tail`;
+  const f = fixture({ resultText: text, configureRecord: r => Object.assign(r, { text, sha: hash(text), original: bytes(text), retained: bytes(text) }) });
+  const before = snapshot(f.root), report = analyze(f.options);
+  expect(report.status).toBe('complete');
+  expect(report.codes).toEqual([]);
+  expect(report.categories['builtin-read'].results).toBe(12);
+  expect(report.exclusions.integrity ?? 0).toBe(0);
+  expect(report.routes[0].modeled.savedTokens).toBeGreaterThan(0);
+  expect(snapshot(f.root)).toEqual(before);
+});

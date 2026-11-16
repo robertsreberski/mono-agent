@@ -37,7 +37,7 @@ async function snapshot(root, verified, name, scratch, fn) {
   } finally { db?.close(); await rm(directory, { recursive: true, force: true }); }
 }
 function nativeRecords(db, scope, ledgerHash) {
-  const rows = db.prepare("SELECT r.*,g.logical_id,g.conversation_id,g.state generation_state FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE g.conversation_id=? AND g.logical_id=? AND g.state='committed' AND r.finalized=1 AND r.retained_text IS NOT NULL").all(scope, scope);
+  const rows = db.prepare("SELECT r.*, CAST(r.retained_text AS BLOB) AS retained_text,g.logical_id,g.conversation_id,g.state generation_state FROM continuity_records r JOIN continuity_generations g USING(generation_id) WHERE g.conversation_id=? AND g.logical_id=? AND g.state='committed' AND r.finalized=1 AND r.retained_text IS NOT NULL").all(scope, scope).map(row => ({ ...row, retained_text: row.retained_text === null ? null : Buffer.from(row.retained_text).toString("utf8") }));
   const tools = new Map(db.prepare("SELECT run_id,tool_call_id,tool_name FROM tool_calls WHERE conversation_id=?").all(scope)
     .map(c => [`tool:${ledgerHash(JSON.stringify([scope, c.run_id, c.tool_call_id]))}`, c.tool_name]));
   return rows.map(r => {

@@ -15,6 +15,7 @@ import {
   runVerifyAll,
 } from "../verify-all.mjs";
 
+const CI_MINIMUM_CONSUMER_ARG = "${{ matrix.node-version == '24.15.0' && '--require-minimum' || '' }}";
 const EXPECTED_CI_NODE_MATRIX = Object.freeze(["24.15.0", "24.18.0"]);
 const CI_CHECKOUT_STEP = [
   "      - name: Checkout",
@@ -298,7 +299,7 @@ describe("verify-all", () => {
     for (const [original, replacement] of [
       ["timeout-minutes: 90", "timeout-minutes: 91"],
       ["timeout-minutes: 90", "timeout-minutes: 89"],
-      ['node-version: ["24.18.0"]', 'node-version: ["24"]'],
+      ['node-version: ["24.15.0", "24.18.0"]', 'node-version: ["24"]'],
       ["    strategy:", "    needs: verify\n    strategy:"],
       ["    strategy:", "    if: false\n    strategy:"],
     ]) {
@@ -968,6 +969,12 @@ describe("verify-all", () => {
     }
   });
 
+  it("rejects changing or dropping the minimum-runtime consumer assertion", () => {
+    for (const replacement of ["", "--require-minimum", CI_MINIMUM_CONSUMER_ARG.replace("24.15.0", "24.18.0")]) {
+      expect(() => expectCiParity(replaceExactly(readCiWorkflow(), CI_MINIMUM_CONSUMER_ARG, replacement))).toThrow();
+    }
+  });
+
   it("rejects every noncanonical CI Node matrix value", () => {
     const source = readCiWorkflow();
     const matrix = "        node-version: [\"24.15.0\", \"24.18.0\"]";
@@ -1440,10 +1447,10 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
     command: "pnpm",
     args: ["run", "release:pack", "--", "--tag", CI_RELEASE_TAG_EXPRESSION],
   }),
-  gateRunContract(`pnpm run release:consumer -- --tag "${CI_RELEASE_TAG_EXPRESSION}"`, {
+  gateRunContract(`pnpm run release:consumer -- --tag "${CI_RELEASE_TAG_EXPRESSION}" ${CI_MINIMUM_CONSUMER_ARG}`, {
     label: "release:consumer",
     command: "pnpm",
-    args: ["run", "release:consumer", "--", "--tag", CI_RELEASE_TAG_EXPRESSION],
+    args: ["run", "release:consumer", "--", "--tag", CI_RELEASE_TAG_EXPRESSION, CI_MINIMUM_CONSUMER_ARG],
   }),
   gateRunContract("pnpm run typecheck", {
     label: "typecheck",
@@ -1625,7 +1632,12 @@ function projectCiSteps(steps, nodeVersion) {
     }
 
     if (step.condition === undefined) {
-      projected.push(toGateStep(step));
+      const gate = toGateStep(step);
+      if (gate.label === "release:consumer") {
+        expect(gate.args.at(-1)).toBe(CI_MINIMUM_CONSUMER_ARG);
+        gate.args = [...gate.args.slice(0, -1), ...(nodeVersion === MINIMUM_NODE_VERSION ? ["--require-minimum"] : [])];
+      }
+      projected.push(gate);
       continue;
     }
 
