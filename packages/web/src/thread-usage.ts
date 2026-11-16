@@ -41,7 +41,11 @@ export function usageModelContributions(rollups: readonly MessageUsageRollup[]):
 /** Shared additive rules, including unknown totals, known subtotals and saturation. */
 export function sumUsageSlices(slices: readonly WebUsageSlice[]): MessageUsageSlice {
   const total: MutableSlice = {};
-  for (const slice of slices) add(total, slice);
+  for (const slice of slices) {
+    // Zero-filled buckets/empty threads have no observation and must not clear pending.
+    if (slice.pending || slice.tokens !== undefined || slice.costUsd !== undefined
+      || slice.knownCostUsd !== undefined || slice.tokensPartial || slice.costPartial) add(total, slice);
+  }
   return total;
 }
 

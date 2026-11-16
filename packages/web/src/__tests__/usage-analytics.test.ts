@@ -42,6 +42,18 @@ describe("retained usage analytics", () => {
     expect(day.topProjects[0]?.projectSummaryUsage.costUsd).toBeNull(); // dispatch remains unknown in historical per-message project basis
     expect(JSON.stringify(day)).not.toMatch(/fictional-operation|fictional-run|accounting|parts_json/);
   });
+  it("keeps isolated upkeep pending and clamps partial edge buckets without changing totals", () => {
+    const pending = row([upkeep(dispatch)]);
+    const clipped = { ...query, from: "2026-10-24T09:15:00.000Z", to: "2026-10-26T10:45:00.000Z" };
+    for (const range of [clipped, { ...clipped, bucket: "hour" as const }]) {
+      const analytics = aggregateUsageAnalytics("fictional-agent", range, [pending], range.to);
+      expect(analytics.total).toEqual(sumThreadUsage([pending.rollup]).total);
+      expect(sumUsageSlices(analytics.buckets.map(b => b.total))).toEqual(analytics.total);
+      expect(analytics.buckets[0]?.start).toBe(range.from);
+      expect(analytics.buckets.at(-1)?.end).toBe(range.to);
+      expect(analytics.buckets.every(b => b.start >= range.from && b.end <= range.to)).toBe(true);
+    }
+  });
   it("preserves included compaction and synchronous token attribution, while detached work is independent", () => {
     const rollup: MessageUsageRollup = { main: { model: "fictional:parent", tokens: tokens(100), costUsd: 2 },
       subagents: [{ detached: false, model: "fictional:child", tokens: tokens(20), costUsd: 0.5 }, { detached: true, model: "other:worker", tokens: tokens(10), costUsd: 0.25 }],

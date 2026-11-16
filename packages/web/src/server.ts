@@ -426,7 +426,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       let query;
       try { query = parseProviderUsageHistoryQuery(req.query); }
       catch { throw new WebConsoleError("invalid_usage_range", "Choose a valid quota history range and time zone.", 400); }
-      void trackOperation(service.providerUsageHistory(pathParam(req.params.id), query), activeOperations).then(value => res.json(value)).catch(next);
+      const controller = new AbortController();
+      res.once("close", () => controller.abort());
+      void trackOperation(service.providerUsageHistory(pathParam(req.params.id), query, controller.signal), activeOperations).then(value => res.json(value)).catch(next);
     } catch (error) { next(error); }
   });
   app.delete("/api/v1/agents/:id/provider-usage/history", (req, res, next) => {

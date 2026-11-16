@@ -2217,12 +2217,12 @@ export class WebService {
     return this.store.usageAnalytics(sourceId, query, signal);
   }
 
-  async providerUsageHistory(sourceId: string, query: ProviderUsageHistoryQuery) {
+  async providerUsageHistory(sourceId: string, query: ProviderUsageHistoryQuery, signal?: AbortSignal) {
     if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     const connection = this.connections.get(sourceId);
     if (!connection) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
     if (!connection.info.supportsProviderUsageHistory) throw new WebConsoleError("provider_usage_history_unavailable", "This agent version does not expose quota history.", 409);
-    const history = await connection.client.providerUsageHistory(query, AbortSignal.timeout(15_000));
+    const history = await connection.client.providerUsageHistory(query, signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000));
     if (this.connections.get(sourceId)?.generation !== connection.generation || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
     return history;
   }

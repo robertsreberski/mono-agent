@@ -3217,6 +3217,7 @@ export class WebStore {
     catch { throw new WebConsoleError("invalid_usage_range", "Choose a valid usage range and time zone.", 400); }
     const computedAt = this.now(), deadline = performance.now() + 15_000;
     signal?.throwIfAborted();
+    // Redirects migrate every message and delete the source thread; aliases are not another ledger.
     // Include non-assistant rows only for the exact historical project-summary basis.
     const rows = this.database.prepare(`WITH candidate AS MATERIALIZED (
       SELECT m.id FROM threads t JOIN messages m ON m.thread_id=t.id

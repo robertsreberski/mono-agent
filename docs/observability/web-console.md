@@ -604,7 +604,8 @@ its first retained evidence in that range. Unknown prices are not free work.
 bounds, `bucket=hour|day` and optional IANA `timeZone` (UTC default). The browser
 sends its viewer zone. Hour boundaries stay UTC and labels are local; day
 boundaries are actual viewer-local midnights, including 23/25-hour DST days. The
-response echoes the effective boundary zone. Totals are independent of bucket
+response echoes the effective boundary zone; partial first/last bucket bounds
+are clamped to the requested range. Totals are independent of bucket
 width/timezone for the same retained message scope. Time attribution is the
 containing message's creation instant, including cumulative long-running job
 observations, not a reconstructed per-request or job-lifetime clock.

@@ -35,7 +35,12 @@ function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, 
 function contributions(rows: readonly UsageAnalyticsMessage[]): Array<{ at: string; rollup: MessageUsageRollup }> {
   const output: Array<{ at: string; rollup: MessageUsageRollup }> = rows.map(row => {
     const { upkeepAccounting: _accounting, upkeepPartial: _partial, ...rollup } = row.rollup;
-    return { at: row.at, rollup };
+    // main MUST be inference-only here: upkeep is merged and bucketed separately below.
+    // Preserve the status-only pending marker used by the canonical aggregate.
+    const main = rollup.inference === undefined ? rollup.main : {
+      ...rollup.inference, ...(rollup.main.pending ? { pending: true as const } : {}),
+    };
+    return { at: row.at, rollup: { ...rollup, main } };
   });
   const upkeep = upkeepUsageRollup(rows.flatMap(row => row.rollup.upkeepAccounting ?? []), rows.some(row => row.rollup.upkeepPartial));
   const anchors = new Map<string, string>();
@@ -60,7 +65,8 @@ export function aggregateUsageAnalytics(sourceId: string, input: WebUsageAnalyti
   let cursor = Date.parse(range.from);
   while (cursor < Date.parse(range.to)) {
     const bounds = usageHistoryBucket(cursor, range);
-    buckets.set(bounds.start, { start: new Date(bounds.start).toISOString(), end: new Date(bounds.end).toISOString(), totals: [], models: new Map() });
+    buckets.set(bounds.start, { start: new Date(Math.max(bounds.start, Date.parse(range.from))).toISOString(),
+      end: new Date(Math.min(bounds.end, Date.parse(range.to))).toISOString(), totals: [], models: new Map() });
     cursor = bounds.end;
   }
   const threadUsage = new Map<string, WebUsageSlice>();

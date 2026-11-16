@@ -36,6 +36,29 @@ describe("console analytics routes", () => {
       expect(snapshot).not.toHaveBeenCalled();
     } finally { await server.stop(); await operator.stop(); }
   });
+  it("cancels the operator history request when the browser closes the response", async () => {
+    const path = await root(); let started!: () => void, forwarded: AbortSignal | undefined;
+    const began = new Promise<void>(resolve => { started = resolve; });
+    const server = await startWebServer({ host: "127.0.0.1", port: 0, voice: false,
+      stateDir: join(path, "web"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
+      discoverImpl: async () => [fakeDiscoveredAgent()], fetchImpl: async (url, init) => {
+        if (String(url).includes("/provider-usage/history")) {
+          forwarded = init?.signal ?? undefined; started();
+          return new Promise<Response>((_resolve, reject) => forwarded!.addEventListener("abort", () => reject(forwarded!.reason), { once: true }));
+        }
+        return Response.json({ schema: 1, capabilities: { providerUsage: { version: 1, history: { version: 1 } } } });
+      },
+    });
+    try {
+      const controller = new AbortController();
+      const pending = fetch(`${server.url}api/v1/agents/agent-one/provider-usage/history?${new URLSearchParams(range)}`, {
+        signal: controller.signal, headers: { Origin: new URL(server.url).origin },
+      });
+      await began; controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      await vi.waitFor(() => expect(forwarded?.aborted).toBe(true));
+    } finally { await server.stop(); }
+  });
   it("keeps local analytics available for an old agent while rejecting unsupported history", async () => {
     const path = await root();
     const service = await WebService.create({ stateDir: join(path, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [fakeDiscoveredAgent()], fetchImpl: async () => Response.json({ schema: 1 }) });

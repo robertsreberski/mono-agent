@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep the reported token model on cost-only follow-ups without changing
+  conversation/project costs or repricing recorded usage.
+
 - Add responsive console usage analytics with quota history, token/cost charts,
   accessible tables and top conversations/projects. Keep child accounting
   inclusive and day buckets timezone-aware.
