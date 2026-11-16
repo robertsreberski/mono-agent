@@ -36,6 +36,8 @@ export {
   renderSkillIndexSection,
 } from "./context/skill-index.js";
 export type { BuiltAgentContext, HistoryMessage, SkillIndexEntry, SkillIndexSummary } from "./context/types.js";
+export type { HistoryToolAvailability, UnifiedHistoryAvailability } from "./tool-history/projection.js";
+export type { NestedHistoryOptions } from "./tool-history/nested-history.js";
 export { loadSelectedSkills } from "./skills/skills.js";
 export { createSkillsCache } from "./skills/skills-cache.js";
 export {

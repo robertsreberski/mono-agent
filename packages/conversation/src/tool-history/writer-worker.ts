@@ -518,7 +518,8 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
       );
       return { persistence: "failed", errorCode: "history_idempotency_conflict" };
     }
-    const bounded = binding.continuityEnabled === true && isNestedHistoryTool(String(call.tool_name))
+    const bounded = binding.continuityEnabled === true && isNestedHistoryTool(String(call.tool_name),
+      binding.unifiedHistory === true ? { unifiedHistory: true } : undefined)
       ? { ...boundedToolHistoryPayload({ omitted: NESTED_HISTORY_OMISSION }, TOOL_HISTORY_RESULT_MAX_BYTES), originalBytes: original.originalBytes, truncated: true }
       : original;
     const existing = database.prepare(`

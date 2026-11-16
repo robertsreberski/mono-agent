@@ -131,6 +131,7 @@ export function loadToolHistoryProjection(
         conversationId,
         turnId,
         representedContinuityToolRecordIds(history),
+        options.toolHistory.unifiedHistory === true,
       );
     } catch (error) {
       onReadError?.();

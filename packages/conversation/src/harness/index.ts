@@ -609,7 +609,8 @@ export class ConversationHarnessImpl implements ConversationHarness {
     const continuationIsolated = request.continuation !== undefined;
     const isolated = proactiveIsolated || continuationIsolated;
     const mailboxEligible = !isolated;
-    const turnContinuityCollector = new UncommittedTurnCollector(this.options.toolHistory?.continuityEnabled === true);
+    const turnContinuityCollector = new UncommittedTurnCollector(this.options.toolHistory?.continuityEnabled === true,
+      this.options.toolHistory?.unifiedHistory === true);
     let liveInputMailbox: LiveInputMailbox | undefined;
     let liveInputCloseReason: "closed" | "failed" = "failed";
     let toolHistoryStatus: "succeeded" | "failed" | "cancelled" = "failed";

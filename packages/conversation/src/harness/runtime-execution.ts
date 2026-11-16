@@ -572,7 +572,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           const replayedHistory = hasCanonicalReplay ? continuityHistory : [];
           const rendered = routing.continuityPack!.render(replayedHistory, budget.maxTokens,
             budget.reason === "detached_context" ? budget.reason : routing.boundaryReason ?? budget.reason, emitRuntimeEvent,
-            ids => { toolIds = ids; }, availability.conversationHistory);
+            ids => { toolIds = ids; }, availability.conversationHistory, availability.history);
           const messages = rendered.messages;
           // Per-call metadata stays with these exact messages, never read from
           // the supplier's shared last-rendered accessor across attempts.
