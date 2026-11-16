@@ -74,3 +74,6 @@
   .usage-chart text { font-size: 20px; }
   .usage-actions button { min-height: 40px; }
 }
+/* Keep labels readable when numeric columns overflow into the scoped scroller. */
+.usage-content table th:first-child { min-width: 130px; }
+.usage-content table thead th { white-space: nowrap; }
