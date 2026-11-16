@@ -31,7 +31,10 @@ export interface AgentResponder<
   /**
    * Compact the exact idle conversation without submitting a user turn.
    * `model` is the same per-conversation model selection a turn would carry;
-   * omitted means the host default.
+   * omitted means the host default. Admission errors (for example busy or
+   * unsupported) may reject. Expected failures of accepted operations resolve
+   * to typed outcomes, including status "failed" / reason "cancelled". Callers
+   * must inspect status rather than treating every resolution as success.
    */
   compactConversation?(conversationId: string, options?: AgentManualCompactionOptions, signal?: AbortSignal): Promise<AgentManualCompactionResult>;
   /**

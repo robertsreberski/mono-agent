@@ -24,7 +24,7 @@ it("manual compactConversation on a real v5 conversation fails guarded dispatch 
   const harness = createConversationHarness({ identityPath, runtime, model: { provider: "faux", model: "B", reference: "faux:B" }, historyStore: f.store,
     sessionsRoot: join(f.base, "native"), session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true }, runtimeOptions: { allowedTools: [], disallowedTools: [] } });
   try {
-    await expect(harness.compactConversation!(bucket)).rejects.toMatchObject({ failureKind: "compaction_failed" });
+    await expect(harness.compactConversation!(bucket)).resolves.toMatchObject({ status: "failed", trigger: "manual", reason: "provider_error" });
     expect(execution).toHaveBeenCalledTimes(1); expect(transport).not.toHaveBeenCalled();
     expect(invalidation).not.toHaveBeenCalled(); expect(retirement).not.toHaveBeenCalled();
     // Only the owned C transaction may replace the current journal; one current journal remains.

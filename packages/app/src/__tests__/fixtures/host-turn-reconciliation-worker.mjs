@@ -148,11 +148,12 @@ process.once("message", async ({ mode, crash }) => {
     }
     if (mode === "produce" && (crash === "manual-start" || crash === "manual-cancelled")) {
       faux.setResponses([fauxAssistantMessage([fauxText("Fictional checkpoint summary.")])]);
-      try { await harness.compactConversation(bucket, undefined, manualAbort.signal); }
-      catch (error) { if (crash !== "manual-cancelled" || error.failureKind !== "compaction_failed") throw error; }
+      const compaction = await harness.compactConversation(bucket, undefined, manualAbort.signal);
       if (crash === "manual-cancelled") {
+        if (compaction.status !== "failed" || compaction.reason !== "cancelled") throw new Error("Fixture requires a typed cancelled compaction outcome.");
         process.send({ phase: crash, counter: await counter() }); await new Promise(() => { setInterval(() => {}, 1_000); });
       }
+      if (compaction.status === "failed") throw new Error("Fixture requires a successful or skipped compaction outcome.");
     }
     await harness.dispose(); harness = undefined;
     process.send({ record: await readRecord(), counter: await counter(), context, runtimeCalls, nativeInspections,

@@ -375,9 +375,9 @@ describe("ConversationHarness manual compaction", () => {
       const sessionId = fake.calls[0]?.options.sessionId as string;
       const before = await historyStore.load("manual");
       failNextCommit.armed = failure === "commit";
-      const error = await harness.compactConversation!("manual").catch((caught: unknown) => caught);
-      expect(error).toMatchObject({ status: "failed", reason: failure === "sync" ? "session_unavailable" : failure === "commit" ? "commit_failed" : "internal_error" });
-      expect(JSON.stringify(error)).not.toContain("PRIVATE");
+      const outcome = await harness.compactConversation!("manual");
+      expect(outcome).toMatchObject({ status: "failed", reason: failure === "sync" ? "session_unavailable" : failure === "commit" ? "commit_failed" : "internal_error" });
+      expect(JSON.stringify(outcome)).not.toContain("PRIVATE");
       expect(fake.invalidatedSessions).toContain(sessionId);
       expect(await historyStore.load("manual")).toEqual(before);
       await harness.run(request("manual", "next"));
@@ -466,11 +466,11 @@ describe("ConversationHarness manual compaction", () => {
     await harness.run(request("manual", "first"));
     const sessionId = fake.calls[0]?.options.sessionId as string;
     const before = await historyStore.load("manual");
-    const pending = harness.compactConversation!("manual").catch((error: unknown) => error);
+    const pending = expect(harness.compactConversation!("manual")).resolves.toMatchObject({ status: "failed", reason: "cancelled" });
     await vi.waitFor(() => { expect(fake.calls).toHaveLength(2); });
     await harness.dispose!();
     expect(seenSignal?.aborted).toBe(true);
-    expect(await pending).toMatchObject({ status: "failed", reason: "cancelled" });
+    await pending;
     expect(fake.invalidatedSessions).toContain(sessionId);
     expect(await historyStore.load("manual")).toEqual(before);
     const next = makeHarness();

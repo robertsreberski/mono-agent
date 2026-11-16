@@ -80,6 +80,7 @@ export interface ConversationHarnessResponse {
 }
 
 export interface ConversationHarness {
+  /** Admission can reject; accepted operations resolve typed failed/cancelled outcomes. */
   compactConversation?(
     conversationId: string,
     options?: import("@mono-agent/contracts").AgentManualCompactionOptions,

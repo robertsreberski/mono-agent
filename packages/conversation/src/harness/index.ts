@@ -212,6 +212,9 @@ export class ConversationHarnessImpl implements ConversationHarness {
    * durable session through the runtime's guarded driver without a user
    * prompt. Canonical host history stays full; only the provider revision
    * advances (synced) or the epoch rotates fail-closed (unsynced/failed).
+   * Precondition rejections precede the local operation lease. Once accepted,
+   * failures/cancellation resolve a typed outcome after ownership cleanup;
+   * resolution does not imply provider dispatch or successful compaction.
    */
   async compactConversation(
     conversationId: string,
