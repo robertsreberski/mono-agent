@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.27.1 — Pi 1.5.2 (2026-11-16)
+
+- 0.27.1 supersedes 0.27.0, which was staged on npm but never promoted to
+  `latest`. It contains everything in the 0.27.0 section of `CHANGELOG.md`
+  plus the Pi 1.5.2 upgrade below. The long-conversation continuity validation
+  (62/62) ran on the 0.27.0 code. Continuity defaults are unchanged, but Pi
+  1.5.2's larger default context windows (500K for Codex GPT-6.1 Sol/Terra)
+  move when compaction happens, and that has not been re-validated end to end.
+
 - Require re-sizing and re-registering catalog-bound continuity E2 runs after
   upgrading to Pi 1.5.2. Sol's 500K window raises each conservative reservation
   from `3920000000` to `8840000000` units, reducing reservation/retry concurrency
