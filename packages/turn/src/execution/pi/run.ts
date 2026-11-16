@@ -1,3 +1,4 @@
+import { manualCompactionDiagnostic } from "@mono-agent/contracts";
 type CredentialInputs = { apiKeys: Map<string, string> | undefined; resolvePiApiKey: PiApiKeyResolver | undefined; runtimeWarnings: PiWarning[] };
 import type { Models, Model, Api } from "@earendil-works/pi-ai";
 import type { PiOptions, PiRunState, PiRuntime, PiPreparedControl, PiWarning, PiEventSink, PiMcpClient, PiTranscript } from "./types.js";
@@ -378,6 +379,10 @@ async function executePiNativeResponse(systemPrompt: string, options: PiOptions 
       const event = compactionCostEvent(result);
       options.onEvent?.(event);
       result.events = [...(result.events || []), event];
+    }
+    if (options.manualCompaction && !result.manualCompaction) {
+      result.manualCompaction = { status: "failed", trigger: "manual", operationId: randomUUID(),
+        reason: result.cancelled || options.abortSignal?.aborted ? "cancelled" : "provider_error" };
     }
     return { ...result, dispatchProgress: Object.freeze({ ...dispatchProgress }) };
   } catch (error) {
@@ -904,7 +909,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
         runState.removeAbortHandler = () => options.abortSignal!.removeEventListener?.("abort", abortManual);
         if (options.abortSignal.aborted) throw new Error("Manual compaction was cancelled.");
       }
-      let terminal: { status: string; operationId: string; reason?: string; tokensBefore?: number; tokensAfter?: number; tokenCountsExact?: boolean } | undefined = tooSmall
+      let terminal: { status: string; operationId: string; reason?: string; httpStatus?: number; tokensBefore?: number; tokensAfter?: number; tokenCountsExact?: boolean } | undefined = tooSmall
         ? { status: "skipped", operationId: randomUUID(), reason: "nothing_to_compact" }
         : undefined;
       const attempt = tooSmall ? undefined : await tryCompact(harness, {
@@ -923,9 +928,20 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
         session: runState.session,
         policy,
       });
-      if (!terminal || !["succeeded", "skipped"].includes(terminal.status) || options.abortSignal?.aborted
-        || (terminal.status === "succeeded" && attempt?.applied !== true)) {
-        throw new Error("Manual compaction failed or was cancelled.");
+      const cancelled = options.abortSignal?.aborted === true || terminal?.reason === "cancelled";
+      const failed = !terminal || !["succeeded", "skipped"].includes(terminal.status) || cancelled
+        || (terminal.status === "succeeded" && attempt?.applied !== true);
+      if (failed) {
+        const diagnostic = manualCompactionDiagnostic(cancelled ? { reason: "cancelled" } : terminal);
+        const failureKind = diagnostic.reason === "provider_error" ? "provider_error" : `compaction_${diagnostic.reason}`;
+        await harness.endTurn(cancelled ? "aborted" : "failed", {
+          text: "", error: `Manual compaction: ${diagnostic.reason}`, failureKind,
+          cancelled, stopReason: "compaction",
+        });
+        await commitSession(runState, { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs,
+          externalAbort: cancelled, errorMessage: `Manual compaction: ${diagnostic.reason}`, onEvent });
+        return { providerSessionId, failureKind, cancelled, error: `Manual compaction: ${diagnostic.reason}`,
+          manualCompaction: { status: "failed", trigger: "manual", operationId: terminal?.operationId ?? randomUUID(), ...diagnostic } };
       }
       // compact() closes a declined operation as failed, even for a benign
       // no-op. Preserve the public skipped result, but seal native evidence
@@ -944,12 +960,12 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
       });
       return {
         manualCompaction: {
-          status: terminal.status,
-          operationId: terminal.operationId,
-          ...(terminal.reason ? { reason: terminal.reason } : {}),
-          ...(terminal.tokensBefore === undefined ? {} : { tokensBefore: terminal.tokensBefore }),
-          ...(terminal.tokensAfter === undefined ? {} : { tokensAfter: terminal.tokensAfter }),
-          tokenCountsExact: terminal.tokenCountsExact === true,
+          status: terminal!.status,
+          operationId: terminal!.operationId,
+          ...(terminal!.reason ? manualCompactionDiagnostic(terminal) : {}),
+          ...(terminal!.tokensBefore === undefined ? {} : { tokensBefore: terminal!.tokensBefore }),
+          ...(terminal!.tokensAfter === undefined ? {} : { tokensAfter: terminal!.tokensAfter }),
+          tokenCountsExact: terminal!.tokenCountsExact === true,
         },
         providerSessionId,
       };

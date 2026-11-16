@@ -1,3 +1,4 @@
+import { compactionReasonLabels } from "./manual-compaction";
 import type { ConversationMarkerPart } from "./types";
 
 /** Validate marker payloads at storage/cache boundaries. */
@@ -23,7 +24,8 @@ export function isConversationMarker(value: unknown): value is ConversationMarke
     && (part.status === "succeeded" || part.status === "skipped" || part.status === "failed")
     && count(part.tokensBefore) && count(part.tokensAfter)
     && (part.tokenCountsExact === undefined || typeof part.tokenCountsExact === "boolean")
-    && (part.reason === undefined || part.reason === "model_changed" || part.reason === "nothing_to_compact" || (part.status === "failed" && part.reason === "outcome_unknown"));
+    && (part.reason === undefined || (typeof part.reason === "string" && Object.hasOwn(compactionReasonLabels, part.reason)))
+    && (part.httpStatus === undefined || (typeof part.httpStatus === "number" && Number.isInteger(part.httpStatus) && part.httpStatus >= 400 && part.httpStatus <= 599));
   return part.type === "conversation-marker" && date(part.at) && (
     part.kind === "compaction" ? compaction()
       : part.kind === "model" ? route(part.before) && route(part.after)

@@ -2332,10 +2332,11 @@ describe("WebStore", () => {
     expect(id).toBe(turn.assistantMessageId);
     expect(store.getThreadDetail(thread.id)?.messages.find((m) => m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction" && m.parts[0].operationId === "no-answer")?.parts[0]).toMatchObject({ reason: "nothing_to_compact" });
     store.recordManualCompaction(thread.id, { status: "succeeded", trigger: "manual", operationId: "c1", tokensBefore: 50_000, tokensAfter: 10_000 });
-    store.recordManualCompaction(thread.id, { status: "failed", trigger: "manual", operationId: "unknown-reason", reason: "synthetic-provider-detail" });
+    store.recordManualCompaction(thread.id, { status: "failed", trigger: "manual", operationId: "unknown-reason", reason: "synthetic-provider-detail" as never });
     const markers = store.getThreadDetail(thread.id)?.messages.filter((m) => m.role === "system" && m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction");
     expect(markers).toHaveLength(3);
-    expect(markers?.find((m) => m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction" && m.parts[0].operationId === "unknown-reason")?.parts[0]).not.toHaveProperty("reason");
+    expect(markers?.find((m) => m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction" && m.parts[0].operationId === "unknown-reason")?.parts[0]).toMatchObject({ reason: "provider_error" });
+    expect(JSON.stringify(store.getThreadDetail(thread.id))).not.toContain("synthetic-provider-detail");
     const next = store.beginTurn({ threadId: thread.id, text: "follow up", attachmentIds: [] });
     expect(store.conversationMarkersForTurn(next.turnId)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "compaction", operationId: "c1" })]));
     expect(JSON.stringify(store.getThreadDetail(thread.id)?.messages.find((m) => m.id === id)?.parts)).toContain('"status":"succeeded"');

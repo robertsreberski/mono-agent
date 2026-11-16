@@ -362,3 +362,6 @@ export type { ForwardedUpkeepAccounting } from "./upkeep-accounting.js";
 
 export type { GuardedSettingsJsonWrite, SettingsJsonBackup, SettingsJsonBackupRead } from "./guarded-json-source.js";
 export { readSettingsJsonBackup, restoreGuardedSettingsJson } from "./guarded-json-source.js";
+
+export { manualCompactionReasons, isManualCompactionReason, manualCompactionDiagnostic } from "./manual-compaction.js";
+export type { AgentManualCompactionReason, AgentManualCompactionDiagnostic } from "./manual-compaction.js";

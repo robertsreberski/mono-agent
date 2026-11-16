@@ -1,3 +1,4 @@
+import { manualCompactionDiagnostic } from "@mono-agent/contracts";
 import { PDF_LIMITS, pdfTooLarge } from "./pdf-model.js";
 import { browserCostWire, normalizeBrowserCosts, costAmount, knownCostAmount } from "./cost-wire.js";
 import type { ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
@@ -1035,7 +1036,7 @@ export class WebStore {
   }
 
   /** A lost response has no trustworthy agent telemetry; persist only the timeline row. */
-  recordManualCompactionFailure(threadId: string, reason?: "outcome_unknown"): void {
+  recordManualCompactionFailure(threadId: string, reason: import("@mono-agent/contracts").AgentManualCompactionReason = "provider_error"): void {
     this.transaction(() => {
       this.requireThread(threadId);
       this.insertCompactionMarker(threadId, this.now(), {
@@ -1046,6 +1047,15 @@ export class WebStore {
 
   /** Persist a promptless compaction notice on this thread's last settled answer. */
   recordManualCompaction(threadId: string, result: import("@mono-agent/contracts").AgentManualCompactionResult): string | undefined {
+    // Keep telemetry as content-free as the marker, even for older callers.
+    result = {
+      status: result.status, trigger: "manual", operationId: result.operationId,
+      ...(result.status !== "succeeded" && (result.reason !== undefined || result.status === "failed") ? manualCompactionDiagnostic(result) : {}),
+      ...(result.tokensBefore === undefined ? {} : { tokensBefore: result.tokensBefore }),
+      ...(result.tokensAfter === undefined ? {} : { tokensAfter: result.tokensAfter }),
+      ...(result.tokenCountsExact === undefined ? {} : { tokenCountsExact: result.tokenCountsExact }),
+      ...(result.accounting === undefined ? {} : { accounting: result.accounting }),
+    };
     return this.transaction(() => {
       this.requireThread(threadId);
       const row = this.database.prepare(`SELECT id, parts_json FROM messages
@@ -4074,8 +4084,8 @@ export class WebStore {
       ...(value.tokensBefore === undefined ? {} : { tokensBefore: value.tokensBefore }),
       ...(value.tokensAfter === undefined ? {} : { tokensAfter: value.tokensAfter }),
       ...(value.tokenCountsExact === undefined ? {} : { tokenCountsExact: value.tokenCountsExact }),
-      ...(value.status !== "succeeded" && (value.reason === "model_changed" || value.reason === "nothing_to_compact" || (value.status === "failed" && value.reason === "outcome_unknown"))
-        ? { reason: value.reason } : {}),
+      ...(value.status !== "succeeded" && (value.reason !== undefined || value.status === "failed")
+        ? manualCompactionDiagnostic(value) : {}),
     };
     if (!isConversationMarker(marker) || marker.kind !== "compaction") return; // Untrusted stream data never enters marker storage.
     const existing = this.database.prepare(`SELECT 1 FROM messages WHERE thread_id = ?

@@ -17,3 +17,15 @@ describe("persisted compaction marker divider", () => {
     expect(screen.getByRole("note", { name: "Context compaction outcome unknown · Response lost; it may have completed. · manual" })).toBeVisible();
   });
 });
+
+it.each([
+  ["provider_overloaded", "Provider overloaded (HTTP 529).", 529],
+  ["timeout", "Summary request timed out.", undefined],
+  ["cancelled", "Compaction was cancelled.", undefined],
+  ["busy", "Conversation is busy; try again when idle.", undefined],
+  ["context_too_large", "Conversation too large for the summary model.", undefined],
+] as const)("renders safe %s diagnostics", (reason, label, httpStatus) => {
+  render(<CompactionMarkerRow marker={{ type: "conversation-marker", kind: "compaction", at: "2026-01-15T10:00:00Z",
+    operationId: "fictional", status: "failed", trigger: "manual", reason, httpStatus }} />);
+  expect(screen.getByRole("note", { name: `Context compaction failed · ${label} · manual` })).toBeVisible();
+});

@@ -128,6 +128,17 @@ describe("startTuiAdapter", () => {
     expect(await response.json()).toMatchObject({ status: "failed", accounting });
   });
 
+  it.each(["provider_overloaded", "PRIVATE PROVIDER TEXT"])("allow-lists diagnostics from even an untrusted responder: %s", async (reason) => {
+    running = await startTuiAdapter({ responder: { respond: async () => ({ text: "unused" }),
+      compactConversation: async () => ({ status: "failed", trigger: "manual", operationId: "fictional",
+        reason: reason as "provider_overloaded", httpStatus: 529, detail: "PRIVATE PROVIDER TEXT" }) } });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/fictional/compact`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const body = await response.json();
+    expect(body).toMatchObject({ status: "failed", reason: reason === "provider_overloaded" ? reason : "provider_error", httpStatus: 529 });
+    expect(JSON.stringify(body)).not.toContain("PRIVATE PROVIDER TEXT");
+  });
+
   it("aborts the responder when the compaction HTTP client disconnects", async () => {
     let observed!: AbortSignal;
     let started!: () => void;
@@ -190,8 +201,9 @@ describe("startTuiAdapter", () => {
       const body = JSON.stringify(await failed.json());
       expect(body).toContain(code);
       expect(body).not.toContain("PRIVATE");
-      // Unexpected failures are diagnosable host-side only.
+      // Unexpected provider prose must not enter responses OR host logs.
       expect(logged).toHaveLength(status === 500 ? 1 : 0);
+      expect(JSON.stringify(logged)).not.toContain("PRIVATE");
       expect(warnings).toHaveLength(status === 501 ? 1 : 0);
       if (status === 501) expect(warnings).toEqual([
         ["TUI manual compaction unsupported.", { reason: "unknown" }],

@@ -795,7 +795,7 @@ describe("WebService", () => {
     }
   });
 
-  it.each(["timeout", "unreachable", "server", "invalid", "agent_failure"] as const)(
+  it.each(["timeout", "unreachable", "server", "invalid", "agent_failure", "busy"] as const)(
     "persists a %s compaction outcome after the running hint clears", async (failure) => {
       const fallback = operatorFetch();
       const service = await createService({ fetchImpl: (async (input, init) => {
@@ -807,6 +807,7 @@ describe("WebService", () => {
         if (failure === "timeout") throw new DOMException("expired", "TimeoutError");
         if (failure === "unreachable") throw new TypeError("unreachable");
         if (failure === "server") return Response.json({ error: { code: "internal_error" } }, { status: 503 });
+        if (failure === "busy") return Response.json({ error: { code: "compaction_busy", message: "Busy." } }, { status: 409 });
         if (failure === "agent_failure") return Response.json({ error: { code: "compaction_failed", message: "Context compaction failed." } }, { status: 500 });
         return Response.json({ malformed: true });
       }) as typeof fetch });
@@ -820,7 +821,7 @@ describe("WebService", () => {
         const marker = service.store.getThreadDetail(thread.id)?.messages.find((message) =>
           message.parts[0]?.type === "conversation-marker" && message.parts[0].kind === "compaction");
         expect(marker?.parts[0]).toMatchObject({ status: "failed", trigger: "manual",
-          ...(failure === "agent_failure" ? {} : { reason: "outcome_unknown" }) });
+          reason: failure === "agent_failure" ? "provider_error" : failure === "busy" ? "busy" : "outcome_unknown" });
         const next = service.store.beginTurn({ threadId: thread.id, text: "next", attachmentIds: [] });
         expect(service.store.conversationMarkersForTurn(next.turnId)).toEqual(expect.arrayContaining([
           expect.objectContaining({ kind: "compaction", status: "failed" }),
@@ -828,6 +829,25 @@ describe("WebService", () => {
       } finally { await service.stop(); }
     },
   );
+
+  it.each([
+    ["failed", "provider_overloaded", 529], ["failed", "timeout", undefined], ["failed", "cancelled", undefined],
+    ["skipped", "nothing_to_compact", undefined], ["skipped", "model_changed", undefined],
+  ] as const)("persists a typed %s/%s result without provider prose", async (status, reason, httpStatus) => {
+    const service = await createService({ fetchImpl: operatorFetch({ supportsManualCompaction: true,
+      onCompact: async () => ({ status, reason, httpStatus, trigger: "manual", operationId: "fictional-safe",
+        detail: "PRIVATE PROVIDER TEXT" }),
+    }) });
+    try {
+      await service.refreshAgents();
+      const thread = service.createThread("agent-one");
+      await expect(service.compactThread(thread.id)).resolves.toMatchObject({ status, reason });
+      const detail = service.store.getThreadDetail(thread.id);
+      const marker = detail?.messages.find(message => message.parts[0]?.type === "conversation-marker" && message.parts[0].kind === "compaction");
+      expect(marker?.parts[0]).toMatchObject({ status, reason, ...(httpStatus ? { httpStatus } : {}) });
+      expect(JSON.stringify(detail)).not.toContain("PRIVATE PROVIDER TEXT");
+    } finally { await service.stop(); }
+  });
 
   it("holds queued follow-ups and process-job wakes until compaction settles and sends the thread's model", async () => {
     let release!: () => void;

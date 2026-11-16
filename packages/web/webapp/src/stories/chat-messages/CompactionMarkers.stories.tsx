@@ -12,3 +12,7 @@ export const AutomaticSkipped: Story = { args: { marker: { ...noCounts, trigger:
 export const ManualFailed: Story = { args: { marker: { ...noCounts, status: "failed" } } };
 export const AutomaticFailed: Story = { args: { marker: { ...noCounts, trigger: "automatic", status: "failed" } } };
 export const ManualOutcomeUnknown: Story = { args: { marker: { ...noCounts, status: "failed", reason: "outcome_unknown" } } };
+
+export const ProviderOverloaded: Story = { args: { marker: { ...noCounts, status: "failed", reason: "provider_overloaded", httpStatus: 529 } } };
+export const ConversationTooLarge: Story = { args: { marker: { ...noCounts, status: "failed", reason: "context_too_large" } } };
+export const Cancelled: Story = { args: { marker: { ...noCounts, status: "failed", reason: "cancelled" } } };

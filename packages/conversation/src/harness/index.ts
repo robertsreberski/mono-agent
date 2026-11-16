@@ -1,3 +1,4 @@
+import { manualCompactionDiagnostic } from "@mono-agent/contracts";
 import { renderToolHistoryProjection } from "../tool-history/projection.js";
 import { withUpkeepAccounting } from "@mono-agent/observability";
 import { createContinuityPackSupplier } from "../continuity/pack.js";
@@ -269,6 +270,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
     let providerTurn: ConversationHistoryProviderSessionTurn | undefined;
     let prepared: PreparedHistoryAppend | undefined;
     let slotHeld = false;
+    let committing = false;
     let cleanupMode: "preserve" | "legacy-current" = "legacy-current";
     const retire = async (...handles: readonly ProviderSessionHandle[]): Promise<void> => {
       await retireRunResultSession(this.options, this.runtimeForSession, this.sessionStore,
@@ -338,8 +340,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
       // prompt in the session JSONL, the summary request uses Pi's own
       // summarization instructions, and manual mode never generates a reply.
       // A later turn supplies its real prompt as usual.
-      const endpoint = modelKey === sessionModelKey(this.options.model) && compactionOptions?.context1M === undefined
-        ? undefined : await this.options.runtimeOptionsForManualCompaction?.(modelKey, compactionOptions?.context1M);
+      const endpoint = await this.options.runtimeOptionsForManualCompaction?.(modelKey, compactionOptions?.context1M);
       if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
       const manualRuntimeOptions = mergeRuntimeOptions(this.options.runtimeOptions, endpoint);
       delete manualRuntimeOptions.onSessionTurnDetached;
@@ -388,20 +389,23 @@ export class ConversationHarnessImpl implements ConversationHarness {
       // the live handle: retire it before the durable record rotates the epoch.
       if (!synced && providerTurn.reconciliation === undefined) await retire({ providerSessionId: sessionId, modelKey });
       if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
+      committing = true;
       prepared = await providerTurn.prepareCommit([], { providerSessionSynced: synced });
       if (providerTurn.reconciliation !== undefined) synced = providerTurn.reconciliation.settlement?.nativeReusable === true;
       if (controller.signal.aborted) throw new ConversationHarnessError("compaction_failed", "Context compaction was cancelled.");
       await prepared.commit();
       providerTurn = undefined;
       if (!synced) {
-        if (outcome?.status === "failed" && outcome.accounting && isAgentCompactionAccounting(outcome.accounting)) return {
+        if (outcome?.status === "failed") return {
           status: "failed", trigger: "manual", operationId: outcome.operationId,
-          ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+          ...manualCompactionDiagnostic(outcome),
           ...(outcome.tokensBefore === undefined ? {} : { tokensBefore: outcome.tokensBefore }),
           ...(outcome.tokensAfter === undefined ? {} : { tokensAfter: outcome.tokensAfter }),
-          tokenCountsExact: outcome.tokenCountsExact === true, accounting: outcome.accounting,
+          tokenCountsExact: outcome.tokenCountsExact === true,
+          ...(isAgentCompactionAccounting(outcome.accounting) ? { accounting: outcome.accounting } : {}),
         };
-        throw new ConversationHarnessError("compaction_failed", "Context compaction failed; the session was retired safely.");
+        return { status: "failed", trigger: "manual", operationId: outcome?.operationId ?? randomUUID(),
+          reason: accepted ? "session_unavailable" : "internal_error" };
       }
       // prepareCommit(synced) publishes exactly revision + 1 (durable-history.ts),
       // matching the turn path's saveSession.
@@ -410,7 +414,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
         status: outcome!.status,
         trigger: "manual",
         operationId: outcome!.operationId,
-        ...(outcome!.reason === undefined ? {} : { reason: outcome!.reason }),
+        ...(outcome!.reason === undefined ? {} : manualCompactionDiagnostic(outcome)),
         ...(outcome!.tokensBefore === undefined ? {} : { tokensBefore: outcome!.tokensBefore }),
         ...(outcome!.tokensAfter === undefined ? {} : { tokensAfter: outcome!.tokensAfter }),
         tokenCountsExact: outcome!.tokenCountsExact === true,
@@ -429,9 +433,10 @@ export class ConversationHarnessImpl implements ConversationHarness {
         }
         if (providerTurn.reconciliation === undefined) await retire({ providerSessionId: providerTurn.providerSessionId, modelKey });
       }
-      throw error instanceof ConversationHarnessError && error.failureKind.startsWith("compaction_")
-        ? error
-        : new ConversationHarnessError("compaction_failed", "Context compaction failed; the conversation history is unchanged.");
+      return { status: "failed", trigger: "manual", operationId: randomUUID(),
+        reason: controller.signal.aborted ? "cancelled"
+          : error instanceof ConversationHarnessError && error.failureKind === "compaction_busy" ? "busy"
+            : committing ? "commit_failed" : "internal_error" };
     } finally {
       signal?.removeEventListener("abort", onExternalAbort);
       this.compactionControllers.delete(controller);

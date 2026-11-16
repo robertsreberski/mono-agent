@@ -1,3 +1,4 @@
+import { classifyCompactionFailure } from "./manual-failure.js";
 // Runtime-owned preparation around Pi's public compact(), never its cut rules.
 import { summaryRequestOptions } from "./summary-policy.js";
 import { estimateTokens } from "../../../engine/compaction-kit/compaction.js";
@@ -151,13 +152,14 @@ export function prepareSummaryRequest(model: any, context: any, options: any, ef
 }
 
 /** A narrow facade: only the summary context changes; model/options/rest keep identity. */
-export function summaryModels(models: any, { operationId, focus, evidence = "", requests, effort = "auto", minimumAnswerTokens, unprotected }: {
+export function summaryModels(models: any, { operationId, focus, evidence = "", requests, effort = "auto", minimumAnswerTokens, unprotected, timeoutMs }: {
     operationId: any;
     focus: any;
     evidence?: string;
     requests: any;
     effort?: string;
     minimumAnswerTokens?: number;
+    timeoutMs?: number;
     unprotected?: { preservation: { bypassReason?: string | null; protectedTupleCount?: number; protectionActive?: boolean }; targets: number[]; minimumAnswerTokens: number };
 }): any {
   return new Proxy(models, {
@@ -188,7 +190,7 @@ export function summaryModels(models: any, { operationId, focus, evidence = "", 
             throw new Error("Summary cannot fit a useful answer; provider was not invoked");
           }
           row.providerInvoked = true;
-          const response = await target.completeSimple(model, preparedContext, policy.options, ...rest);
+          const response = await target.completeSimple(model, preparedContext, timeoutMs === undefined ? policy.options : { ...policy.options, timeoutMs }, ...rest);
           for (const key of ["input", "cacheRead", "cacheWrite", "output"]) row[key as "input" | "cacheRead" | "cacheWrite" | "output" | "costUsd"] = finite(response?.usage?.[key]);
           row.costUsd = finite(response?.usage?.cost?.total);
           if (["error", "aborted"].includes(response?.stopReason) && ![row.input, row.output, row.cacheRead, row.cacheWrite, row.costUsd].some((value: any) => value! > 0)) {
@@ -198,7 +200,8 @@ export function summaryModels(models: any, { operationId, focus, evidence = "", 
           row.generatedSummaryTokens = text ? estimateTokens({ role: "user", content: text, timestamp: 0 }) : 0;
           if (response?.stopReason === "error" || response?.stopReason === "aborted") {
             row.reason = response.stopReason === "aborted" ? "aborted" : "provider_error";
-            return response; // Pi owns error/abort classification and any retry policy.
+            const diagnostic = classifyCompactionFailure(response.stopReason === "aborted" ? { code: "aborted" } : response);
+            return { ...response, errorMessage: `Compaction failure: ${diagnostic.reason}${diagnostic.httpStatus ? ` HTTP ${diagnostic.httpStatus}` : ""}` };
           }
           if (!response || response.stopReason === "length" || !text.trim() || response.stopReason !== "stop") {
             row.status = "rejected";
@@ -216,7 +219,8 @@ export function summaryModels(models: any, { operationId, focus, evidence = "", 
             row.costUsd = finite(error.usage.cost?.total) ?? row.costUsd;
           }
           // Provider exceptions may contain request text or credentials.
-          const failure = new Error(`Compaction summary request failed: ${row.reason}`);
+          const diagnostic = classifyCompactionFailure(row.reason === "request_failed" ? error : { message: row.reason });
+          const failure = new Error(`Compaction summary request failed: ${row.reason}; compaction failure: ${diagnostic.reason}${diagnostic.httpStatus ? ` HTTP ${diagnostic.httpStatus}` : ""}`);
           if (row.reason === "output_truncated" && error?.code === "protected_summary_truncated") Object.assign(failure, { code: error.code, usage: error.usage });
           throw failure;
         } finally {
