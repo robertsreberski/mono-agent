@@ -1628,6 +1628,20 @@
             }
           }
         },
+        "history": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "unified": {
+              "description": "Opt in to one read-only History tool with required said/tools/runs scope instead of the three legacy history tools. Default false; old tool names remain policy aliases for their scopes. Allowing History grants all scopes; denies win.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
         "conversationSearch": {
           "type": "object",
           "additionalProperties": false,

@@ -19,6 +19,8 @@ interface RequestScopedMcpEndpointOptions {
   /** A fresh server is required for every SDK-dispatched stateless HTTP request. */
   readonly createServer: (input: Parameters<RuntimeOptionsExtension>[0]) => McpServer;
   readonly onUnavailable?: (error: unknown) => void;
+  /** Frozen per-request policy aliases, shared with runtime advertising. */
+  readonly policyAliases?: Readonly<Record<string, readonly string[]>>;
   /** Optional code-only refusal before SDK input diagnostics; advertised schemas stay strict. */
   readonly toolCallError?: (tool: string, args: unknown) => string | undefined;
   /** Test seam for simulating loopback startup failure. */
@@ -40,7 +42,7 @@ export function createRequestScopedMcpRuntimeExtension(options: RequestScopedMcp
         ...(options.listen === undefined ? {} : { listen: options.listen }),
       });
       return {
-        runtimeOptions: { mcpServers: { [options.serverName]: appOwnedMcpServerSpec(options.serverName, { type: "http", url: endpoint.url }) } },
+        runtimeOptions: { mcpServers: { [options.serverName]: appOwnedMcpServerSpec(options.serverName, { type: "http", url: endpoint.url }, options.policyAliases) } },
         cleanup: endpoint.close,
       };
     } catch (error) {
@@ -70,8 +72,10 @@ export function requestScopedNestedResult(
   aliases: readonly string[],
   value: unknown,
   omission = REQUEST_SCOPED_MCP_NESTED_RESULT_OMISSION,
+  unifiedHistory = false,
 ): unknown {
-  return aliases.some((alias) => toolName === alias || toolName.endsWith(`__${alias}`))
+  return (unifiedHistory && (toolName === "History" || toolName === "mcp__mono-agent-history__History"))
+    || aliases.some((alias) => toolName === alias || toolName.endsWith(`__${alias}`))
     ? omission
     : value;
 }

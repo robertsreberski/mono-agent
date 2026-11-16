@@ -1,3 +1,6 @@
+import { createHistoryRuntimeExtension } from "../request-tools/history.js";
+import { HISTORY_SCOPE_ALIASES, HISTORY_SCOPES } from "../request-tools/history-policy.js";
+import { resolveHistoryScopes } from "../request-tools/history-policy.js";
 // Build the app dependency closure first; this suite exercises built dist bridges and the adapter child.
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -39,6 +42,7 @@ const input = (): ConversationHarnessRuntimeOptionsInput => ({ runId: "fictional
   conversationId: "web:fictional", userMessage: "Check fictional evidence.", abortSignal: new AbortController().signal,
 }, context: {} as never });
 const toolsByServer: Record<string, string[]> = {
+  "mono-agent-history": ["History"],
   [CONVERSATION_HISTORY_MCP_SERVER_NAME]: ["ConversationHistory"], [SESSION_HISTORY_MCP_SERVER_NAME]: ["SessionHistory"],
   [RUN_HISTORY_MCP_SERVER_NAME]: ["RunHistory"], [MEMORY_JOURNAL_MCP_SERVER_NAME]: ["MemoryJournal"], [MEMORY_REMEMBER_MCP_SERVER_NAME]: ["Remember"],
   [PROVIDER_USAGE_MCP_SERVER_NAME]: ["ProviderUsage"], [SET_CONVERSATION_TITLE_MCP_SERVER_NAME]: ["SetConversationTitle"],
@@ -48,6 +52,7 @@ const toolsByServer: Record<string, string[]> = {
   [ADAPTER_SEND_TOOLS_MCP_SERVER_NAME]: ["SlackSendMessage", "TelegramSendMessage", "TelegramSendFile", "AskUser"],
 };
 const predicates: Record<string, (policy: { allowedTools: string[]; disallowedTools: string[] }) => boolean> = {
+  History: policy => resolveHistoryScopes(policy).length > 0,
   ConversationHistory: isConversationHistoryToolAllowed, SessionHistory: isSessionHistoryToolAllowed, RunHistory: isRunHistoryToolAllowed,
   MemoryJournal: isMemoryJournalToolAllowed, Remember: isRememberToolAllowed, ProviderUsage: isProviderUsageToolAllowed,
   SetConversationTitle: isSetConversationTitleToolAllowed, SuggestReplies: isSuggestRepliesToolAllowed,
@@ -238,3 +243,18 @@ describe("configured request merge and actual model offers", () => {
     expect(historyToolAvailabilityForRuntime({ mcpServers: servers, allowedTools: ["ConversationHistory", "SessionHistory"] })).toEqual({ conversationHistory: true, sessionHistory: false });
   });
 });
+
+
+it("matches actual Pi offers to unified availability for every late deny spelling", async () => {
+  const f = await fixture();
+  const extension = await createHistoryRuntimeExtension({ historyRoot: join(f.root, "history"), artifactDir: f.config.artifacts.dir,
+    policy: { allowedTools: ["History"] }, capabilities: { said: true, tools: true, runs: true } })!(input());
+  cleanup.push(() => extension.cleanup?.());
+  const servers = extension.runtimeOptions!.mcpServers as Record<string, unknown>;
+  expect(await f.declarations(servers, ["History"])).toEqual(["History"]);
+  for (const deny of ["History", "mcp__mono-agent-history__History", "mcp__mono-agent-history__*", "*", ...HISTORY_SCOPES.flatMap(s => HISTORY_SCOPE_ALIASES[s])]) {
+    expect(await f.declarations(servers, ["History"], [deny]), deny).toEqual([]);
+    expect(historyToolAvailabilityForRuntime({ mcpServers: servers, allowedTools: ["History"], disallowedTools: [deny] }, true).history, deny)
+      .toEqual({ said: false, tools: false, runs: false });
+  }
+}, 30000);

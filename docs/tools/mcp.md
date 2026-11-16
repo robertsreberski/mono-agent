@@ -735,3 +735,33 @@ include `ProviderUsage`, `mcp__mono-agent-provider-usage__ProviderUsage`, or
 `mcp__mono-agent-provider-usage__*`. The same aliases and `*` work in
 `tools.disallowedTools`; deny wins. The request-scoped endpoint is removed at
 turn cleanup. No new config switch or external MCP declaration is needed.
+
+## Opt-in `History`: one scoped reader
+
+`tools.history.unified` defaults to false. Set it to true to register only
+`History` on the app-owned `mono-agent-history` MCP server. Do not add this
+request-scoped server to `mcp.json`. The three legacy history servers are not
+registered in this mode.
+
+`scope` is required. Use `said` for retained conversation search/get, `tools`
+for prior managed-tool lifecycle search/get, or `runs` for settled-run evidence.
+For `runs`, `search` without a query lists runs, `search` with a query searches,
+and `get` with `runId` inspects a run. Omitting `action` keeps the readers'
+shorthand behavior. `run_id` is not a unified argument. Other filters, limits,
+redaction, isolation checks, cursor binding and errors follow the legacy readers.
+Fields from another scope return `invalid_request`; missing or unavailable scopes
+return `invalid_scope` with the permitted scopes.
+
+Search, then get returned ids. Batch two useful records in a round and use
+8192-byte chunks; follow every returned navigation cursor. Previews are partial,
+and absence is not proof that something never happened. For interrupted work,
+start with `{ "scope": "runs" }`, inspect the candidate, then follow the exact
+`tools` handoff with `runIds` and `includeIsolated: true` when that scope is
+permitted. Do not add a terminal-state filter or broaden an empty run search.
+Reading evidence cannot resume provider state, replay tools or renew approval.
+
+[Unified history policy](/tools/policy/#opt-in-unified-history-policy) explains
+legacy-name grants and denies. MemoryRecall and MemoryJournal keep their own
+stores and tools; only their recovery routing text changes in unified mode.
+OpenAI-API and peer turns retain their authoritative request-policy boundary;
+subagent children do not inherit this new app-owned endpoint.

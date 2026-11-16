@@ -1,3 +1,4 @@
+import { createHistoryRuntimeExtension } from "../request-tools/history.js";
 import { DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
 import { effectiveSandboxBoundary } from "../service/sandbox/effective-sandbox.js";
 import { createSuggestRepliesService, isSuggestRepliesToolAllowed } from "../request-tools/suggest-replies.js";
@@ -279,7 +280,7 @@ export async function buildResponder(
   const replyArtifactsBase = isPublishReplyFileToolAllowed(coreConfig.tools)
     ? replyArtifacts.createExtension
     : undefined;
-  const runHistoryBase = isRunHistoryToolAllowed(coreConfig.tools)
+  const runHistoryBase = coreConfig.tools.history?.unified !== true && isRunHistoryToolAllowed(coreConfig.tools)
     && historyToolSupport.runHistory
     ? createRunHistoryRuntimeExtension({
         artifactDir: coreConfig.artifacts.dir,
@@ -293,7 +294,7 @@ export async function buildResponder(
         },
       })
     : undefined;
-  const sessionHistoryBase = isSessionHistoryToolAllowed(coreConfig.tools)
+  const sessionHistoryBase = coreConfig.tools.history?.unified !== true && isSessionHistoryToolAllowed(coreConfig.tools)
     && historyToolSupport.sessionHistory
     ? createSessionHistoryRuntimeExtension({
         historyRoot: resolve(coreConfig.artifacts.dir, "..", "history"),
@@ -307,13 +308,20 @@ export async function buildResponder(
         },
       })
     : undefined;
-  const conversationHistoryExtension = coreConfig.runtime.session.continuity?.enabled !== false
+  const conversationHistoryExtension = coreConfig.tools.history?.unified !== true && coreConfig.runtime.session.continuity?.enabled !== false
     && isConversationHistoryToolAllowed(coreConfig.tools) && historyToolSupport.conversationHistory
     ? createConversationHistoryRuntimeExtension({
       historyRoot: resolve(coreConfig.artifacts.dir, "..", "history"),
       rollover: sessionRollover ?? coreConfig.runtime.session.rollover ?? "none",
       onUnavailable: () => controller.logger?.warn?.("ConversationHistory tool endpoint could not start; retained evidence is unavailable this run."),
     }) : undefined;
+  const historyExtension = coreConfig.tools.history?.unified !== true ? undefined : createHistoryRuntimeExtension({
+    historyRoot: resolve(coreConfig.artifacts.dir, "..", "history"), artifactDir: coreConfig.artifacts.dir, policy: coreConfig.tools,
+    rollover: sessionRollover ?? coreConfig.runtime.session.rollover ?? "none",
+    capabilities: { said: coreConfig.runtime.session.continuity?.enabled !== false && historyToolSupport.conversationHistory,
+      tools: historyToolSupport.sessionHistory, runs: historyToolSupport.runHistory },
+    onUnavailable: () => controller.logger?.warn?.("History endpoint could not start; retained evidence is unavailable this run."),
+  });
   // Always active: a no-op for interactive turns (which carry no cron/webhook
   // metadata), it applies the per-trigger model/effort override otherwise.
   const requestModelOverride = controller.requestModelOverrideRuntimeOptions(modelBoundaryConfig);
@@ -431,6 +439,7 @@ export async function buildResponder(
     onSessionEvent: (event) => controller.recordSessionEvent(event, coreConfig),
   }, {
     conversationHistoryExtension: conversationHistoryExtension ?? null,
+    historyExtension: historyExtension ?? null,
     processJobs: {
       registry: processJobsRegistry,
       service: controller.processJobsService,

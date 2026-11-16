@@ -258,3 +258,30 @@ under allow-all; restrictive policies can allow the bare name or
 `mcp__mono-agent-provider-usage__ProviderUsage` / `mcp__mono-agent-provider-usage__*`.
 Deny always wins. See [subscription quota tool](/tools/mcp/#providerusage-subscription-quota)
 for optional provider filtering, omissions and stale/error semantics.
+
+## Opt-in unified history policy
+
+Set `tools.history.unified: true` to offer one read-only `History` tool instead
+of `ConversationHistory`, `SessionHistory` and `RunHistory`. The default is false.
+`scope` is required: `said` reads retained conversation text, `tools` reads exact
+prior tool calls/results, and `runs` reads settled prior runs. The readers and
+storage are unchanged. `said` also requires continuity capture to be enabled;
+`tools` and `runs` work independently of continuity.
+
+Allowing `History` grants all three scopes. Old names remain permanent policy
+aliases: `ConversationHistory` grants `said`, `SessionHistory` grants `tools`,
+and `RunHistory` grants `runs`. Their snake_case, exact MCP and server-wildcard
+spellings retain the same mapping. A config deny of an old name removes only
+that scope. Denying `History`, its MCP spelling, its server wildcard, or `*`
+removes the whole tool. For example, allow `History` and deny `SessionHistory`
+to offer only `said` and `runs`. No legacy tools are offered alongside `History`.
+
+Each request freezes its permitted aliases. A later request-level deny matching
+any frozen alias hides the whole tool, failing closed; packs and projections
+stop advertising it too. Authoritative request policy overrides do not preserve
+the history server. External MCP tools and subagent children keep their existing
+policy and composition boundaries.
+
+This is opt-in until the separate unified E2 gate passes and the default flip
+is approved. The legacy tools are scheduled for removal two releases after
+that flip; old-name policy aliases remain.

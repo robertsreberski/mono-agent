@@ -40,6 +40,7 @@ export function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigV
         value: tools.filesystem?.writableRoots.join(", ") ?? "none",
         jsonPresent: json.tools?.filesystem?.writableRoots !== undefined,
       }),
+      toField({ id: "tools.history.unified", label: "Unified history tool", value: String(tools.history?.unified ?? false), jsonPresent: json.tools?.history?.unified !== undefined, }),
       ...(tools.conversationSearch === undefined ? [] : [toField({
         id: "tools.conversationSearch.datedSnippets",
         label: "Dated conversation evidence",

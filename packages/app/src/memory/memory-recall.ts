@@ -1,3 +1,4 @@
+import { historyRoutingText } from "./history-routing.js";
 import type { MemoryRecallHit, MemoryRecallOutcome, RecallCapableStore } from "./recall-contract.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
@@ -181,10 +182,10 @@ export async function createMemoryEmbeddingProvider(
 }
 
 /** Register the single read-only `MemoryRecall` tool against a structurally compatible store. */
-export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
+export function createMemoryRecallServer(store: RecallCapableStore, options: { readonly unifiedHistory?: boolean } = {}): McpServer {
   const server = new McpServer({ name: "agent-memory", version: "0.3.0" });
   const supportsOriginalQuery = store.recallOriginalWithOutcome !== undefined;
-  const baseDescription = "Read-only hybrid (keyword + semantic) targeted search over intentionally captured durable preferences, facts, decisions, and qualified archived history. For a broad retrospective over an explicit period, use MemoryJournal when available; its curated chronology is distinct from targeted search and exact execution evidence. For a request to pick up, continue, or recover interrupted work, do not search MemoryRecall: call RunHistory with {} first when that tool is available, because exact prior-run evidence does not belong to durable memory. Use one short, specific topic per query; call several times for several topics instead of sending a keyword list. Omit the owner's name unless asking about the owner specifically. Weak or merely related hits are not answers. Do not use MemoryRecall for unqualified questions about what you or the user just said or sent in the current or last message; use active conversation history for those questions, or ConversationHistory when the relevant quotation or tool text has left active context.";
+  const baseDescription = historyRoutingText("Read-only hybrid (keyword + semantic) targeted search over intentionally captured durable preferences, facts, decisions, and qualified archived history. For a broad retrospective over an explicit period, use MemoryJournal when available; its curated chronology is distinct from targeted search and exact execution evidence. For a request to pick up, continue, or recover interrupted work, do not search MemoryRecall: call RunHistory with {} first when that tool is available, because exact prior-run evidence does not belong to durable memory. Use one short, specific topic per query; call several times for several topics instead of sending a keyword list. Omit the owner's name unless asking about the owner specifically. Weak or merely related hits are not answers. Do not use MemoryRecall for unqualified questions about what you or the user just said or sent in the current or last message; use active conversation history for those questions, or ConversationHistory when the relevant quotation or tool text has left active context.", options.unifiedHistory);
   const description = supportsOriginalQuery
     ? `${baseDescription} When a rephrased targeted search loses relevant candidates, use original-query mode deliberately to inspect the current logical turn's unchanged automatic lookup question; this does not broaden automatic memory injection.`
     : baseDescription;
@@ -323,7 +324,7 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     };
     const degraded = degradation?.code === "embedding_unavailable";
     if (hits.length === 0) {
-      const guidance = "If this request is to pick up, continue, or recover interrupted work and RunHistory is available, call RunHistory with {} first. Do not keep rephrasing MemoryRecall queries for exact prior-run evidence.";
+      const guidance = historyRoutingText("If this request is to pick up, continue, or recover interrupted work and RunHistory is available, call RunHistory with {} first. Do not keep rephrasing MemoryRecall queries for exact prior-run evidence.", options.unifiedHistory);
       const text = degraded
         ? `Memory recall is degraded: semantic retrieval is unavailable and lexical-only search returned no matches. ${guidance}`
         : `No memories matched "${effectiveQuery}". ${guidance}`;
@@ -341,9 +342,9 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
           navigation: {
             guidance,
             relatedTools: [{
-              tool: "RunHistory",
+              tool: options.unifiedHistory ? "History" : "RunHistory",
               description: "Discover settled prior runs before asking for missing interrupted-work context.",
-              arguments: {},
+              arguments: options.unifiedHistory ? { scope: "runs" } : {},
             }],
           },
         },

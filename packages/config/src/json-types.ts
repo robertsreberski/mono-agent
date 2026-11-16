@@ -256,6 +256,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly writableRoots?: readonly string[];
     };
     /** Default-off BuJo owner-web conversation evidence. */
+    readonly history?: { readonly unified?: boolean };
     readonly conversationSearch?: { readonly datedSnippets?: boolean };
     /** Opt-in local desktop control via the separately installed cua-driver. */
     readonly computerUse?: {

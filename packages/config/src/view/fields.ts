@@ -82,6 +82,7 @@ export const CORE_CONFIG_FIELD_IDS = {
   "tools.disallowedTools": true,
   "tools.filesystem.readableRoots": true,
   "tools.filesystem.writableRoots": true,
+  "tools.history.unified": true,
   "tools.conversationSearch.datedSnippets": true,
   "tools.computerUse.backend": true,
   "tools.computerUse.command": true,
