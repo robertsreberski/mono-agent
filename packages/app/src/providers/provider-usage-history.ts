@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  PROVIDER_USAGE_HISTORY_SCHEMA, PROVIDER_USAGE_LABELS, PROVIDER_USAGE_SCHEMA,
+  PROVIDER_USAGE_HISTORY_SCHEMA, PROVIDER_USAGE_LABELS, PROVIDER_USAGE_SCHEMA, USAGE_HISTORY_RETENTION_DAYS,
   parseProviderUsageSnapshot, parseProviderUsageHistory, parseProviderUsageHistoryQuery, usageHistoryBucket,
   type ProviderUsage, type ProviderUsageHistory, type ProviderUsageHistoryQuery,
   type ProviderUsageHistorySample, type ProviderUsageId,
@@ -11,7 +11,7 @@ import { createProviderUsageHistoryQueue } from "./provider-usage-history-queue.
 import { openOwnedState, type OwnedStateHandle } from "../durable-state/owned-state-sqlite.js";
 
 const DAY = 86_400_000;
-const RETENTION_MS = 90 * DAY;
+const RETENTION_MS = USAGE_HISTORY_RETENTION_DAYS * DAY;
 const MAX_SAMPLES = 50_000;
 const MAX_PARTITIONS = 64;
 const MAX_RESPONSE_SAMPLES = 2048;
@@ -146,7 +146,7 @@ export function createProviderUsageHistoryStore(options: {
     return {
       schema: PROVIDER_USAGE_HISTORY_SCHEMA,
       ...range,
-      retentionDays: 90,
+      retentionDays: USAGE_HISTORY_RETENTION_DAYS,
       storage,
       providers: providers.map(providerId => ({
         providerId,
