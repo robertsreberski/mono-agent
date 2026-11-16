@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add the internal unified-`History` conversation seams (scope-aware text
+  variants, default-soul selection, app-owned name recognition). Behaviour is
+  unchanged unless the unified mode is selected.
+
 - Keep embedded NUL characters intact in stored web content, cron results and
   offline continuity audits on all supported Node versions.
 

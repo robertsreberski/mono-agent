@@ -654,6 +654,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
             runId, isolated: sessionIsolated,
             ...(options.toolHistory?.continuityEnabled === true ? { continuityEnabled: true as const } : {}),
             ...(owned ? { finalizedContinuity: true as const } : {}),
+            ...(options.toolHistory?.unifiedHistory === true ? { unifiedHistory: true as const } : {}),
           })(event);
           const owner = routing.withContinuityOwner ?? reconciliation?.withContinuityOwner;
           // Borrow the owner through admission to the existing worker queue.

@@ -1614,6 +1614,7 @@ function bindingOf(value: unknown): ToolHistoryRunBinding {
     isolated: record.isolated === true,
     ...(record.continuityEnabled === true ? { continuityEnabled: true as const } : {}),
     ...(record.finalizedContinuity === true ? { finalizedContinuity: true as const } : {}),
+    ...(record.unifiedHistory === true ? { unifiedHistory: true as const } : {}),
   };
 }
 
