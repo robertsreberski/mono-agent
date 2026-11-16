@@ -13,17 +13,8 @@ You need:
 - A model provider account you can sign in to (for example OpenAI Codex, Anthropic, or GitHub Copilot), or a local [Ollama or LM Studio](/runtime/local-providers/) server.
 - Two terminal windows and a browser on the same computer.
 
-:::caution[Some of these steps need the next release]
-The latest published release is `0.26.0`. These docs describe the current `main` source, and several features in this tutorial were added after `0.26.0`:
-
-| Feature | In published 0.26.0 | In current source |
-| --- | --- | --- |
-| One-line installer (`install.sh`) | Yes. The script is served from the website and installs the latest published CLI. | Not applicable: the installer installs only published versions. |
-| Node-version guard and `mono-agent preflight` (step 2) | No. The installer warns that host preflight is unavailable. | Yes |
-| Console handoff at the end of `init` (step 3) | No | Yes |
-| Capabilities page, Enable actions, credential fields and Undo (step 5) | No. Agent settings has no Capabilities section. | Yes |
-
-Steps 1, 3 and 4 work with the published release today. To try steps 2 and 5 before the next release, [build the CLI from source](#run-this-tutorial-from-source) and use that build for both the agent and the console. [Release status](/reference/release-status/) tracks what each published version contains.
+:::note[All five steps work with the published release]
+The latest published release is `0.27.1`. These docs describe the current `main` source, and every feature in this tutorial is in the published release, so all five steps work with a published install. [Release status](/reference/release-status/) tracks what each published version contains.
 :::
 
 ## 1. Install the CLI
@@ -39,7 +30,7 @@ The installer downloads an official Node.js `24.15.0`, checks it against nodejs.
 **You should see** progress lines and then something like:
 
 ```text
-Installed mono-agent 0.26.0 with private Node 24.15.0 (ABI 137).
+Installed mono-agent 0.27.1 with private Node 24.15.0 (ABI 137).
 CLI: '/Users/example/.mono-agent/cli/bin/mono-agent'
 Activate in this shell: export PATH='/Users/example/.mono-agent/cli/bin':"$PATH"
 Next: '/Users/example/.mono-agent/cli/bin/mono-agent' init
@@ -78,15 +69,15 @@ A failure after the CLI was published leaves it installed and starts no services
 
 The installer ends by running a host check. What you see depends on the CLI version it installed.
 
-**With published 0.26.0** the installer prints:
+**With a published version before 0.27.0** the installer prints:
 
 ```text
 Warning: host preflight unavailable in this version. CLI installation verified; host readiness is not established.
 ```
 
-That is expected, not an error: 0.26.0 predates `mono-agent preflight`. Continue with step 3; problems with native dependencies will surface there or in `mono-agent validate`.
+That is expected, not an error: those versions predate `mono-agent preflight`. Continue with step 3; problems with native dependencies will surface there or in `mono-agent validate`.
 
-**With a version that includes preflight** (the next release, or a [source build](#run-this-tutorial-from-source)), the installer prints the results, and you can rerun the check from any folder:
+**With a version that includes preflight** (0.27.0 and later, or a [source build](#run-this-tutorial-from-source)), the installer prints the results, and you can rerun the check from any folder:
 
 ```bash
 mono-agent preflight
@@ -153,7 +144,7 @@ How setup ends depends on the platform:
 - **macOS:** `init` also starts the agent in the background and prints `Agent ready — the background process reported startup complete.`, followed by a **Chat in the browser** list of next commands.
 - **Linux:** the same checks run, then `init` prints **Manual start required** with the commands for terminal 1 (the agent) and terminal 2 (the console). It does not install the background service for you.
 
-On versions with the console handoff (the next release, or a source build), setup then asks **Open the browser console?** The default answer is **Not now**. You can also choose **Start / reuse managed console** or **Run foreground console in this terminal (Ctrl-C to stop)**. The prompt first warns that the console has no login. If you accept, the link it opens goes straight to this agent's Capabilities page, which you will use in step 5. Choosing **Not now** is fine: step 4 starts the console by hand.
+On versions with the console handoff (0.27.0 and later, or a source build), setup then asks **Open the browser console?** The default answer is **Not now**. You can also choose **Start / reuse managed console** or **Run foreground console in this terminal (Ctrl-C to stop)**. The prompt first warns that the console has no login. If you accept, the link it opens goes straight to this agent's Capabilities page, which you will use in step 5. Choosing **Not now** is fine: step 4 starts the console by hand.
 
 **If it fails:**
 
@@ -198,7 +189,7 @@ Open `http://127.0.0.1:5050`. **You should see** the console with your agent in 
 
 ## 5. Turn on one feature from the Capabilities page
 
-*Needs the next release or a [source build](#run-this-tutorial-from-source) for both the agent and the console.*
+*Works with the published release for both the agent and the console.*
 
 Select the **Agent settings** button at the top of the sidebar (a sliders icon next to the **New conversation** `+` button; its tooltip reads "Agent settings") and scroll to **Capabilities**. With the agent selected, you can also open `http://127.0.0.1:5050/?settings=capabilities` directly; to open a specific agent's page, use `http://127.0.0.1:5050/?agent=<source-id>&settings=capabilities`, the link shape the `init` console handoff opens.
 
@@ -244,7 +235,7 @@ Changed your mind? While nothing else has edited the file since, the **Configura
 
 ## Run this tutorial from source
 
-Until the next package release, the preflight, console handoff, and Capabilities steps are available only from a source build. A source build needs your own Node.js `>=24.15.0` and pnpm `>=10.16.0`. The private installer's Node is not used for this.
+The published release covers every step above. Use a source build only to evaluate changes that are newer than the published release. A source build needs your own Node.js `>=24.15.0` and pnpm `>=10.16.0`. The private installer's Node is not used for this.
 
 ```bash
 git clone https://github.com/robertsreberski/mono-agent.git

@@ -9,15 +9,15 @@ This documentation follows the current `main` source. Published packages can lag
 
 | | Version |
 | --- | --- |
-| Latest published npm release (registry rechecked 2026-10-20) | `create-mono-agent@0.26.0` and all 19 current `@mono-agent/*` catalog packages, published 2026-10-20 |
+| Latest published npm release (registry rechecked 2026-11-16) | `create-mono-agent@0.27.1` and all 19 current `@mono-agent/*` catalog packages, published 2026-11-16 |
 | Published-baseline source audit | [`4f9b7650`](https://github.com/robertsreberski/mono-agent/commit/4f9b765048fc0c0f6b837bd28fd918f905f773ed) (historical; current `main` includes the unreleased changes below) |
 | Minimum Node.js for both | `>=24.15.0` |
 
 ## Published baseline
 
-All 20 packages in the current release catalog have npm `latest` set to `0.26.0`. Install the CLI with `npm i -g create-mono-agent`; the installer delegates to `@mono-agent/app`.
+All 20 packages in the current release catalog have npm `latest` set to `0.27.1`. Install the CLI with `npm i -g create-mono-agent`; the installer delegates to `@mono-agent/app`.
 
-The published release includes the owned Pi harness, renamed packages, framework contract simplification, and the Phoenix/OTLP, Supermemory, and terminal-renderer retirements. Those retirements are no longer source-only. Local memory tiers, local JSONL observability, the browser console, and bounded `runs list` / `runs show` diagnostics remain available. See the [v0.26.0 release notes](https://github.com/robertsreberski/mono-agent/releases/tag/v0.26.0) for the breaking changes and complete upgrade notes.
+The published release includes the owned Pi harness, renamed packages, framework contract simplification, and the Phoenix/OTLP, Supermemory, and terminal-renderer retirements. Those retirements are no longer source-only. Local memory tiers, local JSONL observability, the browser console, and bounded `runs list` / `runs show` diagnostics remain available. See the [v0.27.1 release notes](https://github.com/robertsreberski/mono-agent/releases/tag/v0.27.1) for the breaking changes and complete upgrade notes.
 
 Browser-first onboarding and the safer console-network defaults are also in the published release:
 
@@ -27,27 +27,20 @@ Browser-first onboarding and the safer console-network defaults are also in the 
 - bare `mono-agent web` is status/help, while `mono-agent web status --json` reports the listener and owned route separately.
 
 :::caution[Trusted network, no application login]
-Neither the 0.26.0 console nor the current source console has application login. Anyone who can reach it can operate discovered agents and complete provider sign-in. A loopback bind limits the listener, but it does not inspect or remove an existing Tailscale handler, reverse proxy, tunnel, or other route. Existing managed definitions can also preserve their configured host. Inspect `mono-agent web`, `mono-agent web status --json`, `tailscale serve status`, and any operator-managed proxies before treating a console as local-only. Widening the listener with `--host` or publishing a route with `--share-tailnet` is an explicit trust decision.
+Neither the 0.27.1 console nor the current source console has application login. Anyone who can reach it can operate discovered agents and complete provider sign-in. A loopback bind limits the listener, but it does not inspect or remove an existing Tailscale handler, reverse proxy, tunnel, or other route. Existing managed definitions can also preserve their configured host. Inspect `mono-agent web`, `mono-agent web status --json`, `tailscale serve status`, and any operator-managed proxies before treating a console as local-only. Widening the listener with `--host` or publishing a route with `--share-tailnet` is an explicit trust decision.
 :::
 
 ## Source-only delta
 
-Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release. The Node requirement itself remains `>=24.15.0`; the guard improves early diagnostics. These package changes are not in published 0.26.0.
+Current `main` carries unreleased changes after `v0.27.1`: console usage analytics with quota history and a manual-compaction fix, shipping in the next release.
 
-The same next release also carries these console and setup changes, none of which are in published 0.26.0:
+The next release also carries on-demand subscription quota history for activated providers and unchanged-cost token-model follow-ups. None of these changes is in published 0.27.1. See `CHANGELOG.md` `## Unreleased` for the exact list.
 
-| Change | Where it shows up |
-| --- | --- |
-| Capabilities page (read-only feature status and manual setup steps) | **Agent settings → Capabilities** in the browser console |
-| Enable actions for Memory Lite, cron operator controls, and subagents | Capabilities cards, with preview, **Confirm Save**, and Restart |
-| Write-only credential fields for Telegram, Slack, the OpenAI-compatible client bearer, A2A, Journal/BuJo embeddings, Parallel, and hosted Ollama search | Capabilities cards |
-| One-level configuration Undo | The **Configuration recovery** panel on the Capabilities page |
-| Optional console handoff after guided `init` | The **Open the browser console?** prompt at the end of guided setup |
-| Operator API key removed from console, ACP, peer, and cron operator access | No key to configure; obsolete keys are ignored |
+The previous delta is now published: the early Node-version guard, `mono-agent preflight`, the Capabilities page with its Enable actions, write-only credential fields and one-level Undo, the optional console handoff after guided `init`, and the operator API-key removal all shipped in 0.27.0 and are included in 0.27.1. The Node requirement itself remains `>=24.15.0`; the guard improves early diagnostics.
 
-Both the agent and the console must run a version with these changes. A source-built console connected to a 0.26.0 agent shows that the agent does not report capabilities. The [tutorial](/getting-started/tutorial/#run-this-tutorial-from-source) shows how to run the whole path from a source build, and the [feature tour](/getting-started/feature-tour/) gives the config route that works on 0.26.0.
+A source-built console connected to a 0.26.0 agent shows that the agent does not report capabilities. The [tutorial](/getting-started/tutorial/#run-this-tutorial-from-source) shows how to run the whole path from a source build, and the [feature tour](/getting-started/feature-tour/) marks which features the console can turn on.
 
-The shell installer is served from the site, not npm, and installs the published CLI; its deployment does not mean the source-only package behavior has shipped. See [Install & prerequisites](/getting-started/install/) for the private runtime and legacy-preflight warning.
+The shell installer is served from the site, not npm, and installs the published CLI; its deployment does not mean the source-only changes above have shipped. See [Install & prerequisites](/getting-started/install/) for the private runtime and legacy-preflight warning.
 
 Post-release tooling also deprecated 32 retired npm names. The registry now marks those names deprecated with migration pointers; their published versions remain installable. Deprecation does not update installed agents or migrate consumer configuration.
 
@@ -61,7 +54,7 @@ For consumers skipping earlier releases, read [Framework simplification migratio
 
 ## Run a source build
 
-The published-baseline capabilities above do not require a source build. To evaluate the unreleased Node-version guard, host preflight, or the console Capabilities page before the next package release, use a source build for both the agent and the console. The [unreleased-build instructions](/getting-started/install/#run-an-unreleased-build) cover the build, the exact `packages/app/dist/cli.js` entry point, and the caveats. A source build is not the published, versioned artifact that other agents pin.
+The published-baseline capabilities above do not require a source build. To evaluate the unreleased changes above before the next package release, use a source build for both the agent and the console. The [unreleased-build instructions](/getting-started/install/#run-an-unreleased-build) cover the build, the exact `packages/app/dist/cli.js` entry point, and the caveats. A source build is not the published, versioned artifact that other agents pin.
 
 ## How this page is kept honest
 
@@ -69,13 +62,13 @@ Registry truth and source truth are checked separately:
 
 ```bash
 NPM_CONFIG_USERCONFIG=/dev/null npm view create-mono-agent dist-tags engines time --json --registry https://registry.npmjs.org/
-NPM_CONFIG_USERCONFIG=/dev/null npm view @mono-agent/app@0.26.0 dependencies bin --json --registry https://registry.npmjs.org/
+NPM_CONFIG_USERCONFIG=/dev/null npm view @mono-agent/app@0.27.1 dependencies bin --json --registry https://registry.npmjs.org/
 NPM_CONFIG_USERCONFIG=/dev/null npm view @mono-agent/agent-app deprecated --registry https://registry.npmjs.org/
 NPM_CONFIG_USERCONFIG=/dev/null npm view @mono-agent/tui deprecated --registry https://registry.npmjs.org/
-git log --oneline v0.26.0..main
+git log --oneline v0.27.1..main
 ```
 
-For this update, npm metadata for all 20 current catalog packages and all 32 retired names was read on 2026-10-20 from the public registry. Every current package reported `latest: 0.26.0`; every retired name reported a deprecation message. Release contents were checked against tag `v0.26.0` (`be4e4061ac7b2372dd20bd5836b0fe882d92e111`), its changelog, and the post-tag source log. No published tarballs were inspected for this update.
+For this update, npm metadata for all 20 current catalog packages and all 32 retired names was read on 2026-11-16 from the public registry. Every current package reported `latest: 0.27.1`; every retired name reported a deprecation message. Release contents were checked against tag `v0.27.1` (`3e2981459ab38b1c99648ad5543a443249b877db`), its changelog, and the post-tag source log. No published tarballs were inspected for this update.
 
 The offline documentation check keeps explicit active published-baseline references in the repository README, documentation home, and this page consistent. It deliberately does not compare them with source manifest versions and cannot prove live registry truth; a registry recheck remains required when the published baseline changes. Historical changelog/version citations are outside that consistency rule.
 

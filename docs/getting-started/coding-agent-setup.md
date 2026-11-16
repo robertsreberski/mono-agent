@@ -12,7 +12,7 @@ mono-agent ships the pieces for this in the CLI:
 - **The `mono-agent-composer` skill.** Instructions that teach a coding agent the setup flow: ask what you want, check for a matching preset, scaffold, edit the config, run `mono-agent validate`, start the agent, and run a smoke test. It carries its own reference files for every config key.
 - **The `mono-agent-docs` MCP server** (`@mono-agent/docs-mcp`). A read-only, offline search over the documentation for the same mono-agent version, so the coding agent looks things up instead of guessing.
 
-`mono-agent install-skill` installs both. It is in the published `0.26.0` release, so this route works today. The skill's references always match the installed CLI version, so a 0.26.0 install knows nothing about features that are only in the current source, such as `mono-agent preflight` or the console Capabilities page.
+`mono-agent install-skill` installs both. It is in the published `0.27.1` release, so this route works today. The skill's references always match the installed CLI version, so a 0.26.0 install knows nothing about later features such as `mono-agent preflight` or the console Capabilities page.
 
 ## 1. Install the CLI yourself
 

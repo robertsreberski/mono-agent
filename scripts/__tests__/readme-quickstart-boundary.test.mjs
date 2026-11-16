@@ -184,8 +184,8 @@ describe("root README Quickstart boundary", () => {
       expect(page, label).not.toMatch(/managed startup also publishes/i);
       expect(page, label).not.toMatch(/claims its own Tailscale Serve/i);
     }
-    expect(readme).toContain("published 0.26.0 release and current source bind a fresh console");
-    expect(home).toContain("latest published npm release is `create-mono-agent@0.26.0`");
+    expect(readme).toContain("published 0.27.1 release and current source bind a fresh console");
+    expect(home).toContain("latest published npm release is `create-mono-agent@0.27.1`");
   });
 
   it("distinguishes exact owned-route removal from unowned proxies", () => {
@@ -204,16 +204,16 @@ describe("root README Quickstart boundary", () => {
     expect(releaseStatus).toContain("fresh foreground and managed consoles default to `127.0.0.1:5050`");
     expect(releaseStatus).toContain("creates a mono-agent-owned route only with `--share-tailnet`");
     expect(releaseStatus).toContain("`mono-agent web status --json` reports the listener and owned route separately");
-    expect(releaseStatus).toContain("Neither the 0.26.0 console nor the current source console has application login");
+    expect(releaseStatus).toContain("Neither the 0.27.1 console nor the current source console has application login");
     expect(releaseStatus).not.toContain("claims a Tailscale Serve HTTPS route automatically");
     expect(releaseStatus).not.toContain("A source build is required for the new flags.");
   });
 
   it("keeps release and retirement guidance aligned with the published baseline", () => {
     const releaseStatus = readRepoFile("docs/reference/release-status.md");
-    expect(releaseStatus).toContain("registry rechecked 2026-10-20");
+    expect(releaseStatus).toContain("registry rechecked 2026-11-16");
     expect(releaseStatus).toContain("All 20 packages in the current release catalog");
-    const sourceDelta = "Current `main` carries unreleased package behavior after `v0.26.0`: an early Node-version guard and `mono-agent preflight`, shipping in the next package release.";
+    const sourceDelta = "Current `main` carries unreleased changes after `v0.27.1`: console usage analytics with quota history and a manual-compaction fix, shipping in the next release.";
     expect(releaseStatus).toContain(sourceDelta);
     expect(releaseStatus).not.toContain("no package-behavior delta");
     expect(releaseStatus).toContain("The shell installer is served from the site, not npm, and installs the published CLI");
@@ -225,8 +225,8 @@ describe("root README Quickstart boundary", () => {
       "docs/getting-started/install.md",
     ]) {
       const page = readRepoFile(path);
-      expect(page, path).toContain("0.26.0");
-      expect(page, path).toContain("registry checked 2026-10-20");
+      expect(page, path).toContain("0.27.1");
+      expect(page, path).toContain("registry checked 2026-11-16");
       expect(page, path).toContain(sourceDelta);
       expect(page, path).not.toContain("no package-behavior delta");
     }
