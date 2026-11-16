@@ -2453,8 +2453,9 @@ export class WebService {
       // malformed response can race an already committed provider revision.
       if (this.store.getThread(threadId) !== undefined) {
         this.store.recordManualCompactionFailure(threadId,
-          error instanceof WebConsoleError && ["compaction_failed", "compaction_busy", "compaction_unsupported"].includes(error.code)
-            ? undefined : "outcome_unknown");
+          error instanceof WebConsoleError && error.code === "compaction_busy" ? "busy"
+            : error instanceof WebConsoleError && error.code === "compaction_unsupported" ? "unsupported"
+              : error instanceof WebConsoleError && error.code === "compaction_failed" ? "provider_error" : "outcome_unknown");
       }
       throw error;
     });

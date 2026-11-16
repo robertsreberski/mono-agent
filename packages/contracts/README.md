@@ -327,7 +327,9 @@ AgentLiveInputOwnership
 AgentLiveInputRequest
 AgentLiveInputSettlement
 AgentLiveInputUnavailableReason
+AgentManualCompactionDiagnostic
 AgentManualCompactionOptions
+AgentManualCompactionReason
 AgentManualCompactionResult
 AgentMcpAppHostRequest
 AgentMcpAppLoadRequest
@@ -545,6 +547,7 @@ isAgentResponseCancelledError
 isChannelUserCancelReason
 isDeliverableConversation
 isLoopbackHost
+isManualCompactionReason
 isNativeNotifyRequest
 isPeerProcessJobQuestion
 isProcessJobErrorCode
@@ -557,6 +560,8 @@ isSilentTurnAlreadyVisible
 isWildcardHost
 layerJsonOntoEnv
 listen
+manualCompactionDiagnostic
+manualCompactionReasons
 markSilentTurnAlreadyVisible
 mergeAgentUpkeepAccounting
 mergeForwardedUpkeepAccounting

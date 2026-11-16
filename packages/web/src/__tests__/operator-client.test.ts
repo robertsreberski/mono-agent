@@ -798,10 +798,10 @@ describe("OperatorClient", () => {
     });
   });
 
-  it("waits for a live-input settlement beyond the parser headers timeout", async () => {
+  it.each(["live-input", "compaction"])("waits for %s beyond the parser headers timeout", async (operation) => {
     const server = createServer((request, response) => {
       request.resume();
-      const settle = setTimeout(() => response.end(JSON.stringify({ status: "applied", runId: "run-1" })), 1_500);
+      const settle = setTimeout(() => response.end(JSON.stringify(operation === "compaction" ? { status: "succeeded", trigger: "manual", operationId: "long-compaction" } : { status: "applied", runId: "run-1" })), 1_500);
       response.once("close", () => clearTimeout(settle));
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -818,7 +818,9 @@ describe("OperatorClient", () => {
     ));
     try {
       const client = new OperatorClient({ baseUrl: `http://127.0.0.1:${String(port)}` });
-      await expect(client.liveInput({
+      if (operation === "compaction") {
+        await expect(client.compactConversation("web:thread")).resolves.toMatchObject({ status: "succeeded", operationId: "long-compaction" });
+      } else await expect(client.liveInput({
         conversationId: "web:thread",
         id: "input-1",
         text: "Guide",

@@ -85,7 +85,7 @@ describe("createConversationResponder", () => {
     await Promise.all([compaction, turn]);
     expect(order).toEqual(["compact:start:anthropic:claude-opus-4-8", "compact:end", "turn"]);
   });
-  it("passes a disconnect signal through the responder and queues the next turn until abort cleanup", async () => {
+  it.each(["resolved", "rejected"] as const)("passes a disconnect signal through the responder and queues the next turn until %s abort cleanup", async (settlement) => {
     let release!: () => void;
     const cleanup = new Promise<void>((resolve) => { release = resolve; });
     let seen: AbortSignal | undefined;
@@ -96,18 +96,22 @@ describe("createConversationResponder", () => {
         seen = signal;
         order.push("compact");
         await cleanup;
-        throw new Error("cancelled");
+        if (settlement === "rejected") throw new Error("cancelled");
+        return { status: "failed", trigger: "manual", operationId: "fictional-cancelled", reason: "cancelled" };
       },
     } });
     const controller = new AbortController();
-    const compaction = responder.compactConversation!("web:one", undefined, controller.signal).catch(() => undefined);
+    const compaction = responder.compactConversation!("web:one", undefined, controller.signal);
+    const settled = settlement === "resolved"
+      ? expect(compaction).resolves.toMatchObject({ status: "failed", reason: "cancelled" })
+      : expect(compaction).rejects.toThrow("cancelled");
     await vi.waitFor(() => expect(seen).toBe(controller.signal));
     controller.abort();
     const turn = responder.respond(baseRequest("web:one"), noopStream());
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(order).toEqual(["compact"]);
     release();
-    await Promise.all([compaction, turn]);
+    await Promise.all([settled, turn]);
     expect(order).toEqual(["compact", "turn"]);
   });
 

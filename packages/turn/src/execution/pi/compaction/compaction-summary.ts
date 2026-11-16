@@ -1,3 +1,5 @@
+import type { AgentManualCompactionDiagnostic } from "@mono-agent/contracts";
+import { classifyCompactionFailure } from "./manual-failure.js";
 // Runtime-owned preparation around Pi's public compact(), never its cut rules.
 import { summaryRequestOptions } from "./summary-policy.js";
 import { estimateTokens } from "../../../engine/compaction-kit/compaction.js";
@@ -151,13 +153,15 @@ export function prepareSummaryRequest(model: any, context: any, options: any, ef
 }
 
 /** A narrow facade: only the summary context changes; model/options/rest keep identity. */
-export function summaryModels(models: any, { operationId, focus, evidence = "", requests, effort = "auto", minimumAnswerTokens, unprotected }: {
+export function summaryModels(models: any, { operationId, focus, evidence = "", requests, effort = "auto", minimumAnswerTokens, unprotected, timeoutMs, onDiagnostic }: {
     operationId: any;
     focus: any;
     evidence?: string;
     requests: any;
     effort?: string;
     minimumAnswerTokens?: number;
+    timeoutMs?: number;
+    onDiagnostic?: (diagnostic: AgentManualCompactionDiagnostic | undefined) => void;
     unprotected?: { preservation: { bypassReason?: string | null; protectedTupleCount?: number; protectionActive?: boolean }; targets: number[]; minimumAnswerTokens: number };
 }): any {
   return new Proxy(models, {
@@ -167,6 +171,8 @@ export function summaryModels(models: any, { operationId, focus, evidence = "", 
         return typeof value === "function" ? value.bind(target) : value;
       }
       return async (model: any, context: any, options: any, ...rest: any[]) => {
+        // Retries and split requests must not inherit an earlier failure.
+        onDiagnostic?.(undefined);
         const started = performance.now();
         const row: { requestId: string; phase: string; requestOrdinal: number; status: string; reason: string; durationMs: number; providerInvoked: boolean; inputInterpretation: null; inputInterpretationSource: string; input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; costUsd: number | null; generatedSummaryTokens: number | null } = {
           requestId: `${operationId}:${requests.length + 1}`, phase: "summary", requestOrdinal: requests.length + 1,
@@ -188,7 +194,7 @@ export function summaryModels(models: any, { operationId, focus, evidence = "", 
             throw new Error("Summary cannot fit a useful answer; provider was not invoked");
           }
           row.providerInvoked = true;
-          const response = await target.completeSimple(model, preparedContext, policy.options, ...rest);
+          const response = await target.completeSimple(model, preparedContext, timeoutMs === undefined ? policy.options : { ...policy.options, timeoutMs }, ...rest);
           for (const key of ["input", "cacheRead", "cacheWrite", "output"]) row[key as "input" | "cacheRead" | "cacheWrite" | "output" | "costUsd"] = finite(response?.usage?.[key]);
           row.costUsd = finite(response?.usage?.cost?.total);
           if (["error", "aborted"].includes(response?.stopReason) && ![row.input, row.output, row.cacheRead, row.cacheWrite, row.costUsd].some((value: any) => value! > 0)) {
@@ -198,7 +204,10 @@ export function summaryModels(models: any, { operationId, focus, evidence = "", 
           row.generatedSummaryTokens = text ? estimateTokens({ role: "user", content: text, timestamp: 0 }) : 0;
           if (response?.stopReason === "error" || response?.stopReason === "aborted") {
             row.reason = response.stopReason === "aborted" ? "aborted" : "provider_error";
-            return response; // Pi owns error/abort classification and any retry policy.
+            onDiagnostic?.(classifyCompactionFailure(response.stopReason === "aborted" ? { code: "aborted" } : response));
+            // Pi classifies retries from errorMessage, including non-retryable
+            // quota errors. Never rewrite its response to carry diagnostics.
+            return response;
           }
           if (!response || response.stopReason === "length" || !text.trim() || response.stopReason !== "stop") {
             row.status = "rejected";
@@ -216,6 +225,9 @@ export function summaryModels(models: any, { operationId, focus, evidence = "", 
             row.costUsd = finite(error.usage.cost?.total) ?? row.costUsd;
           }
           // Provider exceptions may contain request text or credentials.
+          onDiagnostic?.(classifyCompactionFailure(row.reason === "request_failed" ? error : { message: row.reason }));
+          // retryAssistantCall does not retry thrown errors. Preserve the
+          // pre-existing content-free exception and carry metadata separately.
           const failure = new Error(`Compaction summary request failed: ${row.reason}`);
           if (row.reason === "output_truncated" && error?.code === "protected_summary_truncated") Object.assign(failure, { code: error.code, usage: error.usage });
           throw failure;

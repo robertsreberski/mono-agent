@@ -1,3 +1,5 @@
+import type { AgentManualCompactionDiagnostic } from "@mono-agent/contracts";
+import { classifyCompactionFailure } from "./manual-failure.js";
 // @ts-check
 // Runtime compaction policy and guards for the engine turn adapter.
 // The engine owns preparation, cut rules, summary projection and persistence;
@@ -210,8 +212,9 @@ function emitCompactionEvent(onEvent: (event: any) => void, {
   tokensBefore,
   tokensAfter,
   reason,
+  httpStatus,
   message,
-}: { operationId: string; status: string; trigger: string; model?: string; tokensBefore?: number | null; tokensAfter?: number | null; reason?: string; message?: string; }) {
+}: { operationId: string; status: string; trigger: string; model?: string; tokensBefore?: number | null; tokensAfter?: number | null; reason?: string; httpStatus?: number; message?: string; }) {
   const before = finiteTokenCount(tokensBefore);
   const after = finiteTokenCount(tokensAfter);
   try {
@@ -227,6 +230,7 @@ function emitCompactionEvent(onEvent: (event: any) => void, {
       ...(after === undefined ? {} : { tokensAfter: after }),
       ...(before === undefined && after === undefined ? {} : { tokenCountsExact: false }),
       ...(reason ? { reason } : {}),
+      ...(httpStatus === undefined ? {} : { httpStatus }),
       ...(message ? { message } : {}),
     });
   } catch {
@@ -302,9 +306,10 @@ export function createGuardedCompactionHook({
   beforeAttempt = null,
   beforeSummary = null,
 }: any) {
-  let decision: { kind: string; reason?: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; retainedTailLength?: number; compaction?: any; error?: any; warn?: boolean; retryAfterMs?: number; growthRequiredTokens?: number; } | null = null;
+  let decision: { kind: string; reason?: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; retainedTailLength?: number; compaction?: any; error?: any; diagnostic?: AgentManualCompactionDiagnostic; warn?: boolean; retryAfterMs?: number; growthRequiredTokens?: number; } | null = null;
   const handler = async (event: any): Promise<{ cancel?: boolean; compaction?: any; retainedAuthorityUsed?: boolean }> => {
     decision = null;
+    let summaryDiagnostic: AgentManualCompactionDiagnostic | undefined;
     let failureGuard = null;
     let preservationGuard: ReturnType<typeof proactivePreservationGuard> | null = null;
     try {
@@ -435,6 +440,9 @@ export function createGuardedCompactionHook({
       const compacted = await compactPreparedContext(
         input.preparation,
         summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests, effort: effectivePolicy.effort,
+          onDiagnostic: (diagnostic) => { summaryDiagnostic = diagnostic; },
+          // Manual work shares the host response budget, not an SDK's shorter default.
+          ...(trigger === "manual" ? { timeoutMs: 15 * 60_000 } : {}),
           // Derive the useful minimum before the kit clamps requests to model.maxTokens.
           // Small explicit split budgets may be shorter than Pi's normal answer minimum.
           minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, summaryBudget.minimumTextTarget),
@@ -448,7 +456,7 @@ export function createGuardedCompactionHook({
         event.context || BACKGROUND_CONTEXT,
       );
       if (compacted.ok === false) {
-        decision = { kind: compacted.error.code === "summary_refused" ? "summary_refused" : accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", reason: accounting.preservation?.refusalReason, error: compacted.error };
+        decision = { kind: compacted.error.code === "summary_refused" ? "summary_refused" : accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", reason: accounting.preservation?.refusalReason, error: compacted.error, ...(summaryDiagnostic ? { diagnostic: summaryDiagnostic } : {}) };
         return { cancel: true };
       }
       const tokensBefore = await estimateBuiltContextTokens(event.branchEntries);
@@ -486,7 +494,7 @@ export function createGuardedCompactionHook({
       };
       return { compaction: compacted.value, ...(event.retainedPredecessor ? { retainedAuthorityUsed } : {}) };
     } catch (error) {
-      decision = { kind: accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", error };
+      decision = { kind: accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", error, ...(summaryDiagnostic ? { diagnostic: summaryDiagnostic } : {}) };
       return { cancel: true };
     } finally {
       const preservation = accounting.preservation;
@@ -612,21 +620,14 @@ export function reportGuardedCompactionOutcome({
       : busy
         ? "context_compaction_busy"
         : "context_compaction_failed";
-  runtimeWarnings?.push({ warning_kind: warningKind, source: "pi", trigger, message });
+  const diagnostic = decision?.diagnostic ?? classifyCompactionFailure(effectiveError);
+  runtimeWarnings?.push({ warning_kind: warningKind, source: "pi", trigger, message: trigger === "manual" ? `Manual compaction: ${diagnostic.reason}` : message });
   emit(onEvent, {
     operationId,
     status: nothingToCompact ? "skipped" : "failed",
     trigger,
     model,
-    reason: nothingToCompact
-      ? "nothing_to_compact"
-      : code === "auth"
-        ? "authentication"
-        : busy
-          ? "busy"
-          : code === "aborted"
-            ? "cancelled"
-            : "provider_error",
+    ...(nothingToCompact ? { reason: "nothing_to_compact" } : diagnostic),
     ...(nothingToCompact
       ? {}
       : {

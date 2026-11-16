@@ -301,5 +301,6 @@ export type AgentManualCompactionResult = {
   readonly tokensAfter?: number;
   readonly tokenCountsExact?: boolean;
   readonly accounting?: import("./compaction-accounting.js").AgentCompactionAccounting;
-  readonly reason?: string;
+  readonly reason?: import("./manual-compaction.js").AgentManualCompactionReason;
+  readonly httpStatus?: number;
 };

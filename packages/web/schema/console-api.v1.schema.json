@@ -91,6 +91,35 @@
       "additionalProperties": false,
       "description": "Bounded manual-compaction billing receipt. Never carries generated prose."
     },
+    "AgentManualCompactionReason": {
+      "type": "string",
+      "enum": [
+        "timeout",
+        "cancelled",
+        "provider_overloaded",
+        "rate_limited",
+        "authentication",
+        "context_too_large",
+        "summary_refused",
+        "insufficient_headroom",
+        "nothing_to_compact",
+        "busy",
+        "provider_error",
+        "outcome_unknown",
+        "model_changed",
+        "unsupported",
+        "agent_offline",
+        "internal_error",
+        "session_unavailable",
+        "commit_failed",
+        "summary_failed",
+        "not_reducible",
+        "insufficient_savings",
+        "headroom_unavailable",
+        "failure_cooldown",
+        "historical_preservation_refused"
+      ]
+    },
     "AgentManualCompactionResult": {
       "type": "object",
       "properties": {
@@ -122,7 +151,10 @@
           "$ref": "#/definitions/AgentCompactionAccounting"
         },
         "reason": {
-          "type": "string"
+          "$ref": "#/definitions/AgentManualCompactionReason"
+        },
+        "httpStatus": {
+          "type": "number"
         }
       },
       "required": [
@@ -5281,12 +5313,10 @@
               "type": "boolean"
             },
             "reason": {
-              "type": "string",
-              "enum": [
-                "model_changed",
-                "nothing_to_compact",
-                "outcome_unknown"
-              ]
+              "$ref": "#/definitions/AgentManualCompactionReason"
+            },
+            "httpStatus": {
+              "type": "number"
             },
             "type": {
               "type": "string",

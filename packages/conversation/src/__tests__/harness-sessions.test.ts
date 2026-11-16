@@ -204,6 +204,7 @@ async function manualFixture(options: {
   readonly seedHistory?: boolean;
   readonly defaultPrivateEndpoint?: boolean;
   readonly withContext1M?: boolean;
+  readonly context1MOnlyInHook?: boolean;
 } = {}) {
   const identityPath = await identityFixture();
   const root = await mkdtemp(join(tmpdir(), "agent-manual-compact-"));
@@ -234,7 +235,7 @@ async function manualFixture(options: {
   const makeHarness = () => createConversationHarness({ identityPath, runtime: fake.runtime, model, historyStore,
     session, sessionsRoot: join(root, "pi"), runtimeOptionsForRequest,
     ...(options.withContext1M ? {
-      runtimeOptions: { context1MModels: { [`${model.provider}:${model.model}`]: true } },
+      ...(options.context1MOnlyInHook ? {} : { runtimeOptions: { context1MModels: { [`${model.provider}:${model.model}`]: true } } }),
       runtimeOptionsForManualCompaction: async (modelKey: string, context1M?: boolean) => ({ context1MModels: { [modelKey]: context1M ?? true } }),
     } : {}),
     ...(options.defaultPrivateEndpoint ? {
@@ -257,6 +258,18 @@ describe("ConversationHarness manual compaction", () => {
     expect(outcome).not.toHaveProperty("unexpected");
     await harness.run(request("manual", "next"));
     expect(fake.calls[1]?.options.sessionId).not.toBe(fake.calls[0]?.options.sessionId);
+  });
+
+  it("keeps failed diagnostics even when no usage was returned", async () => {
+    const { makeHarness } = await manualFixture({ run: async (_prompt, options) => ({ providerSessionId: options.sessionId,
+      manualCompaction: { status: "failed", trigger: "manual", operationId: "fictional", reason: "provider_overloaded", httpStatus: 529 } }) as unknown as RuntimeResult });
+    await expect(makeHarness().compactConversation!("manual")).resolves.toMatchObject({ status: "failed", reason: "provider_overloaded", httpStatus: 529 });
+  });
+
+  it("resolves the primary model's manual policy hook even without a web override", async () => {
+    const { fake, makeHarness } = await manualFixture({ withContext1M: true, context1MOnlyInHook: true });
+    await expect(makeHarness().compactConversation!("manual")).resolves.toMatchObject({ status: "succeeded" });
+    expect(fake.calls[0]?.options.context1MModels).toEqual({ [`${model.provider}:${model.model}`]: true });
   });
 
   it("passes explicit false through the manual policy hook even on the configured primary", async () => {
@@ -362,10 +375,9 @@ describe("ConversationHarness manual compaction", () => {
       const sessionId = fake.calls[0]?.options.sessionId as string;
       const before = await historyStore.load("manual");
       failNextCommit.armed = failure === "commit";
-      const error = await harness.compactConversation!("manual").catch((caught: unknown) => caught);
-      expect(error).toBeInstanceOf(ConversationHarnessError);
-      expect(error).toMatchObject({ failureKind: "compaction_failed" });
-      expect(String((error as Error).message)).not.toContain("PRIVATE");
+      const outcome = await harness.compactConversation!("manual");
+      expect(outcome).toMatchObject({ status: "failed", reason: failure === "sync" ? "session_unavailable" : failure === "commit" ? "commit_failed" : "internal_error" });
+      expect(JSON.stringify(outcome)).not.toContain("PRIVATE");
       expect(fake.invalidatedSessions).toContain(sessionId);
       expect(await historyStore.load("manual")).toEqual(before);
       await harness.run(request("manual", "next"));
@@ -454,11 +466,11 @@ describe("ConversationHarness manual compaction", () => {
     await harness.run(request("manual", "first"));
     const sessionId = fake.calls[0]?.options.sessionId as string;
     const before = await historyStore.load("manual");
-    const pending = harness.compactConversation!("manual").catch((error: unknown) => error);
+    const pending = expect(harness.compactConversation!("manual")).resolves.toMatchObject({ status: "failed", reason: "cancelled" });
     await vi.waitFor(() => { expect(fake.calls).toHaveLength(2); });
     await harness.dispose!();
     expect(seenSignal?.aborted).toBe(true);
-    expect(await pending).toMatchObject({ failureKind: "compaction_failed" });
+    await pending;
     expect(fake.invalidatedSessions).toContain(sessionId);
     expect(await historyStore.load("manual")).toEqual(before);
     const next = makeHarness();
@@ -484,7 +496,7 @@ describe("ConversationHarness manual compaction", () => {
     const pending = harness.compactConversation!("manual", undefined, controller.signal);
     await vi.waitFor(() => expect(fake.calls).toHaveLength(2));
     controller.abort();
-    await expect(pending).rejects.toMatchObject({ failureKind: "compaction_failed" });
+    await expect(pending).resolves.toMatchObject({ status: "failed", reason: "cancelled" });
     expect(seenSignal?.aborted).toBe(true);
     expect(await historyStore.load("manual")).toEqual(history);
     await expect(harness.compactConversation!("manual")).resolves.toMatchObject({ status: "succeeded" });

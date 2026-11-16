@@ -1,3 +1,4 @@
+import { manualCompactionDiagnostic } from "@mono-agent/contracts";
 import { registerCredentialRoutes } from "./credential-routes.js";
 import type { CredentialSetupService } from "../credential-setup.js";
 import { CapabilityActionError, parseCapabilityActionInput, parseCapabilityActionSaveInput, parseCapabilityActionsSnapshot, parseCapabilityActionPreview, parseCapabilityActionSaved, type CapabilityActionsService } from "../capability-actions.js";
@@ -951,7 +952,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         status,
         trigger: "manual",
         operationId: typeof result.operationId === "string" ? result.operationId.slice(0, 128) : "",
-        ...(typeof result.reason === "string" ? { reason: result.reason.slice(0, 128) } : {}),
+        ...(result.reason !== undefined || status === "failed" ? manualCompactionDiagnostic(result) : {}),
         ...(typeof result.tokensBefore === "number" && Number.isFinite(result.tokensBefore) && result.tokensBefore >= 0 ? { tokensBefore: result.tokensBefore } : {}),
         ...(typeof result.tokensAfter === "number" && Number.isFinite(result.tokensAfter) && result.tokensAfter >= 0 ? { tokensAfter: result.tokensAfter } : {}),
         tokenCountsExact: result.tokenCountsExact === true,
@@ -977,7 +978,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         });
       } else if (!busy) {
         // Host-side diagnostics only; the response stays generic.
-        options.logger?.error?.("TUI manual compaction failed.", { error: errorToMessage(error).slice(0, 512) });
+        options.logger?.error?.("TUI manual compaction failed.", { reason: "provider_error" });
       }
       res.status(busy ? 409 : unsupported ? 501 : 500).json({ error: {
         code: busy ? "compaction_busy" : unsupported ? "compaction_unsupported" : "compaction_failed",

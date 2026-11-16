@@ -184,7 +184,7 @@ it.each(["provider", "exclusive", "compaction"])("harness %s acquisition cancell
   try {
     const pending = mode === "compaction" ? harness.compactConversation(id, undefined, controller.signal)
       : harness.run({ conversationId: id, userMessage: "Fictional cancelled input", abortSignal: controller.signal });
-    const cancelled = mode === "compaction" ? expect(pending).rejects.toMatchObject({ failureKind: "compaction_failed" })
+    const cancelled = mode === "compaction" ? expect(pending).resolves.toMatchObject({ status: "failed", trigger: "manual", reason: "cancelled" })
       : expect(pending).resolves.toMatchObject({ failure: { kind: "cancelled" } });
     await vi.waitFor(() => expect(entered).toHaveBeenCalled()); controller.abort(); await cancelled;
     expect(run).not.toHaveBeenCalled(); expect(syncSession).not.toHaveBeenCalled();

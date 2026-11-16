@@ -2621,7 +2621,7 @@ describe("pi-native auto-compaction", () => {
   it.each(["failed", "cancelled"])("never seals a %s manual summary as completed", async (outcome) => {
     const base = setup(), id = `manual-seal-${outcome}`, controller = new AbortController();
     faux!.setResponses([outcome === "failed"
-      ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional summary failure." })
+      ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "HTTP 529: overloaded; fictional private fixture text" })
       : () => { controller.abort(); return fauxAssistantMessage([fauxText("Fictional cancelled summary.")]); }]);
     const result = await generateEngineTurnResponse("system", runOptions(base, {
       manualCompaction: true, messages: bigHistory(60, 2000), abortSignal: controller.signal,
@@ -2630,8 +2630,8 @@ describe("pi-native auto-compaction", () => {
         reconciliation: { version: 1, purpose: "compaction", fenceDigest: "a".repeat(64), initialInputId: null } },
       resolvePiApiKey: async () => "faux-key",
     }));
-    if (outcome === "cancelled") expect(result.manualCompaction).toBeUndefined();
-    else expect(result.manualCompaction).toMatchObject({ status: "failed", accounting: { version: 2 } });
+    if (outcome === "cancelled") expect(result.manualCompaction).toMatchObject({ status: "failed", reason: "cancelled" });
+    else expect(result.manualCompaction).toMatchObject({ status: "failed", reason: "provider_overloaded", httpStatus: 529, accounting: { version: 2 } });
     await refreshProviderSession(id);
     const repo = new JsonlSessionRepo({ sessionsRoot }), raw = await repo.open(await repo.find(id), { repair: false });
     try {
@@ -2639,6 +2639,10 @@ describe("pi-native auto-compaction", () => {
       expect(evidence.operations.at(-1)?.status).toBe("failed");
       expect(evidence.status).toBe(outcome === "cancelled" ? "aborted" : "failed");
       expect(evidence.seal.outcome).toBe(outcome === "cancelled" ? "cancelled" : "failed");
+      if (outcome === "failed") {
+        expect(evidence.seal.result.failureKind).toBe("compaction_provider_overloaded");
+        expect(JSON.stringify(evidence.seal)).not.toContain("fictional private fixture text");
+      }
     } finally { await raw.close(); }
   });
 
@@ -2658,7 +2662,7 @@ describe("pi-native auto-compaction", () => {
       abortSignal: controller.signal,
       resolvePiApiKey: async () => "faux-key",
     }));
-    expect(result.manualCompaction).toBeUndefined();
+    expect(result.manualCompaction).toMatchObject({ status: "failed", reason: "cancelled" });
     expect(result.cancelled).toBe(true);
     expect((summarySignal as AbortSignal | undefined)?.aborted).toBe(true);
   });

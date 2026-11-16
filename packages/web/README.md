@@ -720,7 +720,12 @@ transcript shows a transient running divider and then the persisted result.
 The console allows up to 15 minutes for the agent's response; when it cannot
 confirm an outcome it persists a failed-status marker explicitly labeled
 **outcome unknown** (a late commit may have succeeded), while an explicit agent
-failure is labeled failed. Neither marker is an in-progress state.
+failure is labeled failed. Failure markers include an allow-listed reason (for
+example, provider overloaded, cancelled, authentication, or insufficient summary
+headroom) and the HTTP status when available, never provider error prose.
+Scheduled **Compact conversation first** uses the same diagnostics. The explicit
+15-minute deadline, not the HTTP client's shorter idle-header timer, bounds the
+request. Neither marker is an in-progress state.
 Structured reasoning, routine tools, and process-job lifecycle evidence share
 the stream-aware Activity disclosure, which collapses at every terminal
 message state without reordering answer parts. Receipt-bearing job launches fold their launch call into one start row,

@@ -1,3 +1,4 @@
+import { manualCompactionDiagnostic } from "@mono-agent/contracts";
 import { parseCredentialSnapshot, parseCredentialSaved, type CredentialSaveRequest, type CredentialRequest } from "@mono-agent/channel-operator/client";
 import { parseCapabilityActionsSnapshot, parseCapabilityActionPreview, parseCapabilityActionSaved, MAX_CAPABILITY_ACTION_BYTES, type CapabilityActionInput, type CapabilityActionSaveInput } from "@mono-agent/channel-operator/client";
 import { parseCapabilitySetupSnapshot, MAX_CAPABILITY_SETUP_BYTES, type CapabilitySetupSnapshot } from "@mono-agent/channel-operator/client";
@@ -687,6 +688,7 @@ export class OperatorClient {
           signal: AbortSignal.timeout(MANUAL_COMPACTION_TIMEOUT_MS),
         },
         PRESERVED_COMPACTION_ERRORS,
+        this.liveInputFetchImpl,
       );
     } catch (error) {
       if ((error instanceof DOMException && ["TimeoutError", "AbortError"].includes(error.name))
@@ -713,7 +715,7 @@ export class OperatorClient {
     return {
       ...(isAgentCompactionAccounting(body.accounting) ? { accounting: body.accounting } : {}),
       status: body.status as AgentManualCompactionResult["status"], trigger: "manual", operationId: body.operationId,
-      ...(typeof body.reason === "string" ? { reason: body.reason.slice(0, 128) } : {}),
+      ...(body.reason !== undefined || body.status === "failed" ? manualCompactionDiagnostic(body) : {}),
       ...(typeof body.tokensBefore === "number" ? { tokensBefore: body.tokensBefore } : {}),
       ...(typeof body.tokensAfter === "number" ? { tokensAfter: body.tokensAfter } : {}),
       tokenCountsExact: body.tokenCountsExact === true,

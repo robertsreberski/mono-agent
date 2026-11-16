@@ -12,6 +12,9 @@
 - Retain on-demand subscription quota history for activated providers, with
   bounded private storage and detected account-change markers.
 
+- Fix long manual compactions disconnecting before their deadline, and show
+  safe failure reasons in conversation markers for manual and scheduled compaction.
+
 ## 0.27.1 — Pi 1.5.2 (2026-11-16)
 
 - 0.27.1 supersedes 0.27.0, which was staged on npm but never promoted to
