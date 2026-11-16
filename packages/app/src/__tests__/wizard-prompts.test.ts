@@ -231,7 +231,6 @@ describe("wizard prompt builders", () => {
     expect(values).not.toContain("AskParent");
     expect(values.slice(0, parentBuiltins.length)).toEqual(parentBuiltins);
     expect(values.slice(parentBuiltins.length)).toEqual([
-      "History",
       "RunHistory",
       "SessionHistory",
       "ConversationHistory",
