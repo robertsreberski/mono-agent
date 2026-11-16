@@ -26,7 +26,13 @@ export interface ProviderUsageHistorySink {
 }
 
 /** Per-agent owner; auth-file scopes share capacity, but never raw paths or identities. */
-export function createProviderUsageHistoryStore(options: { readonly cwd: string; readonly now?: () => number; /** Test seam; may only tighten the production cap. */ readonly maxSamples?: number; readonly maxDatabaseBytes?: number }) {
+export function createProviderUsageHistoryStore(options: {
+  readonly cwd: string;
+  readonly now?: () => number;
+  /** Test seams; may only tighten the production caps. */
+  readonly maxSamples?: number;
+  readonly maxDatabaseBytes?: number;
+}) {
   const now = options.now ?? Date.now;
   const maxSamples = Math.max(1, Math.min(MAX_SAMPLES, options.maxSamples ?? MAX_SAMPLES));
   let handle: OwnedStateHandle | undefined;
@@ -47,7 +53,11 @@ export function createProviderUsageHistoryStore(options: { readonly cwd: string;
         try { await lstat(join(options.cwd, ".mono-agent", "provider-usage-v1", "state.sqlite")); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
       }
-      const opened = await openOwnedState({ cwd: options.cwd, name: "provider-usage-v1", label: "Provider quota history", schemaVersion: 1,
+      const opened = await openOwnedState({
+        cwd: options.cwd,
+        name: "provider-usage-v1",
+        label: "Provider quota history",
+        schemaVersion: 1,
         createSchema(db) {
           db.exec(`
             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -59,7 +69,8 @@ export function createProviderUsageHistoryStore(options: { readonly cwd: string;
               id INTEGER PRIMARY KEY, scope TEXT NOT NULL, provider TEXT NOT NULL,
               first_at INTEGER NOT NULL, last_at INTEGER NOT NULL,
               observations INTEGER NOT NULL CHECK(observations > 0), max_gap INTEGER NOT NULL CHECK(max_gap >= 0),
-              payload TEXT NOT NULL CHECK(length(payload) <= 2048), account_changed INTEGER NOT NULL CHECK(account_changed IN (0,1)),
+              payload TEXT NOT NULL CHECK(length(payload) <= 2048),
+              account_changed INTEGER NOT NULL CHECK(account_changed IN (0,1)),
               FOREIGN KEY(scope, provider) REFERENCES partitions(scope, provider) ON DELETE CASCADE
             );
             CREATE INDEX samples_by_partition ON samples(scope, provider, last_at, id);
@@ -71,11 +82,16 @@ export function createProviderUsageHistoryStore(options: { readonly cwd: string;
       try {
         // DELETE journaling (owned-state default) prevents an unbounded WAL. Reuse freed pages.
         const pageSize = (opened.database.prepare("PRAGMA page_size").get() as { page_size: number }).page_size;
-        const maxPages = Math.floor(Math.min(128 * 1024 * 1024, options.maxDatabaseBytes ?? 128 * 1024 * 1024) / pageSize);
+        const maxPages = Math.floor(
+          Math.min(128 * 1024 * 1024, options.maxDatabaseBytes ?? 128 * 1024 * 1024) / pageSize,
+        );
         opened.database.exec(`PRAGMA max_page_count=${maxPages}; PRAGMA synchronous=FULL;`);
-        if ((opened.database.prepare("PRAGMA page_count").get() as { page_count: number }).page_count > maxPages) throw new Error("History database exceeds its safety bound.");
-        const key = opened.database.prepare("SELECT value FROM meta WHERE key='hmac-key'").get() as { value?: unknown } | undefined;
-        if (typeof key?.value !== "string" || !/^[a-f0-9]{64}$/u.test(key.value)) throw new Error("Invalid history metadata.");
+        if ((opened.database.prepare("PRAGMA page_count").get() as { page_count: number }).page_count > maxPages)
+          throw new Error("History database exceeds its safety bound.");
+        const key = opened.database.prepare("SELECT value FROM meta WHERE key='hmac-key'")
+          .get() as { value?: unknown } | undefined;
+        if (typeof key?.value !== "string" || !/^[a-f0-9]{64}$/u.test(key.value))
+          throw new Error("Invalid history metadata.");
         if (stopped) { opened.close(); return undefined; }
         handle = opened;
         return opened;
@@ -89,53 +105,104 @@ export function createProviderUsageHistoryStore(options: { readonly cwd: string;
   }
   function digest(h: OwnedStateHandle, domain: string, values: readonly string[]): string {
     const key = h.database.prepare("SELECT value FROM meta WHERE key='hmac-key'").get() as { value: string };
-    return createHmac("sha256", Buffer.from(key.value, "hex")).update(JSON.stringify([domain, ...values])).digest("hex");
+    return createHmac("sha256", Buffer.from(key.value, "hex"))
+      .update(JSON.stringify([domain, ...values])).digest("hex");
   }
   function prune(h: OwnedStateHandle, reserve = 0) {
     const db = h.database;
     db.prepare("DELETE FROM samples WHERE last_at < ?").run(now() - RETENTION_MS);
     const extra = (db.prepare("SELECT COUNT(*) AS n FROM samples").get() as { n: number }).n + reserve - maxSamples;
     if (extra > 0) {
-      const discarded = db.prepare("SELECT scope, provider, MAX(last_at) AS at FROM (SELECT * FROM samples ORDER BY last_at,id LIMIT ?) GROUP BY scope,provider").all(extra) as Array<{ scope: string; provider: string; at: number }>;
-      for (const row of discarded) db.prepare("UPDATE partitions SET truncated_before=MAX(COALESCE(truncated_before,0),?) WHERE scope=? AND provider=?").run(row.at, row.scope, row.provider);
+      const discarded = db.prepare(`
+        SELECT scope, provider, MAX(last_at) AS at
+        FROM (SELECT * FROM samples ORDER BY last_at,id LIMIT ?)
+        GROUP BY scope,provider
+      `).all(extra) as Array<{ scope: string; provider: string; at: number }>;
+      for (const row of discarded)
+        db.prepare(`
+          UPDATE partitions SET truncated_before=MAX(COALESCE(truncated_before,0),?)
+          WHERE scope=? AND provider=?
+        `).run(row.at, row.scope, row.provider);
       db.prepare("DELETE FROM samples WHERE id IN (SELECT id FROM samples ORDER BY last_at,id LIMIT ?)").run(extra);
     }
     db.prepare("DELETE FROM partitions WHERE last_at < ?").run(now() - RETENTION_MS);
   }
-  function empty(query: ProviderUsageHistoryQuery, providers: readonly ProviderUsageId[], storage: "ready" | "unavailable"): ProviderUsageHistory {
+  function empty(
+    query: ProviderUsageHistoryQuery,
+    providers: readonly ProviderUsageId[],
+    storage: "ready" | "unavailable",
+  ): ProviderUsageHistory {
     const { provider: _provider, ...range } = query;
-    return { schema: PROVIDER_USAGE_HISTORY_SCHEMA, ...range, retentionDays: 90, storage,
-      providers: providers.map(providerId => ({ providerId, label: PROVIDER_USAGE_LABELS[providerId], samples: [], accountChanges: [], downsampled: false })) };
+    return {
+      schema: PROVIDER_USAGE_HISTORY_SCHEMA,
+      ...range,
+      retentionDays: 90,
+      storage,
+      providers: providers.map(providerId => ({
+        providerId,
+        label: PROVIDER_USAGE_LABELS[providerId],
+        samples: [],
+        accountChanges: [],
+        downsampled: false,
+      })),
+    };
   }
   return {
     forScope(authScope: string): ProviderUsageHistorySink {
       return {
         async append(input, accountMaterial, retain) {
           try {
-            const usage = parseProviderUsageSnapshot({ schema: PROVIDER_USAGE_SCHEMA, providers: [input] }).providers[0]!;
+            const usage = parseProviderUsageSnapshot({
+              schema: PROVIDER_USAGE_SCHEMA, providers: [input],
+            }).providers[0]!;
             if (usage.error || usage.stale || !retain()) return;
-            const payload = JSON.stringify({ windows: usage.windows, ...(usage.plan === undefined ? {} : { plan: usage.plan }) });
+            const payload = JSON.stringify({
+              windows: usage.windows,
+              ...(usage.plan === undefined ? {} : { plan: usage.plan }),
+            });
             if (Buffer.byteLength(payload) > 2048) throw new Error("History sample exceeds its bound.");
             const h = await get(true);
             if (!h || !retain()) return;
             const at = Date.parse(usage.fetchedAt), scope = digest(h, "quota-scope-v1", [authScope]);
-            const fingerprint = accountMaterial === undefined ? null : digest(h, "quota-account-v1", [usage.providerId, accountMaterial]);
+            const fingerprint = accountMaterial === undefined
+              ? null : digest(h, "quota-account-v1", [usage.providerId, accountMaterial]);
             h.transaction(() => {
               prune(h);
               const db = h.database;
-              const previous = db.prepare("SELECT fingerprint FROM partitions WHERE scope=? AND provider=?").get(scope, usage.providerId) as { fingerprint: string | null } | undefined;
-              const changed = previous?.fingerprint != null && fingerprint !== null && previous.fingerprint !== fingerprint;
+              const previous = db.prepare("SELECT fingerprint FROM partitions WHERE scope=? AND provider=?")
+                .get(scope, usage.providerId) as { fingerprint: string | null } | undefined;
+              const changed = previous?.fingerprint != null && fingerprint !== null
+                && previous.fingerprint !== fingerprint;
               db.prepare(`INSERT INTO partitions(scope,provider,fingerprint,last_at) VALUES(?,?,?,?)
-                ON CONFLICT(scope,provider) DO UPDATE SET fingerprint=COALESCE(excluded.fingerprint,partitions.fingerprint),last_at=excluded.last_at`).run(scope, usage.providerId, fingerprint, at);
-              const excess = (db.prepare("SELECT COUNT(*) AS n FROM partitions").get() as { n: number }).n - MAX_PARTITIONS;
-              if (excess > 0) db.prepare("DELETE FROM partitions WHERE (scope,provider) IN (SELECT scope,provider FROM partitions WHERE NOT (scope=? AND provider=?) ORDER BY last_at,scope,provider LIMIT ?)").run(scope, usage.providerId, excess);
-              const last = db.prepare("SELECT * FROM samples WHERE scope=? AND provider=? ORDER BY last_at DESC,id DESC LIMIT 1").get(scope, usage.providerId) as unknown as (Row & { payload: string }) | undefined;
+                ON CONFLICT(scope,provider) DO UPDATE SET
+                  fingerprint=COALESCE(excluded.fingerprint,partitions.fingerprint),last_at=excluded.last_at
+              `).run(scope, usage.providerId, fingerprint, at);
+              const excess = (db.prepare("SELECT COUNT(*) AS n FROM partitions").get() as { n: number }).n
+                - MAX_PARTITIONS;
+              if (excess > 0)
+                db.prepare(`
+                  DELETE FROM partitions WHERE (scope,provider) IN (
+                    SELECT scope,provider FROM partitions WHERE NOT (scope=? AND provider=?)
+                    ORDER BY last_at,scope,provider LIMIT ?
+                  )
+                `).run(scope, usage.providerId, excess);
+              const last = db.prepare(`
+                SELECT * FROM samples WHERE scope=? AND provider=?
+                ORDER BY last_at DESC,id DESC LIMIT 1
+              `).get(scope, usage.providerId) as unknown as (Row & { payload: string }) | undefined;
               // Close spans daily: compression never grows an unbounded timestamp array.
-              if (!changed && last?.payload === payload && at >= last.last_at && Math.floor(at / DAY) === Math.floor(last.first_at / DAY)) {
-                db.prepare("UPDATE samples SET last_at=?,observations=MIN(observations+1,9007199254740991),max_gap=MAX(max_gap,?) WHERE id=?").run(at, at - last.last_at, last.id);
+              if (!changed && last?.payload === payload && at >= last.last_at
+                && Math.floor(at / DAY) === Math.floor(last.first_at / DAY)) {
+                db.prepare(`
+                  UPDATE samples SET last_at=?,observations=MIN(observations+1,9007199254740991),
+                  max_gap=MAX(max_gap,?) WHERE id=?
+                `).run(at, at - last.last_at, last.id);
               } else {
                 prune(h, 1);
-                db.prepare("INSERT INTO samples(scope,provider,first_at,last_at,observations,max_gap,payload,account_changed) VALUES(?,?,?,?,1,0,?,?)").run(scope, usage.providerId, at, at, payload, Number(changed));
+                db.prepare(`
+                  INSERT INTO samples(scope,provider,first_at,last_at,observations,max_gap,payload,account_changed)
+                  VALUES(?,?,?,?,1,0,?,?)
+                `).run(scope, usage.providerId, at, at, payload, Number(changed));
               }
             });
             degraded = false;
@@ -151,17 +218,28 @@ export function createProviderUsageHistoryStore(options: { readonly cwd: string;
             const from = Math.max(Date.parse(query.from), now() - RETENTION_MS), to = Date.parse(query.to);
             const result = empty(query, providers, "ready");
             return parseProviderUsageHistory({ ...result, providers: providers.map(providerId => {
-              const rows = h.database.prepare("SELECT * FROM samples WHERE scope=? AND provider=? AND last_at>=? AND first_at<? ORDER BY first_at,id").all(scope, providerId, from, to) as unknown as Row[];
-              const partition = h.database.prepare("SELECT truncated_before FROM partitions WHERE scope=? AND provider=?").get(scope, providerId) as { truncated_before: number | null } | undefined;
+              const rows = h.database.prepare(`
+                SELECT * FROM samples WHERE scope=? AND provider=? AND last_at>=? AND first_at<?
+                ORDER BY first_at,id
+              `).all(scope, providerId, from, to) as unknown as Row[];
+              const partition = h.database.prepare(`
+                SELECT truncated_before FROM partitions WHERE scope=? AND provider=?
+              `).get(scope, providerId) as { truncated_before: number | null } | undefined;
               const points: ProviderUsageHistorySample[] = [];
-              const boundaries = rows.filter(r => r.account_changed && r.first_at >= from).map(r => new Date(r.first_at).toISOString());
+              const boundaries = rows.filter(r => r.account_changed && r.first_at >= from)
+                .map(r => new Date(r.first_at).toISOString());
               const boundarySet = new Set(boundaries);
               for (const row of rows) {
                 const payload = JSON.parse(row.payload) as Pick<ProviderUsage, "windows" | "plan">;
                 // Only actual observed endpoints, never interpolated measurements at range edges.
                 const times = [...new Set([row.first_at, row.last_at])].filter(at => at >= from && at < to);
-                for (const at of times) points.push({ fetchedAt: new Date(at).toISOString(), observedThrough: new Date(at).toISOString(),
-                  observations: row.observations, maxGapMs: row.max_gap, ...payload });
+                for (const at of times) points.push({
+                  fetchedAt: new Date(at).toISOString(),
+                  observedThrough: new Date(at).toISOString(),
+                  observations: row.observations,
+                  maxGapMs: row.max_gap,
+                  ...payload,
+                });
               }
               points.sort((a, b) => a.fetchedAt.localeCompare(b.fetchedAt));
               const keep = new Set<ProviderUsageHistorySample>();
@@ -181,18 +259,28 @@ export function createProviderUsageHistoryStore(options: { readonly cwd: string;
                 }
                 // Preserve detected reset/plan/window transitions, not just percentage extrema.
                 for (let i = 1; i < group.length; i++) {
-                  const shape = (p: ProviderUsageHistorySample) => JSON.stringify([p.plan, p.windows.map(w => [w.kind, w.resetsAt, w.periodMs])]);
+                  const shape = (p: ProviderUsageHistorySample) => JSON.stringify([
+                    p.plan, p.windows.map(w => [w.kind, w.resetsAt, w.periodMs]),
+                  ]);
                   if (shape(group[i - 1]!) !== shape(group[i]!)) { keep.add(group[i - 1]!); keep.add(group[i]!); }
                 }
               }
               const reduced = points.filter(p => keep.has(p));
               const samples = reduced.slice(-MAX_RESPONSE_SAMPLES);
               const clippedAt = reduced.length > samples.length ? samples[0]?.fetchedAt : undefined;
-              const storedCutoff = partition?.truncated_before == null ? undefined : new Date(partition.truncated_before).toISOString();
-              const truncatedBefore = [clippedAt, storedCutoff].filter((v): v is string => v !== undefined).sort().at(-1);
-              return { providerId, label: PROVIDER_USAGE_LABELS[providerId], samples,
-                accountChanges: boundaries.filter(at => clippedAt === undefined || at >= clippedAt).slice(-MAX_RESPONSE_SAMPLES),
-                downsampled: samples.length < points.length, ...(truncatedBefore === undefined ? {} : { truncatedBefore }) };
+              const storedCutoff = partition?.truncated_before == null
+                ? undefined : new Date(partition.truncated_before).toISOString();
+              const truncatedBefore = [clippedAt, storedCutoff]
+                .filter((v): v is string => v !== undefined).sort().at(-1);
+              return {
+                providerId,
+                label: PROVIDER_USAGE_LABELS[providerId],
+                samples,
+                accountChanges: boundaries.filter(at => clippedAt === undefined || at >= clippedAt)
+                  .slice(-MAX_RESPONSE_SAMPLES),
+                downsampled: samples.length < points.length,
+                ...(truncatedBefore === undefined ? {} : { truncatedBefore }),
+              };
             }) });
           } catch { return empty(query, providers, "unavailable"); }
         },
@@ -202,7 +290,8 @@ export function createProviderUsageHistoryStore(options: { readonly cwd: string;
             if (!h) { if (degraded) throw new Error("unavailable"); return; }
             const scope = digest(h, "quota-scope-v1", [authScope]);
             h.transaction(() => {
-              for (const provider of providers) h.database.prepare("DELETE FROM partitions WHERE scope=? AND provider=?").run(scope, provider);
+              for (const provider of providers)
+                h.database.prepare("DELETE FROM partitions WHERE scope=? AND provider=?").run(scope, provider);
             });
             degraded = false;
           } catch { throw new Error("Quota history storage is unavailable."); }
