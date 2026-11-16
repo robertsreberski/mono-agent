@@ -97,3 +97,14 @@ it("binds capability route expansion to the actual non-shadowed imported registr
   ]) expect(discoverRoutes(source)).toEqual([]);
   expect(discoverRoutes('import { registerCapabilityActionRoutes as register } from "./capability-action-routes.js"; register(app);')).toHaveLength(3);
 });
+
+it("pins secret-free history and partial analytics wire fixtures", () => {
+  const history = byName("provider-usage-history").value;
+  expect(validate("ApiProviderUsageHistory", history)).toBe(true);
+  expect(validate("ApiProviderUsageHistory", { ...history, fingerprint: "fictional-private" })).toBe(false);
+  expect(validate("ApiProviderUsageHistory", { ...history, providers: [{ ...history.providers[0], accountId: "fictional-private" }] })).toBe(false);
+  const analytics = byName("usage-analytics").value;
+  expect(analytics.total.costUnknown).toBe(true); expect(analytics.total.costUsd).toBeUndefined(); expect(analytics.total.knownCostUsd).toBe(0.25);
+  expect(validate("ApiUsageAnalytics", analytics)).toBe(true);
+  expect(validate("ApiUsageAnalytics", { ...analytics, prompt: "fictional private text" })).toBe(false);
+});

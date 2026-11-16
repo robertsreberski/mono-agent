@@ -269,3 +269,16 @@ describe("compaction token and non-dispatch boundaries", () => {
     expect(mixed.compaction).toMatchObject({ requests: 1, requestsWithUsage: 1, costUsd: 0 });
   });
 });
+
+it("retains an observed token model when a priced follow-up omits its model, without repricing", async () => {
+  const { projectMessageUsage } = await import("../message-cost.js");
+  const parts = [
+    { type: "telemetry", event: "usage_update", data: { model: "fictional:observed", tokens: { input: 100, output: 20, cacheRead: 30, cacheWrite: 5 } } },
+    { type: "telemetry", event: "usage_update", data: { cumulativeUsd: 0.5 } },
+  ];
+  const rollup = messageUsageRollup({ parts, attribution: { executed: { model: "fictional:configured" } } });
+  const thread = sumThreadUsage([rollup]);
+  expect(thread.total).toMatchObject({ costUsd: 0.5, tokens: { input: 100, output: 20, cacheRead: 30, cacheWrite: 5 } });
+  expect(thread.byModel[0]?.model).toBe("fictional:observed");
+  expect(projectMessageUsage(parts).costUsd).toBe(0.5);
+});

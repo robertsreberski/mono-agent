@@ -50,7 +50,7 @@ import type { SettingsSection } from "../mobile-history";
 /** Mount the real screen owners and remove them on close, including in race tests. */
 function SettingsHarness({ open, onClose, section = "providers", layout = "split", onNotice = () => undefined }: {
   readonly open: boolean; readonly onClose: () => void;
-  readonly section?: SettingsSection; readonly layout?: "split" | "stacked"; readonly onNotice?: (message: string) => void;
+  readonly section?: Exclude<SettingsSection, "usage">; readonly layout?: "split" | "stacked"; readonly onNotice?: (message: string) => void;
 }) {
   return open ? <AgentSettingsScreen layout={layout} section={section} onClose={onClose} onNotice={onNotice} /> : null;
 }

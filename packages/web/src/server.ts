@@ -3,7 +3,7 @@ import { registerCapabilityActionRoutes } from "./capability-action-routes.js";
 import { voiceFormat, WEB_VOICE_LIMITS } from "./transcription.js";
 import { readVoiceUpload } from "./voice-upload.js";
 import { browserCostWire } from "./cost-wire.js";
-import { isProviderUsageId } from "@mono-agent/contracts";
+import { isProviderUsageId, parseProviderUsageHistoryQuery, parseUsageHistoryRange } from "@mono-agent/contracts";
 import type { CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
@@ -416,6 +416,44 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       }
       void trackOperation(service.capabilitySetup(pathParam(req.params.id)), activeOperations)
         .then((snapshot) => res.json(snapshot)).catch(next);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/agents/:id/provider-usage/history", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    try {
+      exactRequestOrigin(req);
+      let query;
+      try { query = parseProviderUsageHistoryQuery(req.query); }
+      catch { throw new WebConsoleError("invalid_usage_range", "Choose a valid quota history range and time zone.", 400); }
+      const controller = new AbortController();
+      res.once("close", () => controller.abort());
+      void trackOperation(service.providerUsageHistory(pathParam(req.params.id), query, controller.signal), activeOperations).then(value => res.json(value)).catch(next);
+    } catch (error) { next(error); }
+  });
+  app.delete("/api/v1/agents/:id/provider-usage/history", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    try {
+      exactRequestOrigin(req);
+      const provider = req.query.provider;
+      if (Object.keys(req.query).some(key => key !== "provider") || provider !== undefined && !isProviderUsageId(provider)
+        || !req.body || typeof req.body !== "object" || Array.isArray(req.body) || Object.keys(req.body).length) throw new WebConsoleError("invalid_history_clear", "Invalid history clear request.", 400);
+      void trackOperation(service.clearProviderUsageHistory(pathParam(req.params.id), provider), activeOperations).then(() => res.json({})).catch(next);
+    } catch (error) { next(error); }
+  });
+  app.get("/api/v1/agents/:id/usage-analytics", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    try {
+      exactRequestOrigin(req);
+      let query;
+      try { query = parseUsageHistoryRange(req.query); }
+      catch { throw new WebConsoleError("invalid_usage_range", "Choose a valid usage range and time zone.", 400); }
+      const controller = new AbortController();
+      res.once("close", () => controller.abort());
+      void trackOperation(service.usageAnalytics(pathParam(req.params.id), query, controller.signal), activeOperations).then(value => {
+        if (Buffer.byteLength(JSON.stringify(browserCostWire(value))) > 2 * 1024 * 1024) throw new WebConsoleError("usage_range_too_large", "This usage range is too large. Choose a shorter range.", 413);
+        res.json(value);
+      }).catch(next);
     } catch (error) { next(error); }
   });
 

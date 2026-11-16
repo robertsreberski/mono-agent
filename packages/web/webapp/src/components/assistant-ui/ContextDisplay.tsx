@@ -174,7 +174,7 @@ function CostSection({ totals, loading, id }: { readonly totals?: WebThreadUsage
   </section>;
 }
 
-function ProviderUsageSection({ agent, providerId, id }: { readonly agent: AgentSummary; readonly providerId: ProviderUsageId; readonly id: string }) {
+function ProviderUsageSection({ agent, providerId, id, onViewHistory }: { readonly agent: AgentSummary; readonly providerId: ProviderUsageId; readonly id: string; readonly onViewHistory: () => void }) {
   const { snapshot, loading } = useProviderUsage(agent);
   const usage = snapshot?.providers.find((provider) => provider.providerId === providerId);
   const label = usage?.label ?? PROVIDER_USAGE_LABELS[providerId];
@@ -187,6 +187,7 @@ function ProviderUsageSection({ agent, providerId, id }: { readonly agent: Agent
       </span></div>
     {loading ? <p className="context-display-provider-loading" role="status">Loading usage…</p>
       : <ProviderUsageMeters usage={usage} density="compact" />}
+    <a className="context-display-history-link" href={`?agent=${encodeURIComponent(agent.sourceId)}&settings=usage`} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onViewHistory(); } }}>View history</a>
   </section>;
 }
 
@@ -284,7 +285,7 @@ export function ContextDisplay({ threadId, detail, compactThreadId, compactBlock
           </>}
           {open && availableProviderUsage && <ProviderUsageSection
             key={`${availableProviderUsage.agent.sourceId}:${availableProviderUsage.agent.generation ?? "unknown"}:${availableProviderUsage.providerId}`}
-            agent={availableProviderUsage.agent} providerId={availableProviderUsage.providerId} id={`${id}-plan`} />}
+            agent={availableProviderUsage.agent} providerId={availableProviderUsage.providerId} id={`${id}-plan`} onViewHistory={() => { setOpen(false); window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "usage" } })); }} />}
           {compactThreadId !== undefined && <CompactFooter id={`${id}-compact`} compact={() => { void compact(); }}
             compacting={busy} blocked={compactBlocked} percent={percent} result={compactResult} error={compactError} measuredModel={context.measuredModel ?? context.usage?.model} />}
         </Popover.Popup>

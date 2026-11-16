@@ -375,6 +375,7 @@ function inferenceUsageRollup(message: {
   let aggregate: NormalizedUsage | null = null;
   let tokens: MessageUsageSlice["tokens"];
   let rejectedTokens = false;
+  let tokenModel: string | undefined;
   for (const part of message.parts) {
     if (part.type !== "telemetry" || part.event === undefined) continue;
     const layers = dataLayers(part.data);
@@ -387,7 +388,7 @@ function inferenceUsageRollup(message: {
     if (observation.cost !== undefined) aggregate = observation;
     // A cost-only update must not erase the most recent aggregate token sample.
     const observed = tokenObservation(part.data);
-    if (observed !== undefined) { tokens = observed; rejectedTokens = false; }
+    if (observed !== undefined) { tokens = observed; tokenModel = observation.model ?? tokenModel; rejectedTokens = false; }
     else if (hasTokenFields(part.data)) rejectedTokens = true;
   }
   const subagents: Array<MessageUsageSlice & { readonly detached: boolean }> = [];
@@ -452,7 +453,7 @@ function inferenceUsageRollup(message: {
     : Math.max(reportedCost, syncCost + summaryKnown);
   // A failed run may have no executed attribution, but its attempted reference
   // still names the provider model used by the persisted turn when available.
-  const model = aggregate?.model ?? message.attribution?.executed?.model ?? message.attribution?.attempted?.model;
+  const model = aggregate?.model ?? tokenModel ?? message.attribution?.executed?.model ?? message.attribution?.attempted?.model;
   return {
     main: {
       ...(model === undefined ? {} : { model }),
@@ -552,4 +553,11 @@ export function upkeepSummaryParts(summary: unknown): { type: "telemetry"; event
     if (partial) result.push(marker());
     return result;
   } catch { return [marker()]; }
+}
+
+/** Historical project-summary basis: main message price, never detached job spend. */
+export function projectMessageUsage(parts: readonly CostTelemetryPart[], rollup?: MessageUsageRollup): MessageUsageSlice {
+  const costUsd = latestMessageCostUsd(parts);
+  const knownCostUsd = costUsd === null ? (rollup ?? messageUsageRollup({ parts })).main.knownCostUsd : undefined;
+  return { ...(costUsd === undefined ? {} : { costUsd }), ...(knownCostUsd === undefined ? {} : { knownCostUsd }) };
 }

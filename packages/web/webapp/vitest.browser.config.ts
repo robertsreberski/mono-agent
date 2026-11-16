@@ -18,6 +18,11 @@ const prepareCapabilityScreenshots: BrowserCommand<[]> = async (context) => {
   if (process.env.VITE_CAPABILITY_SHOTS) await context.page.setViewportSize({ width: 1440, height: 2000 });
 };
 
+const prepareUsageAnalyticsScreenshots: BrowserCommand<[]> = async (context) => {
+  if (context.provider.name !== "playwright") throw new Error("Playwright required");
+  if (process.env.VITE_USAGE_ANALYTICS_SHOTS) await context.page.setViewportSize({ width: 1440, height: 2000 });
+};
+
 const dragVoiceNote: BrowserCommand<[]> = async (context) => {
   if (context.provider.name !== "playwright") throw new Error("Playwright required");
   const bounds = await context.iframe.getByRole("slider", { name: "Seek voice note" }).boundingBox();
@@ -193,7 +198,7 @@ export default defineConfig({
           context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
         },
       ],
-      commands: { prepareCapabilityScreenshots, checkServerVoicePlayback, dragVoiceNote, emulateColorScheme, emulateReducedMotion, saveVoiceFixture },
+      commands: { prepareCapabilityScreenshots, prepareUsageAnalyticsScreenshots, checkServerVoicePlayback, dragVoiceNote, emulateColorScheme, emulateReducedMotion, saveVoiceFixture },
     },
   },
 });

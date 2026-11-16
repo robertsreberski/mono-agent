@@ -1403,6 +1403,123 @@
       }
     },
     {
+      "name": "provider-usage-history",
+      "type": "ApiProviderUsageHistory",
+      "value": {
+        "schema": "mono-agent.provider-usage-history.v1",
+        "from": "2030-01-02T00:00:00.000Z",
+        "to": "2030-01-03T00:00:00.000Z",
+        "bucket": "day",
+        "timeZone": "Europe/Berlin",
+        "retentionDays": 90,
+        "storage": "ready",
+        "providers": [
+          {
+            "providerId": "openai-codex",
+            "label": "Codex",
+            "samples": [
+              {
+                "fetchedAt": "2030-01-02T12:00:00.000Z",
+                "observedThrough": "2030-01-02T12:00:00.000Z",
+                "observations": 1,
+                "maxGapMs": 0,
+                "plan": "Plus",
+                "windows": [
+                  {
+                    "kind": "session",
+                    "label": "Session",
+                    "usedPercent": 45,
+                    "resetsAt": "2030-01-02T15:00:00.000Z",
+                    "periodMs": 18000000
+                  }
+                ]
+              }
+            ],
+            "accountChanges": [
+              "2030-01-02T12:00:00.000Z"
+            ],
+            "downsampled": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "usage-analytics",
+      "type": "ApiUsageAnalytics",
+      "value": {
+        "schema": "mono-agent.usage-analytics.v1",
+        "sourceId": "agent-example",
+        "from": "2030-01-02T00:00:00.000Z",
+        "to": "2030-01-03T00:00:00.000Z",
+        "bucket": "day",
+        "timeZone": "UTC",
+        "computedAt": "2030-01-02T12:00:00.000Z",
+        "attribution": "message-created-at",
+        "scope": "retained-conversations",
+        "total": {
+          "costUnknown": true,
+          "knownCostUsd": 0.25,
+          "costPartial": true,
+          "tokens": {
+            "input": 1200,
+            "output": 200,
+            "cacheRead": 400,
+            "cacheWrite": 50
+          }
+        },
+        "buckets": [
+          {
+            "start": "2030-01-02T00:00:00.000Z",
+            "end": "2030-01-03T00:00:00.000Z",
+            "total": {
+              "costUnknown": true,
+              "knownCostUsd": 0.25
+            },
+            "models": [
+              {
+                "provider": "fictional",
+                "model": "fictional:swift",
+                "costUnknown": true,
+                "knownCostUsd": 0.25
+              }
+            ]
+          }
+        ],
+        "topConversations": [
+          {
+            "threadId": "thread-example",
+            "title": "Morgan's sample project",
+            "usage": {
+              "costUnknown": true,
+              "knownCostUsd": 0.25
+            }
+          }
+        ],
+        "topProjects": [
+          {
+            "projectId": "project-example",
+            "name": "Sample project",
+            "usage": {
+              "costUnknown": true,
+              "knownCostUsd": 0.25
+            },
+            "projectSummaryUsage": {
+              "costUsd": 0.2
+            }
+          }
+        ],
+        "unassignedUsage": {},
+        "coverage": {
+          "messages": 1,
+          "conversations": 1,
+          "projects": 1,
+          "containsRunningUsage": false,
+          "tokensPartial": false,
+          "costPartial": true
+        }
+      }
+    },
+    {
       "name": "provider-usage",
       "type": "ApiProviderUsage",
       "value": {

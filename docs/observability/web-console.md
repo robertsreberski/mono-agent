@@ -566,8 +566,126 @@ The independent read routes are agent `${basePath}/v1/provider-usage` and consol
 They are no-store, use the existing owner/operator and same-origin protections,
 and return `mono-agent.provider-usage.v1`. Usage failures never block the auth
 rows. The web server never reads credentials; vendor identifiers and secrets
-are dropped on the agent host before transport. No subscription usage is
-persisted by the service, and no quota purchase/reset endpoint is called.
+are dropped on the agent host before transport. Successful retained fetches also enter the agent-owned quota history below;
+no quota purchase/reset endpoint is called.
+
+### Usage analytics
+
+Open **Agent settings → Usage analytics**, or **View history** in the context
+popover. `?agent=<source-id>&settings=usage` is the existing settings handoff
+shape. Opening analytics reads local history and retained console accounting;
+it does not mount the live quota polling owner or add vendor checks. **Refresh
+analytics** re-reads those datasets. **Refresh usage** alone requests an explicit
+vendor check through the existing refresh/backoff path. **Clear quota history**
+requires confirmation and leaves conversation usage unchanged.
+
+The screen offers 6h, 24h, 7d, 30d and 90d ranges, provider/window quota lines,
+reported reset markers, detected account boundaries and the existing measured
+pace concept. Lines do not connect across detected account changes or resets;
+dotted connectors indicate known gaps over twice the typical observation interval
+or six hours, whichever is longer. The typical interval is the median of at least
+three gaps within an account/reset segment; fewer intervals use the six-hour floor.
+Compression and reduction alone do not establish missing checks. Connecting lines
+join actual observations, never continuous measurements. Empty, stale, storage-unavailable and unsupported/offline states
+remain separate. Historical quota stays agent/sign-in scoped as described below;
+conversation spend covers retained conversations across sign-ins.
+
+Token/cost bars stack by recorded model, with input, output, cache-read and
+cache-write detail, known-spend/partial labels, and top conversations/projects.
+Every chart has a keyboard-operable table alternative; dense quota observations
+are paged, and wide data tables scroll within their own keyboard-focusable region.
+Tokens for synchronous children remain in the inclusive parent model rather than
+being counted twice; detached jobs are independent. Compaction retains its recorded
+extraction model and included/extra precedence. Continuity upkeep is deduplicated
+per operation over the full thread range before assigning buckets, anchored at
+its first retained evidence in that range. Unknown prices are not free work.
+
+`GET /api/v1/agents/:id/usage-analytics` accepts half-open `from`/`to` instant
+bounds, `bucket=hour|day` and optional IANA `timeZone` (UTC default). The browser
+sends its viewer zone. Hour boundaries stay UTC and labels are local; day
+boundaries are actual viewer-local midnights, including 23/25-hour DST days. The
+response echoes the effective boundary zone; partial first/last bucket bounds
+are clamped to the requested range. Totals are independent of bucket
+width/timezone for the same retained message scope. Time attribution is the
+containing message's creation instant, including cumulative long-running job
+observations, not a reconstructed per-request or job-lifetime clock.
+
+The query includes archived, cron and background conversations of the selected
+source, including silent retained assistant observations. Deleting conversations
+removes their usage. Non-console runs and artifact summary prompt/reply text are
+not imported; run summaries have different retention and starting-model attribution
+and cannot reconcile this ledger. Unqualified legacy models have an explicit
+unknown provider. At most 20 named models plus Other and 10 conversation/project
+rankings are returned, without discarding counters from the total.
+
+Project rankings show all retained member spend and a separately labelled
+**Active-conversation basis**. That comparison preserves existing project summary
+rules: current non-archived members, main message costs, no detached-job surcharge.
+It equals the existing project-month figure for the same UTC calendar-month range;
+it need not equal the broader analytics total. Membership attribution is current.
+
+Queries are indexed and memoized, bounded to 90 days (7 days hourly), 100,000
+candidate messages, 64 MiB of message parts, a bounded read deadline and a 2 MiB
+response. An over-budget range fails explicitly rather than displaying incomplete
+top rankings; choose the shorter 6h range. No new config keys are needed.
+
+Console quota history GET/DELETE use
+`/api/v1/agents/:id/provider-usage/history`, with the same range/provider query
+and empty clear body as the operator routes below. They are exact-origin,
+no-store, capability-negotiated, current-generation proxies. The console never
+opens agent credential/history files. Old/offline agents can still show the
+console's retained token/cost dataset; quota history requires a supporting live
+agent. Existing snapshot clients and cached consoles retain their old routes.
+
+### Quota history
+
+Quota history is sampled only when an existing real vendor usage fetch succeeds:
+opening the existing usage surface, calling `ProviderUsage`, or explicitly
+refreshing. Cache reads and failed/discarded requests do not record samples.
+There is no background sampler. History reads do not fetch live usage. Persistence
+uses a bounded serialized queue outside live-result publication; storage timeouts
+never strand quota/tool reads. Shutdown has a short drain deadline and fences late
+writes. A pending sample can be lost on interruption; history reports degradation
+instead of changing vendor success/backoff. Opening an existing store also prunes
+expired samples and account fingerprints before serving history. Failures
+retain the last actual successful observation, not a synthetic zero; after a
+restart the exact failed attempts are unknown.
+
+The agent stores owner-private SQLite under `.mono-agent/provider-usage-v1/`,
+separate from console conversation usage. Retention is 90 days, capped at 50,000
+compressed sample rows, 64 auth-scope/provider partitions and a 128 MiB database
+plus bounded rollback journal. Consecutive identical observations share a daily
+payload; first/last timestamps are actual checks, and gap/count metadata is not
+evidence of continuous monitoring. Reductions retain first/last, extrema and
+reset/account boundaries. Capacity truncation is explicit. Missing intervals
+are not zero usage.
+
+History belongs to this agent and configured sign-in scope, not the rotating
+access token. It remains readable for activated providers after sign-out.
+“Quota history for this agent's sign-in. A marker shows where a different account
+was detected.” Codex account id, Copilot device token/host and API key replacement
+can detect a change through store-private HMAC fingerprints. Raw identifiers,
+credentials and fingerprints never reach the browser. Anthropic has no stable
+identifier in this credential interface, so re-login/account changes cannot be
+detected there; its timeline remains continuous. The live cache's credential
+race fence is unchanged, and a discarded fetch never writes history.
+
+Supporting agents advertise `capabilities.providerUsage.history.version: 1`.
+`GET ${basePath}/v1/provider-usage/history` requires `from`, `to`, `bucket` and
+optionally `timeZone`/`provider`; the bounds are half-open instants, at most
+90 days (7 days for hourly queries). Day reduction uses the validated IANA
+viewer zone, default UTC; hourly boundaries stay UTC. The response echoes the
+effective zone. Detected account markers are timestamps only, and lines must not
+connect across them. `DELETE` on that path with `{}` clears activated providers'
+history in this scope when `history.clear: true` is advertised. An in-flight
+real fetch may legitimately create a fresh post-clear sample. Existing agents
+without history keep their current snapshot routes unchanged.
+
+Conversation/session reset does not clear quota history. For a damaged history
+store, stop the agent before removing only `.mono-agent/provider-usage-v1/`, then
+start it normally under owner control; there is no automatic destructive repair.
+Storage errors affect history availability, not successful vendor quota or its
+backoff. These percentages are not a console spend ledger or dollar conversion.
 
 Copilot uses the agent’s Pi `github-copilot` credential. For OAuth, quota reads
 send the underlying GitHub device-flow token in `credential.refresh`, never the

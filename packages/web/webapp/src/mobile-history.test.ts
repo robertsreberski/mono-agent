@@ -49,3 +49,11 @@ describe("settings history ownership", () => {
     } finally { window.history.go = go; }
   });
 });
+
+it("keeps usage settings owned when a route writer replaces the URL", () => {
+  const href = window.location.href;
+  const state = { monoAgentMobileNavigation: { version: 1, surface: "settings", section: "usage", depth: 1, href } };
+  expect(mobileHistoryEntry(state)?.surface).toBe("settings");
+  const next = routeWriteState(state, "?thread=fictional", "replace");
+  expect((next as { monoAgentMobileNavigation: { href: string } }).monoAgentMobileNavigation.href).toContain("thread=fictional");
+});

@@ -1,4 +1,4 @@
-import type { WebThreadUsage, WebUsageTokens } from "./contracts.js";
+import type { WebThreadUsage, WebUsageTokens, WebUsageSlice } from "./contracts.js";
 import { upkeepUsageRollup, type MessageUsageRollup, type MessageUsageSlice } from "./message-cost.js";
 
 type MutableSlice = { pending?: true; tokens?: WebUsageTokens; costUsd?: number | null; knownCostUsd?: number; tokensPartial?: true; costPartial?: true };
@@ -30,6 +30,26 @@ function add(target: MutableSlice, source: MessageUsageSlice) {
 
 /** Synchronous children are inclusive subsets; detached jobs are independent. */
 export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedAt = new Date().toISOString(), settledAssistantTurns?: number): WebThreadUsage {
+  return deriveThreadUsage(rollups, computedAt, settledAssistantTurns, false);
+}
+
+/** Same accounting, retaining token-only model slices for analytics (not the legacy API). */
+export function usageModelContributions(rollups: readonly MessageUsageRollup[]): WebThreadUsage {
+  return deriveThreadUsage(rollups, "", undefined, true);
+}
+
+/** Shared additive rules, including unknown totals, known subtotals and saturation. */
+export function sumUsageSlices(slices: readonly WebUsageSlice[]): MessageUsageSlice {
+  const total: MutableSlice = {};
+  for (const slice of slices) {
+    // Zero-filled buckets/empty threads have no observation and must not clear pending.
+    if (slice.pending || slice.tokens !== undefined || slice.costUsd !== undefined
+      || slice.knownCostUsd !== undefined || slice.tokensPartial || slice.costPartial) add(total, slice);
+  }
+  return total;
+}
+
+function deriveThreadUsage(rollups: readonly MessageUsageRollup[], computedAt: string, settledAssistantTurns: number | undefined, includeUnpriced: boolean): WebThreadUsage {
   const total: MutableSlice = {};
   const compaction: MutableSlice & { requests: number; requestsWithUsage: number } = { requests: 0, requestsWithUsage: 0 };
   const subagents: MutableSlice & { runs: number; runsWithTokens: number } = { runs: 0, runsWithTokens: 0 };
@@ -90,7 +110,7 @@ export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedA
     ...(hasUpkeep ? { upkeep: upkeep.slice } : {}),
     ...(compaction.requests ? { compaction: { ...compaction } } : {}),
     ...(subagents.runs === 0 ? {} : { subagents: { ...subagents } }),
-    byModel: [...byModel.entries()].filter(([, slice]) => slice.costUsd !== undefined)
+    byModel: [...byModel.entries()].filter(([, slice]) => slice.costUsd !== undefined || includeUnpriced && (slice.tokens !== undefined || slice.pending))
       .sort((a, b) => (known(b[1]) ?? 0) - (known(a[1]) ?? 0))
       .map(([model, slice]) => ({ ...slice, ...(model === undefined ? {} : { model }) })),
     computedAt,

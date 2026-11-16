@@ -3,7 +3,7 @@ import type { CredentialSetupService } from "../credential-setup.js";
 import { CapabilityActionError, parseCapabilityActionInput, parseCapabilityActionSaveInput, parseCapabilityActionsSnapshot, parseCapabilityActionPreview, parseCapabilityActionSaved, type CapabilityActionsService } from "../capability-actions.js";
 import { parseCapabilitySetupSnapshot, type CapabilitySetupService } from "../capability-setup.js";
 import { isAgentCompactionAccounting } from "@mono-agent/contracts";
-import { isProviderUsageId, parseProviderUsageSnapshot, type ProviderUsageOperator } from "@mono-agent/contracts";
+import { isProviderUsageId, parseProviderUsageSnapshot, parseProviderUsageHistoryQuery, parseProviderUsageHistory, type ProviderUsageOperator } from "@mono-agent/contracts";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { isAbsolute } from "node:path";
@@ -504,7 +504,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             ...(options.modelCatalog === undefined
               ? {}
               : { modelCatalog: { version: 1, maxPageSize: MAX_MODEL_CATALOG_PAGE_SIZE } }),
-            ...(options.providerUsage === undefined ? {} : { providerUsage: { version: 1, ...(typeof options.providerUsage.refresh === "function" ? { refresh: true } : {}) } }),
+            ...(options.providerUsage === undefined ? {} : { providerUsage: { version: 1, ...(typeof options.providerUsage.refresh === "function" ? { refresh: true } : {}), ...(typeof options.providerUsage.history === "function" ? { history: { version: 1, ...(typeof options.providerUsage.clearHistory === "function" ? { clear: true } : {}) } } : {}) } }),
             ...(options.providerAuth === undefined
               ? {}
               : {
@@ -1305,6 +1305,34 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       res.status(400).json({ error: "invalid_provider_usage_refresh" }); return;
     }
     void options.providerUsage.refresh(provider).then((snapshot) => res.json(parseProviderUsageSnapshot(snapshot))).catch(next);
+  });
+
+  app.use(`${basePath}/v1/provider-usage/history`, (req, res, next) => {
+    // Native operator clients have no browser Origin; reject a foreign browser.
+    if (req.headers.origin !== undefined && req.headers.origin !== `${req.protocol}://${req.get("host")}`) {
+      res.status(403).json({ error: "origin_forbidden" }); return;
+    }
+    next();
+  });
+  app.get(`${basePath}/v1/provider-usage/history`, (req, res, next) => {
+    if (typeof options.providerUsage?.history !== "function") { res.status(409).json({ error: "provider_usage_history_unavailable" }); return; }
+    let query;
+    try { query = parseProviderUsageHistoryQuery(req.query); }
+    catch { res.status(400).json({ error: "invalid_provider_usage_history" }); return; }
+    void options.providerUsage.history(query).then(value => {
+      const body = JSON.stringify(parseProviderUsageHistory(value));
+      if (Buffer.byteLength(body) > 2 * 1024 * 1024) { res.status(502).json({ error: "provider_usage_history_too_large" }); return; }
+      res.type("json").send(body);
+    }).catch(next);
+  });
+  app.delete(`${basePath}/v1/provider-usage/history`, express.json({ limit: 1024, strict: true }), (req, res, next) => {
+    if (typeof options.providerUsage?.clearHistory !== "function") { res.status(409).json({ error: "provider_usage_history_clear_unavailable" }); return; }
+    const provider = req.query.provider;
+    if (Object.keys(req.query).some(key => key !== "provider") || provider !== undefined && !isProviderUsageId(provider)
+      || !req.body || typeof req.body !== "object" || Array.isArray(req.body) || Object.keys(req.body).length !== 0) {
+      res.status(400).json({ error: "invalid_provider_usage_history_clear" }); return;
+    }
+    void options.providerUsage.clearHistory(provider).then(() => res.json({})).catch(next);
   });
 
   app.get(`${basePath}/v1/provider-usage`, (req, res, next) => {

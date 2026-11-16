@@ -213,6 +213,8 @@ export interface WebAgentSummary {
   readonly supportsCredentialSetup?: true;
   readonly supportsProviderUsage?: true;
   readonly supportsProviderUsageRefresh?: true;
+  readonly supportsProviderUsageHistory?: true;
+  readonly supportsProviderUsageHistoryClear?: true;
   /** Additive explicit live-check action; passive status remains traffic-free. */
   readonly supportsProviderAuthChecks?: true;
   readonly models?: readonly string[];
@@ -1452,3 +1454,37 @@ export interface CreateWebUploadInput {
 export type { CapabilityActionsSnapshot as WebCapabilityActionsSnapshot, CapabilityActionInput as WebCapabilityActionInput, CapabilityActionSaveInput as WebCapabilityActionSaveInput, CapabilityActionPreview as WebCapabilityActionPreview, CapabilityActionSaved as WebCapabilityActionSaved } from "@mono-agent/channel-operator/client";
 
 export type { CredentialSnapshot as WebCredentialSnapshot, CredentialSaveRequest as WebCredentialSaveRequest, CredentialRequest as WebCredentialRequest, CredentialSaved as WebCredentialSaved } from "@mono-agent/channel-operator/client";
+
+/** Local console accounting, not a vendor/account billing statement. */
+export interface WebUsageAnalyticsQuery {
+  readonly from: string;
+  readonly to: string;
+  readonly bucket: "hour" | "day";
+  readonly timeZone?: string;
+}
+export interface WebUsageAnalytics extends WebUsageAnalyticsQuery {
+  readonly schema: "mono-agent.usage-analytics.v1";
+  readonly sourceId: string;
+  readonly timeZone: string;
+  readonly computedAt: string;
+  readonly attribution: "message-created-at";
+  readonly scope: "retained-conversations";
+  readonly total: WebUsageSlice;
+  readonly buckets: readonly {
+    readonly start: string;
+    readonly end: string;
+    readonly total: WebUsageSlice;
+    readonly models: readonly (WebUsageSlice & { readonly provider: string | null; readonly model: string | null; readonly other?: true })[];
+  }[];
+  readonly topConversations: readonly { readonly threadId: string; readonly title: string; readonly usage: WebUsageSlice }[];
+  readonly topProjects: readonly { readonly projectId: string; readonly name: string; readonly usage: WebUsageSlice; readonly projectSummaryUsage: WebUsageSlice }[];
+  readonly unassignedUsage: WebUsageSlice;
+  readonly coverage: {
+    readonly messages: number;
+    readonly conversations: number;
+    readonly projects: number;
+    readonly containsRunningUsage: boolean;
+    readonly tokensPartial: boolean;
+    readonly costPartial: boolean;
+  };
+}

@@ -259,6 +259,15 @@ steering activity relocates a confirmed transient ledger behind the user's new
 message when the transport supports deletion; deletion failure falls back to
 editing in place and never changes final-answer delivery.
 
+`ProviderUsageHistory` is the bounded `mono-agent.provider-usage-history.v1`
+projection: compressed observations, detected account boundary timestamps and
+storage/retention state, with no credential identities or fingerprints. Optional
+operator history/clear methods leave the existing snapshot contract unchanged.
+`parseUsageHistoryRange` validates bounded half-open instant ranges and IANA day
+zones; `usageHistoryBucket` computes actual local-midnight boundaries, including
+23/25-hour DST days. Hourly boundaries remain UTC. History parsers reuse the
+strict current-window validator.
+
 ## Public API
 
 The shared MCP Apps contract owns `MCP_APPS_EXTENSION_ID`,
@@ -454,6 +463,7 @@ PROCESS_JOB_STATES
 PROVIDER_AUTH_CHECK_SCHEMA
 PROVIDER_AUTH_SESSION_SCHEMA
 PROVIDER_USAGE_ERRORS
+PROVIDER_USAGE_HISTORY_SCHEMA
 PROVIDER_USAGE_IDS
 PROVIDER_USAGE_LABELS
 PROVIDER_USAGE_SCHEMA
@@ -482,6 +492,10 @@ ProviderAuthStatusSnapshot
 ProviderAuthUsage
 ProviderUsage
 ProviderUsageErrorCode
+ProviderUsageHistory
+ProviderUsageHistoryProvider
+ProviderUsageHistoryQuery
+ProviderUsageHistorySample
 ProviderUsageId
 ProviderUsageOperator
 ProviderUsageSnapshot
@@ -499,6 +513,8 @@ SettingsJsonBackup
 SettingsJsonBackupRead
 SettingsJsonError
 SettingsJsonValue
+USAGE_HISTORY_RETENTION_DAYS
+UsageHistoryRange
 agentAttachmentKindFromMimeType
 appendReplyPartFallback
 assertAgentContinuationOriginContext
@@ -565,7 +581,10 @@ parseProviderAuthSessionInput
 parseProviderAuthSessionSnapshot
 parseProviderAuthSessionStartInput
 parseProviderAuthStatusSnapshot
+parseProviderUsageHistory
+parseProviderUsageHistoryQuery
 parseProviderUsageSnapshot
+parseUsageHistoryRange
 peerQuestionStateLabel
 privateTemp
 processJobPublicError
@@ -597,6 +616,7 @@ suppressesNotification
 syncDirectory
 toolNameLeaf
 unsupportedReplyPartDeliveryOutcomes
+usageHistoryBucket
 writeSettingsJson
 ```
 
@@ -604,20 +624,31 @@ writeSettingsJson
 
 ```text
 PROVIDER_USAGE_ERRORS
+PROVIDER_USAGE_HISTORY_SCHEMA
 PROVIDER_USAGE_IDS
 PROVIDER_USAGE_LABELS
 PROVIDER_USAGE_SCHEMA
 ProviderUsage
 ProviderUsageErrorCode
+ProviderUsageHistory
+ProviderUsageHistoryProvider
+ProviderUsageHistoryQuery
+ProviderUsageHistorySample
 ProviderUsageId
 ProviderUsageOperator
 ProviderUsageSnapshot
 ProviderUsageWindow
+USAGE_HISTORY_RETENTION_DAYS
+UsageHistoryRange
 formatProviderUsageLead
 isProviderUsageId
+parseProviderUsageHistory
+parseProviderUsageHistoryQuery
 parseProviderUsageSnapshot
+parseUsageHistoryRange
 projectProviderUsage
 projectProviderUsageWindow
+usageHistoryBucket
 ```
 
 **`@mono-agent/contracts/upkeep-accounting`**

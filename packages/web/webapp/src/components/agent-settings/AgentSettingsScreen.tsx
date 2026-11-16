@@ -34,7 +34,7 @@ const RestartOwnerBridge = memo(function RestartOwnerBridge({ agent, onChange }:
 });
 
 export function AgentSettingsScreen({ section, intent = 0, layout, onClose, onNotice }: {
-  readonly section: SettingsSection | null;
+  readonly section: Exclude<SettingsSection, "usage"> | null;
   readonly intent?: number;
   readonly layout: "split" | "stacked";
   readonly onClose: () => void;
@@ -64,7 +64,7 @@ export function AgentSettingsScreen({ section, intent = 0, layout, onClose, onNo
 }
 
 function SettingsContent({ agent, section, intent, layout, provider, restart, onClose, onNotice, runningCount }: {
-  readonly agent: AgentSummary; readonly section: SettingsSection | null; readonly intent: number; readonly layout: "split" | "stacked";
+  readonly agent: AgentSummary; readonly section: Exclude<SettingsSection, "usage"> | null; readonly intent: number; readonly layout: "split" | "stacked";
   readonly provider: ProviderState | null; readonly restart: RestartState | null;
   readonly onClose: () => void; readonly onNotice: (message: string) => void; readonly runningCount: number | undefined;
 }) {
@@ -191,6 +191,7 @@ function SettingsContent({ agent, section, intent, layout, provider, restart, on
       <div className="settings-pane">
         {agent.status === "offline" && <div className="settings-notice">{agent.label} is offline. Changes that need the agent are paused. Using the agent config still works.</div>}
         <AgentPinRow key={agent.sourceId} agent={agent} />
+        <button type="button" className="settings-button" onClick={() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "usage" } }))}>Usage analytics</button>
         <section className="settings-page-section" data-settings-target="new-conversations" tabIndex={-1} aria-labelledby="settings-new-title"><div className="settings-section-head"><h2 id="settings-new-title" className="settings-section-title">New conversations</h2><p className="settings-section-summary">The model and effort new conversations start with. Existing conversations keep theirs.</p></div>
           <NewConversationsSection agent={agent} onNotice={(message) => { setAnnouncement(message); onNotice(message); }} onSaveError={setAnnouncement} />
         </section>

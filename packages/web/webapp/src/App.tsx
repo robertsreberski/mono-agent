@@ -1,3 +1,4 @@
+import { UsageAnalyticsScreen } from "./components/usage-analytics/UsageAnalyticsScreen";
 import {
   type RefObject,
   type TouchEvent as ReactTouchEvent,
@@ -390,6 +391,7 @@ export function App() {
     openProjectById,
     retry,
     setConversationVisible,
+    selectThread,
   } = useConsoleStore();
   const [screen, setScreen] = useState<MobileScreen>(initialMobileScreen);
   const [mobile, setMobile] = useState(isMobileViewport);
@@ -477,6 +479,37 @@ export function App() {
     const stripped = stripSettingsParam(window.location.href);
     window.history.replaceState(routeWriteState(window.history.state, stripped, "replace"), "", stripped);
   }, [mobile]);
+
+  // In-place section intents own the CURRENT settings entry, including Usage analytics.
+  useEffect(() => {
+    if (!mobile || settings === null) return;
+    const entry = ownedSettingsEntry();
+    if (entry && entry.section !== settings.section) {
+      replaceMobileHistoryEntry({ version: 1, surface: "settings", section: settings.section, depth: entry.depth });
+    }
+  }, [mobile, settings?.section]);
+
+  const prepareUsageDestination = useCallback(() => {
+    const href = stripSettingsParam(window.location.href);
+    if (isMobileViewport()) {
+      const entry = ownedSettingsEntry();
+      replaceMobileHistoryEntry({ version: 1, surface: "settings", section: "usage", depth: entry?.depth ?? 1 }, href);
+    } else {
+      window.history.replaceState(routeWriteState(window.history.state, href, "replace"), "", href);
+    }
+  }, []);
+  const openUsageConversation = useCallback((id: string) => {
+    prepareUsageDestination();
+    // selectThread may push a cron route; openConversation reuses that owned destination.
+    selectThread(id);
+    openConversation();
+  }, [prepareUsageDestination, selectThread, openConversation]);
+  const openUsageProject = useCallback((id: string) => {
+    prepareUsageDestination();
+    if (isMobileViewport()) pushMobileHistoryEntry({ version: 1, surface: "project", projectId: id });
+    setSettings(null);
+    openProjectById(id);
+  }, [prepareUsageDestination, openProjectById]);
 
   const previousProjectIdRef = useRef<string | null>(openProjectId);
   const projectHistoryCloseRef = useRef(false);
@@ -683,7 +716,7 @@ export function App() {
     };
     const onAgentSettings = (event: Event) => {
       const requested = (event as CustomEvent<{ section?: SettingsSection }>).detail?.section;
-      const section = requested === "capabilities" || requested === "providers" || requested === "agent" || requested === "new-conversations" ? requested : null;
+      const section = requested === "usage" || requested === "capabilities" || requested === "providers" || requested === "agent" || requested === "new-conversations" ? requested : null;
       if (settings === null && document.activeElement instanceof HTMLElement) settingsInvokerRef.current = document.activeElement;
       setPalette(false);
       if (!isMobileViewport() && settings !== null && requested === undefined) {
@@ -967,7 +1000,17 @@ export function App() {
         </div>
       )}
       <CommandPalette open={palette} onClose={closePalette} />
-      {settings !== null && <div className="settings-region"><AgentSettingsScreen section={settings.section} intent={settings.intent ?? 0} layout={mobile ? "stacked" : "split"} onClose={closeAgentSettings} onNotice={setNotice} /></div>}
+      {settings !== null && (
+        <div className="settings-region">
+          {settings.section === "usage" ? (
+            <UsageAnalyticsScreen onClose={closeAgentSettings}
+              onOpenConversation={openUsageConversation} onOpenProject={openUsageProject} />
+          ) : (
+            <AgentSettingsScreen section={settings.section} intent={settings.intent ?? 0}
+              layout={mobile ? "stacked" : "split"} onClose={closeAgentSettings} onNotice={setNotice} />
+          )}
+        </div>
+      )}
       <TagSettingsSheet sheet={tagSettings} onClose={closeTagSettings} dialogRef={tagSettingsRef} />
       <ProjectSettingsSheet sheet={projectSettings} onClose={closeProjectSettings} dialogRef={projectSettingsRef} />
       {(notice || actionError) && (

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Keep the reported token model on cost-only follow-ups without changing
+  conversation/project costs or repricing recorded usage.
+
+- Add responsive console usage analytics with quota history, token/cost charts,
+  accessible tables and top conversations/projects. Keep child accounting
+  inclusive and day buckets timezone-aware.
+
+- Retain on-demand subscription quota history for activated providers, with
+  bounded private storage and detected account-change markers.
+
 ## 0.27.1 — Pi 1.5.2 (2026-11-16)
 
 - 0.27.1 supersedes 0.27.0, which was staged on npm but never promoted to

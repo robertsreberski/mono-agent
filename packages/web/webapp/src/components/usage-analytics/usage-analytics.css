@@ -1,0 +1,84 @@
+.usage-screen, .usage-analytics { height: 100%; min-width: 0; }
+.usage-analytics { display: flex; flex-direction: column; color: var(--text); background: var(--panel); --usage-color-0: #447dcc; --usage-color-1: #bd6b21; --usage-color-2: #2f927d; --usage-color-3: #a45ec1; --usage-color-4: #cb5362; --usage-color-5: #788c21; --usage-color-6: #548fba; --usage-color-7: #986b47; }
+.usage-header { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 20px 28px; border-bottom: 1px solid var(--border); flex: none; }
+.usage-header h1 { font-size: 23px; margin: 4px 0 0; }
+.usage-header .eyebrow { margin: 0; }
+.usage-content { overflow-y: auto; overscroll-behavior: contain; padding: 24px 28px 48px; min-height: 0; }
+.usage-content > * { max-width: 1240px; margin-left: auto; margin-right: auto; }
+.usage-content h2 { font-size: 17px; margin: 0 0 10px; }
+.usage-content h3 { font-size: 15px; margin: 0; }
+.usage-content p { font-size: 13px; line-height: 1.55; }
+.usage-muted { color: var(--text-soft); font-size: 12px; }
+.usage-warning { color: var(--text); border-left: 3px solid #bd6b21; padding-left: 10px; font-size: 13px; line-height: 1.5; }
+.usage-toolbar, .usage-section-heading, .usage-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.usage-toolbar fieldset { padding: 0; margin: 0; border: 0; }
+.usage-toolbar legend { font-size: 12px; color: var(--text-soft); margin-bottom: 6px; }
+.usage-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.usage-actions button, .usage-toolbar button, .usage-content summary { font: inherit; font-size: 12px; cursor: pointer; }
+.usage-actions button, .usage-toolbar > button { min-height: 36px; border: 1px solid var(--border); background: var(--surface-subtle); color: var(--text); border-radius: 7px; padding: 7px 11px; }
+.usage-actions button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.usage-actions button:disabled, .usage-toolbar button:disabled { opacity: .5; cursor: default; }
+.usage-analytics :is(button,a,select,summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.usage-status { min-height: 18px; font-size: 12px; margin-top: 12px; color: var(--text-soft); }
+.usage-summary, .usage-quota-grid, .usage-rankings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 20px auto; }
+.usage-summary article { padding: 16px; background: var(--surface-subtle); border-radius: 10px; border: 1px solid var(--border); }
+.usage-summary strong { font-size: 22px; font-weight: 600; }
+.usage-summary p { margin-bottom: 0; }
+.usage-card { padding: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-subtle); min-width: 0; margin-bottom: 16px; }
+.usage-quota-grid .usage-card { margin-bottom: 0; }
+.usage-card-heading > span { font-size: 11px; color: var(--text-soft); }
+.usage-chart-frame { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 10px 0; margin: 16px 0; }
+.usage-chart-y-axis { position: relative; grid-column: 1; grid-row: 1; color: var(--text-soft); }
+.usage-chart-y-tick { position: absolute; right: 8px; max-width: calc(100% - 8px); transform: translateY(-50%); font-size: 11px; line-height: 1.3; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.usage-chart-plot { position: relative; grid-column: 2; grid-row: 1; height: 232px; min-width: 0; }
+.usage-chart { display: block; width: 100%; height: 100%; overflow: visible; }
+.usage-chart-x-axis { grid-column: 2; grid-row: 2; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; font-size: 11px; line-height: 1.4; color: var(--text-soft); }
+.usage-chart-x-axis span:last-child { text-align: right; }
+.usage-boundary-label { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; color: var(--text); font-size: 11px; font-weight: 600; line-height: 1.3; }
+.usage-sample-dots { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; }
+.usage-grid { stroke: var(--line); stroke-width: 1; }
+.usage-reset { stroke: var(--text-soft); stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+.usage-boundary { stroke: #cb5362; stroke-width: 1.5; fill: none; }
+.usage-quota-line { stroke: currentColor; stroke-width: 2; fill: none; }
+.usage-legend { list-style: none; padding: 0; margin: 10px 0; display: flex; gap: 8px 14px; flex-wrap: wrap; font-size: 11px; }
+.usage-legend li { display: inline-flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.usage-legend i { width: 12px; height: 8px; border-radius: 2px; flex: none; }
+.usage-legend span { font-size: 10px; }
+.usage-bucket-select { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-size: 12px; margin: 16px 0; }
+.usage-bucket-select select { max-width: 100%; padding: 8px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
+.usage-table-scroll { max-width: 100%; overflow-x: auto; margin: 12px 0; }
+.usage-content table { width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; font-variant-numeric: tabular-nums; }
+.usage-content caption { text-align: left; color: var(--text-soft); padding-bottom: 10px; }
+.usage-content th, .usage-content td { padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+.usage-content th { font-weight: 600; }
+.usage-content td { white-space: nowrap; overflow-wrap: normal; }
+.usage-table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.usage-content small { display: block; color: var(--text-soft); font-size: 11px; margin-top: 4px; }
+.usage-content details { margin-top: 12px; font-size: 12px; }
+.usage-content summary { padding: 8px 0; }
+.usage-rankings ol { list-style: decimal; padding-left: 20px; }
+.usage-rankings li { padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px; overflow-wrap: anywhere; }
+.usage-rankings li strong { display: block; font-size: 12px; margin-top: 5px; }
+.usage-link { border: 0; padding: 0; font: inherit; color: var(--accent); text-align: left; background: none; text-decoration: underline; cursor: pointer; }
+.usage-empty { border: 1px dashed var(--border); padding: 16px; border-radius: 8px; }
+.usage-dialog-backdrop { position: fixed; inset: 0; z-index: 90; background: #0008; }
+.usage-confirm { position: fixed; z-index: 91; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(440px, calc(100vw - 32px)); border: 1px solid var(--border); border-radius: 12px; padding: 24px; background: var(--panel); color: var(--text); }
+.usage-confirm h2 { margin-top: 0; font-size: 19px; }
+.usage-confirm p { line-height: 1.5; font-size: 13px; }
+.context-display-history-link { display: inline-block; margin-top: 9px; font-size: 12px; color: var(--accent); }
+@media (max-width: 700px) {
+  .usage-header { padding: 16px; gap: 8px; }
+  .usage-header h1 { font-size: 20px; }
+  .usage-header .eyebrow { font-size: 10px; }
+  .usage-content { padding: 16px 12px 32px; }
+  .usage-summary, .usage-quota-grid, .usage-rankings { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .usage-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-summary article { padding: 12px; }
+  .usage-summary strong { font-size: 17px; overflow-wrap: anywhere; }
+  .usage-card { padding: 12px; }
+  .usage-chart-plot { height: 200px; }
+  .usage-actions button { min-height: 40px; }
+}
+/* Keep labels readable when numeric columns overflow into the scoped scroller. */
+.usage-content table th:first-child { min-width: 130px; }
+.usage-content table thead th { white-space: nowrap; }

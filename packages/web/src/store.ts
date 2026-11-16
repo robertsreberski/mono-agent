@@ -98,8 +98,10 @@ import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
 import { redactWebError } from "./log-redaction.js";
-import { hasUpkeepTelemetry, upkeepSummaryParts, upkeepTelemetryData, latestMessageCostUsd, messageUsageRollup, type MessageUsageRollup } from "./message-cost.js";
+import { hasUpkeepTelemetry, upkeepSummaryParts, upkeepTelemetryData, latestMessageCostUsd, messageUsageRollup, projectMessageUsage, type MessageUsageSlice, type MessageUsageRollup } from "./message-cost.js";
 import { sumThreadUsage } from "./thread-usage.js";
+import { aggregateUsageAnalytics, validateUsageAnalyticsRange } from "./usage-analytics.js";
+import type { WebUsageAnalytics, WebUsageAnalyticsQuery } from "./contracts.js";
 import { isAskUserToolName, runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
@@ -1062,7 +1064,7 @@ export class WebStore {
       return row.id;
     });
   }
-  private readonly usageMemo = new Map<string, MessageUsageRollup>();
+  private readonly usageMemo = new Map<string, { rollup: MessageUsageRollup; project: MessageUsageSlice }>();
   private readonly streamSnapshots = new Map<string, WebMessage>();
   readonly paths: WebStatePaths;
   private readonly database: DatabaseSync;
@@ -3200,12 +3202,51 @@ export class WebStore {
     if (this.getThread(threadId) === undefined) {
       throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     }
-    const start = performance.now();
     const rows = this.database.prepare(`SELECT m.rowid AS rowid, m.id, m.seq, m.status, m.turn_id, t.model AS executed_model
       FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
       WHERE m.thread_id = ? AND m.role = 'assistant'`)
       .all(threadId) as unknown as Array<{ rowid: number; id: string; seq: number; status: string; turn_id: string | null; executed_model: string | null }>;
-    const rollups: MessageUsageRollup[] = [];
+    const usage = await this.readUsageRollups(rows);
+    return sumThreadUsage([...usage.values()].map(value => value.rollup), this.now(), rows.filter(row => row.turn_id !== null && row.status !== "running").length);
+  }
+
+  /** One bounded, source/date-indexed query; authoritative messages remain the only ledger. */
+  async usageAnalytics(sourceId: string, input: WebUsageAnalyticsQuery, signal?: AbortSignal): Promise<WebUsageAnalytics> {
+    let range;
+    try { range = validateUsageAnalyticsRange(input); }
+    catch { throw new WebConsoleError("invalid_usage_range", "Choose a valid usage range and time zone.", 400); }
+    const computedAt = this.now(), deadline = performance.now() + 15_000;
+    signal?.throwIfAborted();
+    // Redirects migrate every message and delete the source thread; aliases are not another ledger.
+    // Include non-assistant rows only for the exact historical project-summary basis.
+    const rows = this.database.prepare(`WITH candidate AS MATERIALIZED (
+      SELECT m.id FROM threads t JOIN messages m ON m.thread_id=t.id
+      WHERE t.source_id=? AND m.created_at>=? AND m.created_at<?
+      ORDER BY m.created_at,m.id LIMIT 100001
+    ) SELECT m.rowid AS rowid,m.id,m.seq,m.status,m.turn_id,m.role,m.created_at,
+      length(CAST(m.parts_json AS BLOB)) AS bytes, r.model AS executed_model,
+      t.id AS thread_id,t.title,t.project_id,t.archived_at,p.name AS project_name
+      FROM candidate c JOIN messages m ON m.id=c.id JOIN threads t ON t.id=m.thread_id
+      LEFT JOIN turns r ON r.id=m.turn_id LEFT JOIN projects p ON p.id=t.project_id
+      ORDER BY m.created_at,m.id`).all(sourceId, range.from, range.to) as unknown as Array<{
+        rowid: number; id: string; seq: number; status: string; turn_id: string | null; executed_model: string | null;
+        role: string; created_at: string; bytes: number; thread_id: string; title: string; project_id: string | null;
+        archived_at: string | null; project_name: string | null;
+      }>;
+    if (rows.length > 100_000 || rows.reduce((sum,row) => sum + row.bytes,0) > 64 * 1024 * 1024) throw usageRangeTooLarge();
+    const usage = await this.readUsageRollups(rows, { deadline, signal });
+    return aggregateUsageAnalytics(sourceId, range, rows.flatMap(row => {
+      const value = usage.get(row.id);
+      return value === undefined ? [] : [{ threadId: row.thread_id,title: row.title,projectId: row.project_id,
+        projectName: row.project_name,archived: row.archived_at !== null,at: row.created_at,role: row.role,
+        running: row.status === "running",rollup: value.rollup,projectUsage: value.project }];
+    }), computedAt);
+  }
+
+  private async readUsageRollups(rows: readonly { rowid: number; id: string; seq: number; status: string; turn_id: string | null; executed_model: string | null }[],
+    budget?: { readonly deadline: number; readonly signal: AbortSignal | undefined }) {
+    const start = performance.now();
+    const rollups = new Map<string, { rollup: MessageUsageRollup; project: MessageUsageSlice }>();
     const fetch = this.database.prepare("SELECT id, parts_json FROM messages WHERE id IN (SELECT value FROM json_each(?))");
     // A same-run cron re-insert can reuse both the deterministic id and created_at.
     // The SQLite row identity distinguishes it even when seq restarts at zero.
@@ -3215,6 +3256,8 @@ export class WebStore {
     let misses = 0;
     let parsedBytes = 0;
     for (let index = 0; index < rows.length; index += 100) {
+      budget?.signal?.throwIfAborted();
+      if (budget && performance.now() > budget.deadline) throw usageRangeTooLarge();
       const batch = rows.slice(index, index + 100);
       // Pin all hits before any insert: a miss at the front of a full LRU must
       // never evict a later hit that we didn't fetch from SQLite.
@@ -3235,19 +3278,22 @@ export class WebStore {
           if (partsJson === undefined) continue;
           misses += 1;
           parsedBytes += Buffer.byteLength(partsJson);
-          const parsed = messageUsageRollup({ parts: parseParts(partsJson),
+          if (budget && parsedBytes > 64 * 1024 * 1024) throw usageRangeTooLarge();
+          const parts = parseParts(partsJson);
+          const parsed = messageUsageRollup({ parts,
             ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
             ...(row.executed_model === null ? {} : { attribution: { executed: { model: row.executed_model } } }),
           });
-          rollup = Object.freeze({ ...parsed, main: Object.freeze(parsed.main),
+          const frozen = Object.freeze({ ...parsed, main: Object.freeze(parsed.main),
             ...(parsed.compaction ? { compaction: Object.freeze(parsed.compaction) } : {}),
             ...(parsed.compactionByModel ? { compactionByModel: Object.freeze(parsed.compactionByModel.map((slice) => Object.freeze(slice))) } : {}),
             subagents: Object.freeze(parsed.subagents.map((child) => Object.freeze(child))),
           });
+          rollup = { rollup: frozen, project: projectMessageUsage(parts, parsed) };
         }
         this.usageMemo.delete(key);
         this.usageMemo.set(key, rollup);
-        rollups.push(rollup);
+        rollups.set(row.id, rollup);
       }
       while (this.usageMemo.size > 20_000) this.usageMemo.delete(this.usageMemo.keys().next().value!);
       if (index + 100 < rows.length) await new Promise<void>((resolve) => setImmediate(resolve));
@@ -3256,7 +3302,7 @@ export class WebStore {
     if (/(?:^|[,\s])web(?:$|[,\s])/u.test(process.env.DEBUG ?? "")) {
       console.debug("web thread usage", { messages: rows.length, misses, parsedBytes, elapsedMs: Math.round(performance.now() - start) });
     }
-    return sumThreadUsage(rollups, new Date().toISOString(), rows.filter((row) => row.turn_id !== null && row.status !== "running").length);
+    return rollups;
   }
 
   getMessage(id: string): WebMessage | undefined {
@@ -4333,10 +4379,7 @@ export class WebStore {
     return sumThreadUsage(rows.flatMap((member) => {
       if (typeof member.parts_json !== "string") return [];
       const parts = parseParts(member.parts_json);
-      const costUsd = latestMessageCostUsd(parts);
-      const knownCostUsd = costUsd === null ? messageUsageRollup({ parts }).main.knownCostUsd : undefined;
-      return [{ main: { ...(costUsd === undefined ? {} : { costUsd }),
-        ...(knownCostUsd === undefined ? {} : { knownCostUsd }) }, subagents: [] }];
+      return [{ main: projectMessageUsage(parts), subagents: [] }];
     }), now).total;
   }
 
@@ -6147,6 +6190,7 @@ export class WebStore {
         seq INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(thread_id, created_at);
+      CREATE INDEX IF NOT EXISTS messages_usage_range ON messages(thread_id, created_at, id);
       CREATE INDEX IF NOT EXISTS messages_by_turn ON messages(turn_id);
       CREATE TABLE IF NOT EXISTS restart_proposal_bindings (
         message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -10427,3 +10471,7 @@ function ignoreMissing(error: unknown): void {
 }
 
 function nullableBooleanSql(value: boolean | null | undefined): number | null { return value == null ? null : value ? 1 : 0; }
+
+function usageRangeTooLarge(): WebConsoleError {
+  return new WebConsoleError("usage_range_too_large", "This usage range is too large. Choose a shorter range.", 413);
+}

@@ -47,6 +47,8 @@ function ownedStatePathsAt(root: string): OwnedStatePaths {
 }
 
 interface OpenOwnedStateOptions {
+  /** Optional initialization cancellation, checked before opening/mutating SQLite. */
+  readonly signal?: AbortSignal;
   readonly cwd: string;
   /** Directory name under `.mono-agent/`, e.g. `telegram-topics-v1`. */
   readonly name: string;
@@ -71,11 +73,16 @@ export interface OwnedStateHandle {
  * `lease_conflict` when another live process already owns it.
  */
 export async function openOwnedState(options: OpenOwnedStateOptions): Promise<OwnedStateHandle> {
+  options.signal?.throwIfAborted();
   const canonicalCwd = await realpath(resolve(options.cwd));
+  options.signal?.throwIfAborted();
   const paths = resolveOwnedStatePaths(canonicalCwd, options.name);
   await ensureOwnedRoot(paths.root, options.label);
+  options.signal?.throwIfAborted();
   await ensureOwnedFile(paths.database, options.label);
+  options.signal?.throwIfAborted();
   await ensureOwnedFile(paths.lease, options.label);
+  options.signal?.throwIfAborted();
 
   const lease = new DatabaseSync(paths.lease, { timeout: 0 });
   try {

@@ -1160,3 +1160,25 @@ it.each([false, true])("validates usage projection at the HTTP boundary (refresh
   invalid = true;
   await expect(refresh ? client.refreshProviderUsage() : client.providerUsage()).rejects.toThrow("Invalid provider usage projection");
 });
+
+it("negotiates and strictly bounds local quota history/clear without snapshot fallback", async () => {
+  const range = { from: "2026-10-24T00:00:00.000Z", to: "2026-10-27T00:00:00.000Z", bucket: "day" as const, timeZone: "Europe/Berlin" };
+  const history = { schema: "mono-agent.provider-usage-history.v1", ...range, retentionDays: 90, storage: "ready", providers: [] };
+  const requests: Array<{ url: string; method: string | undefined }> = [];
+  let response: unknown = history;
+  const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: (async (url, init) => {
+    requests.push({ url: String(url), method: init?.method });
+    if (String(url).endsWith("/v1/info")) return Response.json({ schema: 1, label: "Fictional agent", models: [], capabilities: { providerUsage: { version: 1, history: { version: 1, clear: true } } } });
+    return Response.json(init?.method === "DELETE" ? {} : response);
+  }) as typeof fetch });
+  expect((await client.info()).supportsProviderUsageHistory).toBe(true);
+  expect((await client.info()).supportsProviderUsageHistoryClear).toBe(true);
+  expect(await client.providerUsageHistory(range)).toEqual(history);
+  expect(requests.at(-1)?.url).toContain("timeZone=Europe%2FBerlin");
+  await client.clearProviderUsageHistory("anthropic"); expect(requests.at(-1)).toMatchObject({ method: "DELETE", url: expect.stringContaining("provider=anthropic") });
+  response = { ...history, accountId: "fictional-private-account" };
+  await expect(client.providerUsageHistory(range)).rejects.toMatchObject({ code: "operator_provider_usage_history_invalid" });
+  response = { ...history, extra: "x".repeat(2 * 1024 * 1024) };
+  await expect(client.providerUsageHistory(range)).rejects.toMatchObject({ code: "operator_provider_usage_history_too_large" });
+  expect(requests.every(r => r.url.includes("/provider-usage/history") || r.url.endsWith("/v1/info"))).toBe(true);
+});

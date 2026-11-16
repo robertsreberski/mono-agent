@@ -339,7 +339,7 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4713-4745-src_api-contract.ts-4687-4746-src_api-contract.ts-4672-4746-src_api-contract.ts-4670-4748-src_api-contract.ts-4638-4749-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-5006-5038-src_api-contract.ts-4980-5039-src_api-contract.ts-4965-5039-src_api-contract.ts-4963-5041-src_api-contract.ts-4931-5042-src_api-contract.ts-90-7940-src_api-contract.ts-0-7941%3E"
         }
       },
       "required": [
@@ -505,7 +505,7 @@
       "additionalProperties": false
     },
     "ApiCronEnableResult": {
-      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2991-3021-src_api-contract.ts-2966-3022-src_api-contract.ts-2934-3023-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648%3E"
+      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-3284-3314-src_api-contract.ts-3259-3315-src_api-contract.ts-3227-3316-src_api-contract.ts-90-7940-src_api-contract.ts-0-7941%3E"
     },
     "ApiCronOverview": {
       "$ref": "#/definitions/WebCronOverview"
@@ -529,7 +529,7 @@
       "additionalProperties": false
     },
     "ApiCronRunResult": {
-      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-2895-2932-src_api-contract.ts-2870-2933-src_api-contract.ts-2841-2934-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648%3E"
+      "$ref": "#/definitions/WebCronMutationResult%3Cstructure-src_api-contract.ts-3188-3225-src_api-contract.ts-3163-3226-src_api-contract.ts-3134-3227-src_api-contract.ts-90-7940-src_api-contract.ts-0-7941%3E"
     },
     "ApiCronRuns": {
       "$ref": "#/definitions/WebCronRunPage"
@@ -734,7 +734,7 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4905-4934-src_api-contract.ts-4879-4935-src_api-contract.ts-4864-4935-src_api-contract.ts-4862-4937-src_api-contract.ts-4834-4938-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-5198-5227-src_api-contract.ts-5172-5228-src_api-contract.ts-5157-5228-src_api-contract.ts-5155-5230-src_api-contract.ts-5127-5231-src_api-contract.ts-90-7940-src_api-contract.ts-0-7941%3E"
         }
       },
       "required": [
@@ -905,6 +905,39 @@
     },
     "ApiProviderUsage": {
       "$ref": "#/definitions/ProviderUsageSnapshot"
+    },
+    "ApiProviderUsageHistory": {
+      "$ref": "#/definitions/ProviderUsageHistory"
+    },
+    "ApiProviderUsageHistoryQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeZone": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderUsageId"
+        },
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string",
+          "enum": [
+            "hour",
+            "day"
+          ]
+        }
+      },
+      "required": [
+        "bucket",
+        "from",
+        "to"
+      ]
     },
     "ApiPushAck": {
       "type": "object",
@@ -1213,7 +1246,7 @@
       "type": "object",
       "properties": {
         "part": {
-          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4201-4245-src_api-contract.ts-4175-4246-src_api-contract.ts-4160-4246-src_api-contract.ts-4158-4248-src_api-contract.ts-4134-4249-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648%3E"
+          "$ref": "#/definitions/Extract%3CWebMessagePart%2Cstructure-src_api-contract.ts-4494-4538-src_api-contract.ts-4468-4539-src_api-contract.ts-4453-4539-src_api-contract.ts-4451-4541-src_api-contract.ts-4427-4542-src_api-contract.ts-90-7940-src_api-contract.ts-0-7941%3E"
         }
       },
       "required": [
@@ -1244,6 +1277,12 @@
         "attachment"
       ],
       "additionalProperties": false
+    },
+    "ApiUsageAnalytics": {
+      "$ref": "#/definitions/WebUsageAnalytics"
+    },
+    "ApiUsageAnalyticsQuery": {
+      "$ref": "#/definitions/WebUsageAnalyticsQuery"
     },
     "ApiWakeSchedule": {
       "type": "object",
@@ -2332,7 +2371,7 @@
       "additionalProperties": false,
       "description": "What an `agents.changed` says about itself.\n\nA pin is a one-field write the writing tab already applied from the PATCH response, so it names the agent and the new state rather than telling every console to re-read the bootstrap, its skills and its cron. Discovery-driven invalidations carry nothing: an agent that appeared, went away, or advertises something different can have changed anything at all."
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-4201-4245-src_api-contract.ts-4175-4246-src_api-contract.ts-4160-4246-src_api-contract.ts-4158-4248-src_api-contract.ts-4134-4249-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-4494-4538-src_api-contract.ts-4468-4539-src_api-contract.ts-4453-4539-src_api-contract.ts-4451-4541-src_api-contract.ts-4427-4542-src_api-contract.ts-90-7940-src_api-contract.ts-0-7941>": {
       "anyOf": [
         {
           "type": "object",
@@ -2487,7 +2526,7 @@
         }
       ]
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-4713-4745-src_api-contract.ts-4687-4746-src_api-contract.ts-4672-4746-src_api-contract.ts-4670-4748-src_api-contract.ts-4638-4749-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-5006-5038-src_api-contract.ts-4980-5039-src_api-contract.ts-4965-5039-src_api-contract.ts-4963-5041-src_api-contract.ts-4931-5042-src_api-contract.ts-90-7940-src_api-contract.ts-0-7941>": {
       "type": "object",
       "properties": {
         "type": {
@@ -2535,7 +2574,7 @@
       ],
       "additionalProperties": false
     },
-    "Extract<WebMessagePart,structure-src_api-contract.ts-4905-4934-src_api-contract.ts-4879-4935-src_api-contract.ts-4864-4935-src_api-contract.ts-4862-4937-src_api-contract.ts-4834-4938-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648>": {
+    "Extract<WebMessagePart,structure-src_api-contract.ts-5198-5227-src_api-contract.ts-5172-5228-src_api-contract.ts-5157-5228-src_api-contract.ts-5155-5230-src_api-contract.ts-5127-5231-src_api-contract.ts-90-7940-src_api-contract.ts-0-7941>": {
       "type": "object",
       "properties": {
         "type": {
@@ -3992,6 +4031,132 @@
         "unavailable"
       ]
     },
+    "ProviderUsageHistory": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string",
+          "enum": [
+            "hour",
+            "day"
+          ]
+        },
+        "timeZone": {
+          "type": "string",
+          "description": "Day boundaries use this IANA zone; hourly boundaries always use UTC."
+        },
+        "schema": {
+          "type": "string",
+          "const": "mono-agent.provider-usage-history.v1"
+        },
+        "retentionDays": {
+          "type": "number",
+          "const": 90
+        },
+        "storage": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "unavailable"
+          ]
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProviderUsageHistoryProvider"
+          }
+        }
+      },
+      "required": [
+        "bucket",
+        "from",
+        "providers",
+        "retentionDays",
+        "schema",
+        "storage",
+        "timeZone",
+        "to"
+      ],
+      "additionalProperties": false
+    },
+    "ProviderUsageHistoryProvider": {
+      "type": "object",
+      "properties": {
+        "providerId": {
+          "$ref": "#/definitions/ProviderUsageId"
+        },
+        "label": {
+          "type": "string"
+        },
+        "samples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProviderUsageHistorySample"
+          }
+        },
+        "accountChanges": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Detected account boundaries only, never account fingerprints."
+        },
+        "downsampled": {
+          "type": "boolean"
+        },
+        "truncatedBefore": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId",
+        "label",
+        "samples",
+        "accountChanges",
+        "downsampled"
+      ],
+      "additionalProperties": false
+    },
+    "ProviderUsageHistorySample": {
+      "type": "object",
+      "properties": {
+        "fetchedAt": {
+          "type": "string"
+        },
+        "observedThrough": {
+          "type": "string"
+        },
+        "observations": {
+          "type": "number"
+        },
+        "maxGapMs": {
+          "type": "number"
+        },
+        "plan": {
+          "type": "string"
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProviderUsageWindow"
+          }
+        }
+      },
+      "required": [
+        "fetchedAt",
+        "observedThrough",
+        "observations",
+        "maxGapMs",
+        "windows"
+      ],
+      "additionalProperties": false
+    },
     "ProviderUsageId": {
       "type": "string",
       "enum": [
@@ -4544,6 +4709,14 @@
           "const": true
         },
         "supportsProviderUsageRefresh": {
+          "type": "boolean",
+          "const": true
+        },
+        "supportsProviderUsageHistory": {
+          "type": "boolean",
+          "const": true
+        },
+        "supportsProviderUsageHistoryClear": {
           "type": "boolean",
           "const": true
         },
@@ -5222,7 +5395,7 @@
       ],
       "additionalProperties": false
     },
-    "WebCronMutationResult<structure-src_api-contract.ts-2895-2932-src_api-contract.ts-2870-2933-src_api-contract.ts-2841-2934-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648>": {
+    "WebCronMutationResult<structure-src_api-contract.ts-3188-3225-src_api-contract.ts-3163-3226-src_api-contract.ts-3134-3227-src_api-contract.ts-90-7940-src_api-contract.ts-0-7941>": {
       "anyOf": [
         {
           "type": "object",
@@ -5273,7 +5446,7 @@
         }
       ]
     },
-    "WebCronMutationResult<structure-src_api-contract.ts-2991-3021-src_api-contract.ts-2966-3022-src_api-contract.ts-2934-3023-src_api-contract.ts-90-7647-src_api-contract.ts-0-7648>": {
+    "WebCronMutationResult<structure-src_api-contract.ts-3284-3314-src_api-contract.ts-3259-3315-src_api-contract.ts-3227-3316-src_api-contract.ts-90-7940-src_api-contract.ts-0-7941>": {
       "anyOf": [
         {
           "type": "object",
@@ -8651,6 +8824,260 @@
         }
       ],
       "description": "Discriminated wire envelope. The legacy, permissive WebEvent remains unchanged."
+    },
+    "WebUsageAnalytics": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string",
+          "enum": [
+            "hour",
+            "day"
+          ]
+        },
+        "timeZone": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string",
+          "const": "mono-agent.usage-analytics.v1"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "computedAt": {
+          "type": "string"
+        },
+        "attribution": {
+          "type": "string",
+          "const": "message-created-at"
+        },
+        "scope": {
+          "type": "string",
+          "const": "retained-conversations"
+        },
+        "total": {
+          "$ref": "#/definitions/WebUsageSlice"
+        },
+        "buckets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "start": {
+                "type": "string"
+              },
+              "end": {
+                "type": "string"
+              },
+              "total": {
+                "$ref": "#/definitions/WebUsageSlice"
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "provider": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "model": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "other": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "pending": {
+                      "type": "boolean",
+                      "const": true,
+                      "description": "Upkeep dispatches exist, but no terminal observation has arrived."
+                    },
+                    "tokens": {
+                      "$ref": "#/definitions/WebUsageTokens"
+                    },
+                    "costUsd": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "knownCostUsd": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "costUnknown": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "tokensPartial": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "costPartial": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "model",
+                    "provider"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "start",
+              "end",
+              "total",
+              "models"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "topConversations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "threadId": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "usage": {
+                "$ref": "#/definitions/WebUsageSlice"
+              }
+            },
+            "required": [
+              "threadId",
+              "title",
+              "usage"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "topProjects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "projectId": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "usage": {
+                "$ref": "#/definitions/WebUsageSlice"
+              },
+              "projectSummaryUsage": {
+                "$ref": "#/definitions/WebUsageSlice"
+              }
+            },
+            "required": [
+              "projectId",
+              "name",
+              "usage",
+              "projectSummaryUsage"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "unassignedUsage": {
+          "$ref": "#/definitions/WebUsageSlice"
+        },
+        "coverage": {
+          "type": "object",
+          "properties": {
+            "messages": {
+              "type": "number"
+            },
+            "conversations": {
+              "type": "number"
+            },
+            "projects": {
+              "type": "number"
+            },
+            "containsRunningUsage": {
+              "type": "boolean"
+            },
+            "tokensPartial": {
+              "type": "boolean"
+            },
+            "costPartial": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "messages",
+            "conversations",
+            "projects",
+            "containsRunningUsage",
+            "tokensPartial",
+            "costPartial"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "attribution",
+        "bucket",
+        "buckets",
+        "computedAt",
+        "coverage",
+        "from",
+        "schema",
+        "scope",
+        "sourceId",
+        "timeZone",
+        "to",
+        "topConversations",
+        "topProjects",
+        "total",
+        "unassignedUsage"
+      ],
+      "additionalProperties": false
+    },
+    "WebUsageAnalyticsQuery": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string",
+          "enum": [
+            "hour",
+            "day"
+          ]
+        },
+        "timeZone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "bucket"
+      ],
+      "additionalProperties": false,
+      "description": "Local console accounting, not a vendor/account billing statement."
     },
     "WebUsageSlice": {
       "type": "object",

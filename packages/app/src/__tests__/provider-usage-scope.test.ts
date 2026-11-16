@@ -90,3 +90,18 @@ describe("agent-scoped provider usage", () => {
     } finally { f.service.stop(); }
   });
 });
+
+it("scopes historical reads and clears to activated providers without requiring live credentials", async () => {
+  const query = { from: "2026-10-24T00:00:00.000Z", to: "2026-10-27T00:00:00.000Z", bucket: "day" as const, timeZone: "UTC" };
+  const history = vi.fn(async () => ({ schema: "mono-agent.provider-usage-history.v1" as const, ...query, retentionDays: 90 as const, storage: "ready" as const, providers: [] }));
+  const clearHistory = vi.fn(async () => undefined);
+  const usage = createAgentProviderUsage({ config: config("anthropic:model"), drivers: [], input, service: {
+    snapshot: vi.fn(async () => ({ schema: PROVIDER_USAGE_SCHEMA, providers: [] })), refresh: vi.fn(async () => ({ schema: PROVIDER_USAGE_SCHEMA, providers: [] })), history, clearHistory,
+  } });
+  await usage.history!(query);
+  expect(history).toHaveBeenCalledExactlyOnceWith({ ...query, provider: "anthropic" });
+  history.mockClear();
+  expect((await usage.history!({ ...query, provider: "openai-codex" })).providers).toEqual([]);
+  await usage.clearHistory!("openai-codex"); expect(history).not.toHaveBeenCalled(); expect(clearHistory).not.toHaveBeenCalled();
+  await usage.clearHistory!(); expect(clearHistory).toHaveBeenCalledExactlyOnceWith("anthropic");
+});

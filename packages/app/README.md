@@ -1808,6 +1808,26 @@ The controller wraps its shared Pi-store-scoped `providers/provider-usage.ts` se
 
 Configured continuous sessions persist the requested primary model with their durable epoch. Per-model runtime factories are cached for the harness lifetime, and history retirement resolves the owning runtime. A model switch cold-seeds one new epoch; repeated overrides stay warm. Existing fallback and proactive-isolation policies continue to apply. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
 
+Quota history is separate from the live credential cache. The controller's
+`providers/provider-usage-history.ts` sink records only successful retained vendor
+fetches after the credential race fence, never cached reads or failed checks.
+Owner-private `.mono-agent/provider-usage-v1/` SQLite keeps up to 90 days,
+50,000 compressed samples, 64 auth-scope/provider partitions and a 128 MiB
+maximum database (plus its bounded rollback journal). Consecutive unchanged
+observations share a daily payload with real first/last timestamps and gap
+metadata. No timer or additional provider request is introduced.
+
+History is continuous for this agent and configured auth scope, including after
+sign-out, re-login and access-token refresh. Only keyed, store-private account
+fingerprints detect account changes: Codex account id, Copilot device token/host,
+or API key replacement. Neither those values nor fingerprints enter projections;
+only boundary timestamps do. Anthropic exposes no stable identifier here, so its
+account changes cannot be detected. Missing credentials do not erase history.
+The live cache still discards another credential's in-flight result. Explicit
+history clear removes the activated providers' scope history; session reset does
+not. Corrupt, insecure or contended stores report unavailable without changing
+vendor freshness/backoff. See [quota history](../../docs/observability/web-console.md#quota-history).
+
 ### Optional supported intentions and recency
 
 BuJo-only `memory.capture.intentLifecycle`, `memory.recall.intentExpiry` and
