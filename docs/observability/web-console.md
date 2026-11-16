@@ -569,6 +569,70 @@ rows. The web server never reads credentials; vendor identifiers and secrets
 are dropped on the agent host before transport. Successful retained fetches also enter the agent-owned quota history below;
 no quota purchase/reset endpoint is called.
 
+### Usage analytics
+
+Open **Agent settings → Usage analytics**, or **View history** in the context
+popover. `?agent=<source-id>&settings=usage` is the existing settings handoff
+shape. Opening analytics reads local history and retained console accounting;
+it does not mount the live quota polling owner or add vendor checks. **Refresh
+analytics** re-reads those datasets. **Refresh usage** alone requests an explicit
+vendor check through the existing refresh/backoff path. **Clear quota history**
+requires confirmation and leaves conversation usage unchanged.
+
+The screen offers 6h, 24h, 7d, 30d and 90d ranges, provider/window quota lines,
+reported reset markers, detected account boundaries and the existing measured
+pace concept. Lines do not connect across detected account changes or resets;
+dotted connectors indicate unobserved or reduced intervals, never continuous
+monitoring. Empty, stale, storage-unavailable and unsupported/offline states
+remain separate. Historical quota stays agent/sign-in scoped as described below;
+conversation spend covers retained conversations across sign-ins.
+
+Token/cost bars stack by recorded model, with input, output, cache-read and
+cache-write detail, known-spend/partial labels, and top conversations/projects.
+Every chart has a keyboard-operable table alternative; dense quota observations
+are paged, and wide data tables scroll within their own keyboard-focusable region.
+Tokens for synchronous children remain in the inclusive parent model rather than
+being counted twice; detached jobs are independent. Compaction retains its recorded
+extraction model and included/extra precedence. Continuity upkeep is deduplicated
+per operation over the full thread range before assigning buckets, anchored at
+its first retained evidence in that range. Unknown prices are not free work.
+
+`GET /api/v1/agents/:id/usage-analytics` accepts half-open `from`/`to` instant
+bounds, `bucket=hour|day` and optional IANA `timeZone` (UTC default). The browser
+sends its viewer zone. Hour boundaries stay UTC and labels are local; day
+boundaries are actual viewer-local midnights, including 23/25-hour DST days. The
+response echoes the effective boundary zone. Totals are independent of bucket
+width/timezone for the same retained message scope. Time attribution is the
+containing message's creation instant, including cumulative long-running job
+observations, not a reconstructed per-request or job-lifetime clock.
+
+The query includes archived, cron and background conversations of the selected
+source, including silent retained assistant observations. Deleting conversations
+removes their usage. Non-console runs and artifact summary prompt/reply text are
+not imported; run summaries have different retention and starting-model attribution
+and cannot reconcile this ledger. Unqualified legacy models have an explicit
+unknown provider. At most 20 named models plus Other and 10 conversation/project
+rankings are returned, without discarding counters from the total.
+
+Project rankings show all retained member spend and a separately labelled
+**Active-conversation basis**. That comparison preserves existing project summary
+rules: current non-archived members, main message costs, no detached-job surcharge.
+It equals the existing project-month figure for the same UTC calendar-month range;
+it need not equal the broader analytics total. Membership attribution is current.
+
+Queries are indexed and memoized, bounded to 90 days (7 days hourly), 100,000
+candidate messages, 64 MiB of message parts, a bounded read deadline and a 2 MiB
+response. An over-budget range fails explicitly rather than displaying incomplete
+top rankings; choose the shorter 6h range. No new config keys are needed.
+
+Console quota history GET/DELETE use
+`/api/v1/agents/:id/provider-usage/history`, with the same range/provider query
+and empty clear body as the operator routes below. They are exact-origin,
+no-store, capability-negotiated, current-generation proxies. The console never
+opens agent credential/history files. Old/offline agents can still show the
+console's retained token/cost dataset; quota history requires a supporting live
+agent. Existing snapshot clients and cached consoles retain their old routes.
+
 ### Quota history
 
 Quota history is sampled only when an existing real vendor usage fetch succeeds:

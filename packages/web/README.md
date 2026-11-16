@@ -174,6 +174,17 @@ can reach it. After restart, dotenv credentials also remain inherited by
 Exec/Bash tools; credential entry does not prevent deliberate tool-driven
 credential access or exfiltration. There is no new authentication layer.
 
+### Usage analytics screen
+
+Open **Agent settings → Usage analytics**, the context popover's **View history**,
+or the existing `?agent=<id>&settings=usage` handoff. The responsive screen has
+6h/24h/7d/30d/90d ranges, per-window quota lines/reset/account markers and measured
+pace, stacked model token/cost bars, accessible observation/bucket tables, and
+top conversations/projects. Empty/partial/stale states keep unknown cost distinct
+from zero. Explicit vendor refresh preserves existing backoff; opening the screen
+only reads history and local accounting. Confirmed quota clear never deletes
+conversation costs. No chart dependency or new polling owner is introduced.
+
 ### Retained usage analytics API
 
 `GET /api/v1/agents/:id/usage-analytics` queries retained console messages, not

@@ -360,3 +360,14 @@ not report capabilities, stays config-first: there is no terminal Enable
 command. Successful guided init offers a consent-first console handoff
 (default Not now); flag/non-TTY scaffolding remains unchanged. Agent-qualified
 handoff links wait for exact discovery instead of selecting another agent.
+
+## Console usage analytics
+
+Agent settings and the context popover link to usage analytics: on-demand quota
+history, viewer-timezone day buckets, retained conversation token/cost charts and
+top conversations/projects, with tables and partial/stale states. No configuration
+or background sampler is added. Quota samples are agent/auth-scope private and
+credential-free; detected account boundaries do not fragment history on token
+refresh. Anthropic account changes cannot be detected. Conversation costs cover
+retained web/cron/background messages, not every artifact run; deleting threads
+removes their usage. Explicit quota-history clear does not clear conversation costs.
