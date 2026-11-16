@@ -1,3 +1,4 @@
+import { UsageAnalyticsScreen } from "./components/usage-analytics/UsageAnalyticsScreen";
 import {
   type RefObject,
   type TouchEvent as ReactTouchEvent,
@@ -683,7 +684,7 @@ export function App() {
     };
     const onAgentSettings = (event: Event) => {
       const requested = (event as CustomEvent<{ section?: SettingsSection }>).detail?.section;
-      const section = requested === "capabilities" || requested === "providers" || requested === "agent" || requested === "new-conversations" ? requested : null;
+      const section = requested === "usage" || requested === "capabilities" || requested === "providers" || requested === "agent" || requested === "new-conversations" ? requested : null;
       if (settings === null && document.activeElement instanceof HTMLElement) settingsInvokerRef.current = document.activeElement;
       setPalette(false);
       if (!isMobileViewport() && settings !== null && requested === undefined) {
@@ -967,7 +968,7 @@ export function App() {
         </div>
       )}
       <CommandPalette open={palette} onClose={closePalette} />
-      {settings !== null && <div className="settings-region"><AgentSettingsScreen section={settings.section} intent={settings.intent ?? 0} layout={mobile ? "stacked" : "split"} onClose={closeAgentSettings} onNotice={setNotice} /></div>}
+      {settings !== null && <div className="settings-region">{settings.section === "usage" ? <UsageAnalyticsScreen onClose={closeAgentSettings} onOpenConversation={() => { const href = stripSettingsParam(window.location.href); window.history.replaceState(routeWriteState(window.history.state, href, "replace"), "", href); openConversation(); }} onOpenProject={id => { setSettings(null); const href = stripSettingsParam(window.location.href); window.history.replaceState(routeWriteState(window.history.state, href, "replace"), "", href); openProjectById(id); }} /> : <AgentSettingsScreen section={settings.section} intent={settings.intent ?? 0} layout={mobile ? "stacked" : "split"} onClose={closeAgentSettings} onNotice={setNotice} />}</div>}
       <TagSettingsSheet sheet={tagSettings} onClose={closeTagSettings} dialogRef={tagSettingsRef} />
       <ProjectSettingsSheet sheet={projectSettings} onClose={closeProjectSettings} dialogRef={projectSettingsRef} />
       {(notice || actionError) && (

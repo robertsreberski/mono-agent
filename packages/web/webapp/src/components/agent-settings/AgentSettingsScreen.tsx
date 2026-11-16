@@ -191,6 +191,7 @@ function SettingsContent({ agent, section, intent, layout, provider, restart, on
       <div className="settings-pane">
         {agent.status === "offline" && <div className="settings-notice">{agent.label} is offline. Changes that need the agent are paused. Using the agent config still works.</div>}
         <AgentPinRow key={agent.sourceId} agent={agent} />
+        <button type="button" className="settings-button" onClick={() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "usage" } }))}>Usage analytics</button>
         <section className="settings-page-section" data-settings-target="new-conversations" tabIndex={-1} aria-labelledby="settings-new-title"><div className="settings-section-head"><h2 id="settings-new-title" className="settings-section-title">New conversations</h2><p className="settings-section-summary">The model and effort new conversations start with. Existing conversations keep theirs.</p></div>
           <NewConversationsSection agent={agent} onNotice={(message) => { setAnnouncement(message); onNotice(message); }} onSaveError={setAnnouncement} />
         </section>

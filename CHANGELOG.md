@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- Add bounded token/cost timeline queries for retained console conversations,
-  with inclusive child accounting and timezone-aware day buckets.
+- Add responsive console usage analytics with quota history, token/cost charts,
+  accessible tables and top conversations/projects. Keep child accounting
+  inclusive and day buckets timezone-aware.
 
 - Retain on-demand subscription quota history for activated providers, with
   bounded private storage and detected account-change markers.

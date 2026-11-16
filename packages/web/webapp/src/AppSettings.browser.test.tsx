@@ -598,3 +598,22 @@ describe("settings screen navigation", () => {
   });
 
 });
+
+it("opens the usage settings handoff without mounting the live provider owner", async () => {
+  const { usageAnalyticsFixture } = await import("./test/usage-analytics-fixtures");
+  const fixture = usageAnalyticsFixture();
+  await page.viewport(390, 844);
+  window.history.replaceState(null, "", "/?agent=atlas&settings=usage");
+  storeMock.selectedAgent = agent("atlas", { supportsProviderUsage: true, supportsProviderUsageHistory: true }) as never;
+  const local = vi.spyOn(api, "usageAnalytics").mockResolvedValue({ ...fixture.data, sourceId: "atlas" });
+  const history = vi.spyOn(api, "providerUsageHistory").mockResolvedValue(fixture.history);
+  const vendor = vi.spyOn(api, "providerUsage").mockResolvedValue({ schema: "mono-agent.provider-usage.v1", providers: [] });
+  try {
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Usage analytics" })).toBeVisible());
+    await waitFor(() => expect(local).toHaveBeenCalledTimes(1));
+    expect(history).toHaveBeenCalledTimes(1); expect(vendor).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-modal-surface="settings"]')).not.toBeNull();
+    expect(document.querySelector(".settings-content")).toBeNull();
+  } finally { local.mockRestore(); history.mockRestore(); vendor.mockRestore(); }
+});

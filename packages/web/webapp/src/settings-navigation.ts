@@ -4,7 +4,7 @@ export const parseSettingsParam = (href: string): SettingsSection | null | undef
   const value = new URL(href).searchParams.get("settings");
   if (value === "index") return null;
   if (value === "restart") return "agent"; // Legacy section link.
-  return value === "capabilities" || value === "agent" || value === "providers" || value === "new-conversations" ? value : undefined;
+  return value === "usage" || value === "capabilities" || value === "agent" || value === "providers" || value === "new-conversations" ? value : undefined;
 };
 
 export const stripSettingsParam = (href: string): string => {

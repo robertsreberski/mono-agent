@@ -2,8 +2,8 @@ import type { WebCredentialSnapshot, WebCredentialSaveRequest, WebCredentialRequ
 import type { WebCapabilityActionsSnapshot, WebCapabilityActionInput, WebCapabilityActionSaveInput, WebCapabilityActionPreview, WebCapabilityActionSaved } from "./types.js";
 import type { WebCapabilitySetupSnapshot } from "./types.js";
 import { normalizeBrowserCosts } from "../../src/cost-wire.js";
-import { parseProviderUsageSnapshot } from "@mono-agent/contracts/provider-usage";
-import type { WebThreadUsage, WebUsageSlice } from "../../src/contracts.js";
+import { parseProviderUsageSnapshot, parseProviderUsageHistory, parseUsageHistoryRange, type UsageHistoryRange } from "@mono-agent/contracts/provider-usage";
+import type { WebThreadUsage, WebUsageSlice, WebUsageAnalytics } from "../../src/contracts.js";
 import type { TagSummary, TagColor, ProjectColor } from "./types";
 import type {
   ActiveThreads,
@@ -429,6 +429,49 @@ export function parseThreadUsage(value: unknown): WebThreadUsage {
     throw new Error("Invalid conversation usage response.");
   }
   return usage as unknown as WebThreadUsage;
+}
+
+export function parseUsageAnalytics(value: unknown): WebUsageAnalytics {
+  normalizeBrowserCosts(value);
+  const fail = (): never => { throw new Error("Invalid usage analytics response."); };
+  const closed = (v: unknown, keys: readonly string[]) => {
+    const object = recordOf(v);
+    if (!object || Object.keys(object).some(key => !keys.includes(key))) return fail();
+    return object;
+  };
+  const fields = ["pending", "tokens", "costUsd", "knownCostUsd", "costUnknown", "tokensPartial", "costPartial"];
+  const slice = (v: unknown, extra: readonly string[] = []) => {
+    const object = closed(v, [...fields, ...extra]);
+    if (!validUsageSlice(object)) fail();
+    if (object.tokens !== undefined) closed(object.tokens, ["input", "output", "cacheRead", "cacheWrite"]);
+    return object;
+  };
+  const date = (v: unknown): v is string => typeof v === "string" && v.length <= 35 && Number.isFinite(Date.parse(v));
+  const text = (v: unknown, max = 4096): v is string => typeof v === "string" && v.length <= max;
+  const array = (v: unknown, max: number): unknown[] => Array.isArray(v) && v.length <= max && Object.keys(v).length === v.length ? v : fail();
+  const a = closed(value, ["schema", "sourceId", "from", "to", "bucket", "timeZone", "computedAt", "attribution", "scope", "total", "buckets", "topConversations", "topProjects", "unassignedUsage", "coverage"]);
+  if (a.schema !== "mono-agent.usage-analytics.v1" || !text(a.sourceId, 256) || a.scope !== "retained-conversations" || a.attribution !== "message-created-at" || !date(a.computedAt)) fail();
+  parseUsageHistoryRange({ from: a.from, to: a.to, bucket: a.bucket, timeZone: a.timeZone });
+  slice(a.total); slice(a.unassignedUsage);
+  for (const input of array(a.buckets, 169)) {
+    const b = closed(input, ["start", "end", "total", "models"]);
+    if (!date(b.start) || !date(b.end) || Date.parse(b.end) <= Date.parse(b.start)) fail();
+    slice(b.total);
+    for (const input of array(b.models, 21)) {
+      const m = slice(input, ["model", "provider", "other"]);
+      if (m.model !== null && !text(m.model, 512) || m.provider !== null && !text(m.provider, 128) || m.other !== undefined && m.other !== true) fail();
+    }
+  }
+  for (const input of array(a.topConversations, 10)) {
+    const t = closed(input, ["threadId", "title", "usage"]); if (!text(t.threadId, 256) || !text(t.title)) fail(); slice(t.usage);
+  }
+  for (const input of array(a.topProjects, 10)) {
+    const p = closed(input, ["projectId", "name", "usage", "projectSummaryUsage"]); if (!text(p.projectId, 256) || !text(p.name)) fail(); slice(p.usage); slice(p.projectSummaryUsage);
+  }
+  const c = closed(a.coverage, ["messages", "conversations", "projects", "containsRunningUsage", "tokensPartial", "costPartial"]);
+  for (const key of ["messages", "conversations", "projects"]) if (!Number.isSafeInteger(c[key]) || Number(c[key]) < 0 || Number(c[key]) > 100_000) fail();
+  for (const key of ["containsRunningUsage", "tokensPartial", "costPartial"]) if (typeof c[key] !== "boolean") fail();
+  return a as unknown as WebUsageAnalytics;
 }
 
 export const api = {
@@ -885,6 +928,19 @@ export const api = {
     `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-usage/refresh`,
     { method: "POST", body: "{}", headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal === undefined ? {} : { signal }) },
   ).then(parseProviderUsageSnapshot),
+
+  usageAnalytics: (sourceId: string, range: UsageHistoryRange, signal?: AbortSignal) => request<unknown>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/usage-analytics?${new URLSearchParams(Object.entries(range))}`,
+    { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal ? { signal } : {}) },
+  ).then(value => { const parsed = parseUsageAnalytics(value); if (parsed.sourceId !== sourceId) throw new Error("Invalid usage analytics source."); return parsed; }),
+  providerUsageHistory: (sourceId: string, range: UsageHistoryRange, signal?: AbortSignal) => request<unknown>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-usage/history?${new URLSearchParams(Object.entries(range))}`,
+    { headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal ? { signal } : {}) },
+  ).then(parseProviderUsageHistory),
+  clearProviderUsageHistory: (sourceId: string, signal?: AbortSignal) => request<Record<string, never>>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-usage/history`,
+    { method: "DELETE", body: "{}", headers: { "X-Mono-Agent-Web-Origin": window.location.origin }, ...(signal ? { signal } : {}) },
+  ),
 
   providerAuthStatus: (
     sourceId: string,

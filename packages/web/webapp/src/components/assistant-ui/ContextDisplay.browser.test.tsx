@@ -177,3 +177,18 @@ it.each([[390, 844], [1440, 1000]])("shows synthetic unknown totals and separate
   const shots = import.meta.env.VITE_UNKNOWN_COST_SHOTS;
   if (typeof shots === "string") await page.screenshot({ path: `${shots}/synthetic-unknown-parent-priced-child-${width}x${height}.png` });
 });
+
+it("navigates View history without adding a usage fetch and closes the popover", async () => {
+  const opened = vi.fn(); window.addEventListener("mono-agent:agent-settings", opened);
+  try {
+    const { region } = await show();
+    await waitFor(() => expect(apiMock.providerUsage).toHaveBeenCalledTimes(1));
+    const link = within(region).getByRole("link", { name: "View history" });
+    expect(link).toHaveAttribute("href", "?agent=alpha&settings=usage");
+    fireEvent.click(link);
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect((opened.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ section: "usage" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Context usage" })).not.toBeInTheDocument());
+    expect(apiMock.providerUsage).toHaveBeenCalledTimes(1); expect(apiMock.refreshProviderUsage).not.toHaveBeenCalled();
+  } finally { window.removeEventListener("mono-agent:agent-settings", opened); }
+});
