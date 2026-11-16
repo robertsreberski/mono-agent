@@ -12,7 +12,6 @@ import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../
 
 import { PACK_HEADER as HEADER, packTokens as estimate, packTokensOfBytes, fitsLedgerPrefix, PACK_RETRIEVAL_GUIDANCE, unifiedPackRetrievalGuidance, CONTINUITY_PACK_MAX_TOKENS } from "./render-fit.js";
 import type { UnifiedHistoryAvailability } from "../tool-history/nested-history.js";
-import { unifiedHistoryScopePhrase } from "../tool-history/nested-history.js";
 type Section = "owner" | "tool" | "summary" | "evidence";
 export interface ContinuityPack {
   readonly text?: string;
@@ -31,16 +30,18 @@ export interface ContinuityPack {
 }
 
 /** Coverage-gap marker when the pack carries no evidence. The retrieval
- * branch names the unified History surface (with offered scopes) while it is
- * active, else the legacy ConversationHistory route. The outage branch is
- * tool-agnostic in both modes. */
+ * branch names the unified History `said` scope while it is available,
+ * else the legacy ConversationHistory route. Pack tool-evidence ids are
+ * continuity record ids that only the `said` reader can fetch, so when
+ * `said` is off the marker is the tool-agnostic outage text — as legacy
+ * does when ConversationHistory is unavailable. */
 export function coverageGapMessage(conversationHistoryAvailable: boolean, degradedReason: string | undefined, historyScopes?: UnifiedHistoryAvailability): string {
-  const retrievalMaySucceed = (conversationHistoryAvailable || historyScopes !== undefined)
+  const unifiedRetrieval = historyScopes?.said === true;
+  const retrievalMaySucceed = (conversationHistoryAvailable || unifiedRetrieval)
     && !["purge_pending", "source_changed", "unavailable", "boundary_unavailable"].includes(degradedReason ?? "");
-  const scopePhrase = historyScopes === undefined ? undefined : unifiedHistoryScopePhrase(historyScopes);
   return retrievalMaySucceed
-    ? historyScopes !== undefined
-      ? `Continuity coverage gap: no historical evidence supplied here. History search/get${scopePhrase === undefined ? "" : ` (${scopePhrase})`} may find retained evidence omitted here; source redaction/truncation is irreversible here. `
+    ? unifiedRetrieval
+      ? "Continuity coverage gap: no historical evidence supplied here. History search/get (scope \"said\") may find retained evidence omitted here; source redaction/truncation is irreversible here. "
       : "Continuity coverage gap: no historical evidence supplied here. ConversationHistory search/get may find retained evidence omitted here; source redaction/truncation is irreversible here. "
     : "Continuity coverage gap: retained evidence unavailable or omitted; use permitted canonical history. No historical evidence supplied. ";
 }
@@ -72,7 +73,8 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   // all-or-nothing (shared purchase/injection rule) and its omission is disclosed.
   const shown = derived !== "" && fitsLedgerPrefix(derived, limit);
   const prefix = shown ? HEADER + derived : HEADER;
-  const guidance = historyScopes !== undefined ? unifiedPackRetrievalGuidance(historyScopes)
+  const guidance = historyScopes !== undefined
+    ? (historyScopes.said ? unifiedPackRetrievalGuidance() : "")
     : conversationHistoryAvailable ? PACK_RETRIEVAL_GUIDANCE : "";
   const disclosure = derived !== "" && !shown ? `Continuity ledger omitted: ${ledger!.generation.entries.length} derived entries exceed the ledger space; omission is not supersession.\n` : "";
   const demoted = new Set(shown ? quotedOwnerRecords(ledger!.generation, ledger!.records) : []);

@@ -1125,7 +1125,6 @@ HOST_TURN_CONTEXT_GUIDANCE
 HistoryMessage
 HistoryToolAvailability
 LiveInputMailbox
-NestedHistoryOptions
 OwnedContinuityContext
 OwnedContinuityMutation
 PreparedContinuityPublication
