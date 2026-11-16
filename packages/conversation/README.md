@@ -1123,6 +1123,7 @@ ConversationHistoryTurnInspection
 ExternalRunSummary
 HOST_TURN_CONTEXT_GUIDANCE
 HistoryMessage
+HistoryToolAvailability
 LiveInputMailbox
 OwnedContinuityContext
 OwnedContinuityMutation
@@ -1148,6 +1149,7 @@ ToolHistoryWriterHandle
 ToolHistoryWriterOptions
 ToolPolicyError
 ToolPolicyInput
+UnifiedHistoryAvailability
 acquireToolHistoryWriter
 bindProcessJobLiveInput
 classifyContinuationMcpServerTransport

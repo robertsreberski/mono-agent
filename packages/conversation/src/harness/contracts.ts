@@ -9,6 +9,7 @@ import type { SandboxPolicy } from "@mono-agent/turn/host/types";
 
 import type { BuiltAgentContext } from "../context/index.js";
 import type { SkillsCache } from "../skills/index.js";
+import type { UnifiedHistoryAvailability } from "../tool-history/nested-history.js";
 import type { ToolHistoryReader } from "../tool-history/reader.js";
 import type { ToolHistoryWriter } from "../tool-history/writer.js";
 import type { ToolPolicy } from "../tool-policy/index.js";
@@ -506,10 +507,17 @@ export interface ConversationHarnessToolHistoryOptions {
   readonly conversationHistoryAvailable?: boolean;
   /** Legacy custom hosts retain SessionHistory routing unless explicitly false. */
   readonly sessionHistoryAvailable?: boolean;
+  /** Set while the unified app-owned History surface is active. Lets the
+   * harness treat the bare `History` name as nested history output in
+   * capture paths. Absent keeps legacy retention byte-identical. */
+  readonly unifiedHistory?: boolean;
   /** Host-owned predicate evaluated after all runtime policy layers. Never cloned into prepared context. */
   readonly historyToolAvailabilityForRuntime?: (runtimeOptions: Readonly<Record<string, unknown>>) => {
     readonly conversationHistory: boolean;
     readonly sessionHistory: boolean;
+    /** Present while the unified app-owned History surface is active. Absent
+     * keeps every legacy string byte-identical. */
+    readonly history?: UnifiedHistoryAvailability;
   };
   readonly writer: Pick<ToolHistoryWriter, "createSink" | "finishRun" | "resetConversation">;
   readonly reader: ToolHistoryReader;

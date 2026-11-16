@@ -1,4 +1,5 @@
 import { DEFAULT_SOUL_TEXT } from './default-soul.js';
+import { UNIFIED_SOUL_TEXT } from './unified-soul.js';
 import { ContextValidationError } from './errors.js';
 import { normalizeJsonValue } from './json.js';
 import { buildSkillIndex, renderSkillIndexEntries, WARM_SESSION_SKILL_GUIDANCE } from './skill-index.js';
@@ -29,7 +30,8 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
   }
 
   const usedDefaultCore = input.core === undefined;
-  const core = normalizeContextBlock(input.core === undefined ? DEFAULT_SOUL_TEXT : input.core, 'core');
+  const defaultCoreText = input.defaultCore === 'unified' ? UNIFIED_SOUL_TEXT : DEFAULT_SOUL_TEXT;
+  const core = normalizeContextBlock(input.core === undefined ? defaultCoreText : input.core, 'core');
   const identity = normalizeContextBlock(input.identity, 'identity');
   const session = input.session === undefined ? undefined : normalizeContextBlock(input.session, 'session');
   const memory = normalizeMemory(input.memory);

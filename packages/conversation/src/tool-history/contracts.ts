@@ -34,6 +34,10 @@ export interface ToolHistoryWriterOptions {
 export interface ToolHistoryRunBinding {
   /** Positive per-run capture capability, never inferred from a shared writer. */
   readonly continuityEnabled?: true;
+  /** Set while the unified app-owned History surface is active, so the bare
+   * `History` name is treated as nested history output. Absent keeps legacy
+   * retention byte-identical. */
+  readonly unifiedHistory?: true;
   /** Fresh lifecycle admission serialized under the borrowed canonical owner.
    * Wire-only; never reconstructed from a shared writer's enablement. */
   readonly finalizedContinuity?: true;

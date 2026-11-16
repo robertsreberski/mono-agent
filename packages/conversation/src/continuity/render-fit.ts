@@ -12,3 +12,10 @@ export const fitsLedgerPrefix = (derived: string, maxTokens: number) => fitsLedg
 
 /** Applies only to Tool evidence entries inside the pack, never projection ids. */
 export const PACK_RETRIEVAL_GUIDANCE = "Tool evidence id = ConversationHistory recordId, not invocation_id.\nGet the record before guessing exact values or claiming absence; search if no id is shown.\nFollow search/get cursors. Pack omission may be retrievable; source redaction/truncation is irreversible here.\n";
+
+/** Unified pack guidance. Pack tool-evidence ids are continuity record ids
+ * that only the `said` reader can fetch, so this renders only when the
+ * `said` scope is available, and it always names exactly that scope. */
+export function unifiedPackRetrievalGuidance(): string {
+  return "Tool evidence id = History recordId (scope \"said\"), not invocation_id.\nGet the record before guessing exact values or claiming absence; search if no id is shown.\nFollow search/get cursors. Pack omission may be retrievable; source redaction/truncation is irreversible here.\n";
+}

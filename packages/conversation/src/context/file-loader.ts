@@ -19,6 +19,7 @@ export async function loadContextFromFiles(input: FileContextInput): Promise<Bui
   const buildInput: BuildContextInput = {
     identity,
     userMessage: input.userMessage,
+    ...(input.defaultCore === undefined ? {} : { defaultCore: input.defaultCore }),
     ...(core === undefined ? {} : { core }),
     ...(input.session === undefined ? {} : { session: input.session }),
     ...(input.memory === undefined ? {} : { memory: input.memory }),

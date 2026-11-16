@@ -10,7 +10,8 @@ import { CONTINUITY_REDACTION_OMISSION } from "../tool-history/continuity-payloa
 import { representedContinuityToolRecordIds } from "../harness/turn-continuity.js";
 import type { ConversationHarnessOptions, ConversationHarnessRequest } from "../harness/contracts.js";
 
-import { PACK_HEADER as HEADER, packTokens as estimate, packTokensOfBytes, fitsLedgerPrefix, PACK_RETRIEVAL_GUIDANCE, CONTINUITY_PACK_MAX_TOKENS } from "./render-fit.js";
+import { PACK_HEADER as HEADER, packTokens as estimate, packTokensOfBytes, fitsLedgerPrefix, PACK_RETRIEVAL_GUIDANCE, unifiedPackRetrievalGuidance, CONTINUITY_PACK_MAX_TOKENS } from "./render-fit.js";
+import type { UnifiedHistoryAvailability } from "../tool-history/nested-history.js";
 type Section = "owner" | "tool" | "summary" | "evidence";
 export interface ContinuityPack {
   readonly text?: string;
@@ -28,10 +29,27 @@ export interface ContinuityPack {
   readonly degradedReason?: string;
 }
 
+/** Coverage-gap marker when the pack carries no evidence. The retrieval
+ * branch names the unified History `said` scope while it is available,
+ * else the legacy ConversationHistory route. Pack tool-evidence ids are
+ * continuity record ids that only the `said` reader can fetch, so when
+ * `said` is off the marker is the tool-agnostic outage text — as legacy
+ * does when ConversationHistory is unavailable. */
+export function coverageGapMessage(conversationHistoryAvailable: boolean, degradedReason: string | undefined, historyScopes?: UnifiedHistoryAvailability): string {
+  const unifiedRetrieval = historyScopes?.said === true;
+  const retrievalMaySucceed = (conversationHistoryAvailable || unifiedRetrieval)
+    && !["purge_pending", "source_changed", "unavailable", "boundary_unavailable"].includes(degradedReason ?? "");
+  return retrievalMaySucceed
+    ? unifiedRetrieval
+      ? "Continuity coverage gap: no historical evidence supplied here. History search/get (scope \"said\") may find retained evidence omitted here; source redaction/truncation is irreversible here. "
+      : "Continuity coverage gap: no historical evidence supplied here. ConversationHistory search/get may find retained evidence omitted here; source redaction/truncation is irreversible here. "
+    : "Continuity coverage gap: retained evidence unavailable or omitted; use permitted canonical history. No historical evidence supplied. ";
+}
+
 /** Pure, deterministic rendering. No clipping of owner entries or identifiers.
  * A tool result head consists of complete paragraphs only; an oversized first paragraph
  * is omitted rather than turning an identifier or negation into a partial fact. */
-export function renderContinuityPack(snapshot: ContinuitySnapshot, history: readonly HistoryMessage[], maxTokens = CONTINUITY_PACK_MAX_TOKENS, ledger?: { generation: LedgerGeneration; records: readonly { recordId: string; text: string }[] }, upkeepGap = false, conversationHistoryAvailable = false): ContinuityPack {
+export function renderContinuityPack(snapshot: ContinuitySnapshot, history: readonly HistoryMessage[], maxTokens = CONTINUITY_PACK_MAX_TOKENS, ledger?: { generation: LedgerGeneration; records: readonly { recordId: string; text: string }[] }, upkeepGap = false, conversationHistoryAvailable = false, historyScopes?: UnifiedHistoryAvailability): ContinuityPack {
   const counts: Record<Section, number> = { owner: 0, tool: 0, summary: 0, evidence: 0 };
   const toolIds = representedContinuityToolRecordIds(history);
   const inputIds = new Set(history.flatMap(message => {
@@ -55,7 +73,9 @@ export function renderContinuityPack(snapshot: ContinuitySnapshot, history: read
   // all-or-nothing (shared purchase/injection rule) and its omission is disclosed.
   const shown = derived !== "" && fitsLedgerPrefix(derived, limit);
   const prefix = shown ? HEADER + derived : HEADER;
-  const guidance = conversationHistoryAvailable ? PACK_RETRIEVAL_GUIDANCE : "";
+  const guidance = historyScopes !== undefined
+    ? (historyScopes.said ? unifiedPackRetrievalGuidance() : "")
+    : conversationHistoryAvailable ? PACK_RETRIEVAL_GUIDANCE : "";
   const disclosure = derived !== "" && !shown ? `Continuity ledger omitted: ${ledger!.generation.entries.length} derived entries exceed the ledger space; omission is not supersession.\n` : "";
   const demoted = new Set(shown ? quotedOwnerRecords(ledger!.generation, ledger!.records) : []);
   const rank: Record<Section, number> = { summary: 0, owner: 1, tool: 2, evidence: 3 };
@@ -221,7 +241,7 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
   let scope: ContinuitySnapshotInput | undefined;
   let snapshot: ContinuitySnapshot | undefined;
   let summarySelection: RetainedSummarySelection | undefined;
-  const render = (history: readonly HistoryMessage[], maxTokens: number, reason: string, emit: (event: RuntimeEventLike) => void, onRenderedTools?: (ids: ReadonlySet<string>) => void, conversationHistoryAvailable = false): { messages: readonly RuntimeMessage[]; summarySelection?: RetainedSummarySelection } => {
+  const render = (history: readonly HistoryMessage[], maxTokens: number, reason: string, emit: (event: RuntimeEventLike) => void, onRenderedTools?: (ids: ReadonlySet<string>) => void, conversationHistoryAvailable = false, historyScopes?: UnifiedHistoryAvailability): { messages: readonly RuntimeMessage[]; summarySelection?: RetainedSummarySelection } => {
     summarySelection = undefined; // Never retain metadata from an earlier attempt/layout.
     if (toolHistory?.continuityEnabled !== true || toolHistory.packEnabled === false) return { messages: [] };
     let pack: ContinuityPack;
@@ -241,7 +261,7 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
       const ledger = upkeep.current(emit);
       pack = source.degradedReason === "source_changed" || source.degradedReason === "purge_pending" || source.degradedReason === "unavailable" || source.degradedReason === "boundary_unavailable"
         ? { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: source.omitted, unknownOverlap: 0, ownerDeduped: 0, toolReserved: 0, ledgerEntries: 0, degradedReason: source.degradedReason }
-        : renderContinuityPack(source, history, maxTokens, ledger, upkeep.gap, conversationHistoryAvailable);
+        : renderContinuityPack(source, history, maxTokens, ledger, upkeep.gap, conversationHistoryAvailable, historyScopes);
     } catch {
       pack = { tokens: 0, counts: { owner: 0, tool: 0, summary: 0, evidence: 0 }, omitted: 0, unknownOverlap: 0, ownerDeduped: 0, toolReserved: 0, ledgerEntries: 0, degradedReason: "unavailable" };
       snapshot = { records: [], omitted: 0, gaps: 1, degradedReason: "unavailable" };
@@ -258,11 +278,7 @@ export function createContinuityPackSupplier(options: ConversationHarnessOptions
     onRenderedTools?.(pack.toolRecordIds ?? new Set());
     if (pack.text) return { messages: [{ role: "user", content: pack.text, timestamp: "1970-01-01T00:00:00.000Z" }],
       ...(pack.summarySelection ? { summarySelection: pack.summarySelection } : {}) };
-    const retrievalMaySucceed = conversationHistoryAvailable
-      && !["purge_pending", "source_changed", "unavailable", "boundary_unavailable"].includes(pack.degradedReason ?? "");
-    const gap = retrievalMaySucceed
-      ? "Continuity coverage gap: no historical evidence supplied here. ConversationHistory search/get may find retained evidence omitted here; source redaction/truncation is irreversible here. "
-      : "Continuity coverage gap: retained evidence unavailable or omitted; use permitted canonical history. No historical evidence supplied. ";
+    const gap = coverageGapMessage(conversationHistoryAvailable, pack.degradedReason, historyScopes);
     return { messages: pack.degradedReason && pack.degradedReason !== "trigger_headroom" && maxTokens >= estimate(gap) ? [{ role: "user", content: gap, timestamp: "1970-01-01T00:00:00.000Z" }] : [] };
   };
   const supply = (...args: Parameters<typeof render>): readonly RuntimeMessage[] => render(...args).messages;
