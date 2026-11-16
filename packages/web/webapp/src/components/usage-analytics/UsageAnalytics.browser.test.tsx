@@ -31,12 +31,42 @@ describe("usage analytics", () => {
     expect(screen.getByRole("img", { name: /Codex quota percentages/ })).toBeVisible();
     expect(screen.getAllByText(/Account changed/).length).toBeGreaterThan(0);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    const plot = document.querySelector(".usage-chart-plot")!.getBoundingClientRect();
+    expect(plot.height).toBe(width === 390 ? 200 : 232);
+    const ticks = document.querySelectorAll<HTMLElement>(".usage-chart-y-tick");
+    expect(getComputedStyle(ticks[0]!).fontSize).toBe("11px");
+    expect(getComputedStyle(document.querySelector(".usage-chart-x-axis")!).fontSize).toBe("11px");
+    expect(ticks[0]!.getBoundingClientRect().top - ticks[2]!.getBoundingClientRect().top)
+      .toBeGreaterThanOrEqual(width === 390 ? 160 : 200);
+    expect(document.querySelector(".usage-chart text")).toBeNull();
+    const costCard = screen.getByRole("heading", { name: "Tokens and spend" }).closest(".usage-card")!;
+    expect(getComputedStyle(costCard.querySelector(".usage-chart-y-tick")!).fontSize).toBe("11px");
+    expect(costCard.querySelector(".usage-chart-plot")!.getBoundingClientRect().height)
+      .toBe(width === 390 ? 200 : 232);
     const toolbar = document.querySelector(".usage-toolbar")!.getBoundingClientRect();
     expect(screen.getByRole("button", { name: "Refresh analytics" }).getBoundingClientRect().right).toBeLessThanOrEqual(width);
     expect(document.querySelector(".usage-toolbar + p")!.getBoundingClientRect().top).toBeGreaterThanOrEqual(toolbar.bottom);
     document.querySelector(".usage-content")!.scrollTop = 0;
     await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     if (shots) await page.screenshot({ path: `${shots}/usage-analytics-fictional-${width}-account-boundary.png` });
+    if (shots && width === 1440) {
+      await page.viewport(1440, 1000);
+      document.querySelector(".usage-rankings")!.scrollIntoView({ block: "start" });
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      expect(screen.getByRole("heading", { name: "Top conversations" })).toBeVisible();
+      expect(screen.getByRole("heading", { name: "Top projects" })).toBeVisible();
+      await page.screenshot({ path: `${shots}/usage-analytics-fictional-1440-top-rankings.png` });
+      await page.viewport(1440, 1700);
+      document.querySelector(".usage-content")!.scrollTop = 0;
+    }
+    if (shots && width === 390) {
+      await page.viewport(390, 1600);
+      costCard.scrollIntoView({ block: "start" });
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      await page.screenshot({ path: `${shots}/usage-analytics-fictional-390-tokens-rankings.png` });
+      await page.viewport(390, 1900);
+      document.querySelector(".usage-content")!.scrollTop = 0;
+    }
     const tokens = screen.getByRole("button", { name: "Tokens" }); tokens.focus(); await userEvent.keyboard("{Enter}"); expect(tokens).toHaveAttribute("aria-pressed", "true");
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Inspect bucket" }), "12");
     expect(screen.getByRole("table", { name: /Model breakdown/ })).toBeVisible();

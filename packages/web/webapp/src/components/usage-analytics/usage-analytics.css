@@ -27,12 +27,18 @@
 .usage-card { padding: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-subtle); min-width: 0; margin-bottom: 16px; }
 .usage-quota-grid .usage-card { margin-bottom: 0; }
 .usage-card-heading > span { font-size: 11px; color: var(--text-soft); }
-.usage-chart { display: block; width: 100%; height: auto; overflow: visible; }
-.usage-chart text { fill: var(--text-soft); font-size: 10px; }
-.usage-grid { stroke: var(--border); stroke-width: 1; }
+.usage-chart-frame { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 10px 0; margin: 16px 0; }
+.usage-chart-y-axis { position: relative; grid-column: 1; grid-row: 1; color: var(--text-soft); }
+.usage-chart-y-tick { position: absolute; right: 8px; max-width: calc(100% - 8px); transform: translateY(-50%); font-size: 11px; line-height: 1.3; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.usage-chart-plot { position: relative; grid-column: 2; grid-row: 1; height: 232px; min-width: 0; }
+.usage-chart { display: block; width: 100%; height: 100%; overflow: visible; }
+.usage-chart-x-axis { grid-column: 2; grid-row: 2; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; font-size: 11px; line-height: 1.4; color: var(--text-soft); }
+.usage-chart-x-axis span:last-child { text-align: right; }
+.usage-boundary-label { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; color: var(--text); font-size: 11px; font-weight: 600; line-height: 1.3; }
+.usage-sample-dots { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; }
+.usage-grid { stroke: var(--line); stroke-width: 1; }
 .usage-reset { stroke: var(--text-soft); stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
 .usage-boundary { stroke: #cb5362; stroke-width: 1.5; fill: none; }
-.usage-chart .usage-boundary-label { fill: var(--text); font-weight: 600; }
 .usage-quota-line { stroke: currentColor; stroke-width: 2; fill: none; }
 .usage-legend { list-style: none; padding: 0; margin: 10px 0; display: flex; gap: 8px 14px; flex-wrap: wrap; font-size: 11px; }
 .usage-legend li { display: inline-flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
@@ -70,8 +76,7 @@
   .usage-summary article { padding: 12px; }
   .usage-summary strong { font-size: 17px; overflow-wrap: anywhere; }
   .usage-card { padding: 12px; }
-  .usage-chart { min-height: 110px; }
-  .usage-chart text { font-size: 20px; }
+  .usage-chart-plot { height: 200px; }
   .usage-actions button { min-height: 40px; }
 }
 /* Keep labels readable when numeric columns overflow into the scoped scroller. */

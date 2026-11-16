@@ -582,8 +582,11 @@ requires confirmation and leaves conversation usage unchanged.
 The screen offers 6h, 24h, 7d, 30d and 90d ranges, provider/window quota lines,
 reported reset markers, detected account boundaries and the existing measured
 pace concept. Lines do not connect across detected account changes or resets;
-dotted connectors indicate unobserved or reduced intervals, never continuous
-monitoring. Empty, stale, storage-unavailable and unsupported/offline states
+dotted connectors indicate known gaps over twice the typical observation interval
+or six hours, whichever is longer. The typical interval is the median of at least
+three gaps within an account/reset segment; fewer intervals use the six-hour floor.
+Compression and reduction alone do not establish missing checks. Connecting lines
+join actual observations, never continuous measurements. Empty, stale, storage-unavailable and unsupported/offline states
 remain separate. Historical quota stays agent/sign-in scoped as described below;
 conversation spend covers retained conversations across sign-ins.
 
