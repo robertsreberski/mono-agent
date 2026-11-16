@@ -64,6 +64,25 @@ describe("ProviderUsage tool", () => {
       expect(refresh).toHaveBeenCalledTimes(1);
     } finally { await client.close(); await bound.cleanup?.(); }
   });
+  it("does not hold the ProviderUsage tool open on a stalled history append", async () => {
+    const credential = { type: "oauth", access: "fictional-access", expires: Date.now() + 86_400_000 };
+    const service = createProviderUsageService({ historyTimeoutMs: 30,
+      resolver: Object.assign(vi.fn(), {
+        readCredential: async (id: string) => id === "anthropic" ? credential : undefined,
+      }) as never,
+      fetch: async () => Response.json({ five_hour: { utilization: 25 } }),
+      history: { append: async () => new Promise<void>(() => undefined), read: vi.fn(), clear: vi.fn() },
+    });
+    const bound = await createProviderUsageRuntimeExtension(service, { allowedTools: ["ProviderUsage"] })(request());
+    const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-provider-usage"]!;
+    const client = new Client({ name: "synthetic-test", version: "1" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await client.callTool({ name: "ProviderUsage", arguments: { provider: "anthropic", refresh: true } });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ providers: [{ providerId: "anthropic", windows: [{ usedPercent: 25 }] }] });
+    } finally { await client.close(); await bound.cleanup?.(); await service.stop(); }
+  });
   it("falls back to the cached snapshot when the operator has no refresh", async () => {
     const cached = { schema: "mono-agent.provider-usage.v1" as const, providers: [] };
     const snapshot = vi.fn(async () => cached);

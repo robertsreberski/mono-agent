@@ -641,7 +641,12 @@ agent. Existing snapshot clients and cached consoles retain their old routes.
 Quota history is sampled only when an existing real vendor usage fetch succeeds:
 opening the existing usage surface, calling `ProviderUsage`, or explicitly
 refreshing. Cache reads and failed/discarded requests do not record samples.
-There is no background sampler. History reads do not fetch live usage. Failures
+There is no background sampler. History reads do not fetch live usage. Persistence
+uses a bounded serialized queue outside live-result publication; storage timeouts
+never strand quota/tool reads. Shutdown has a short drain deadline and fences late
+writes. A pending sample can be lost on interruption; history reports degradation
+instead of changing vendor success/backoff. Opening an existing store also prunes
+expired samples and account fingerprints before serving history. Failures
 retain the last actual successful observation, not a synthetic zero; after a
 restart the exact failed attempts are unknown.
 

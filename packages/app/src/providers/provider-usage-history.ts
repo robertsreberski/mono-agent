@@ -7,6 +7,7 @@ import {
   type ProviderUsage, type ProviderUsageHistory, type ProviderUsageHistoryQuery,
   type ProviderUsageHistorySample, type ProviderUsageId,
 } from "@mono-agent/contracts";
+import { createProviderUsageHistoryQueue } from "./provider-usage-history-queue.js";
 import { openOwnedState, type OwnedStateHandle } from "../durable-state/owned-state-sqlite.js";
 
 const DAY = 86_400_000;
@@ -32,28 +33,36 @@ export function createProviderUsageHistoryStore(options: {
   /** Test seams; may only tighten the production caps. */
   readonly maxSamples?: number;
   readonly maxDatabaseBytes?: number;
+  readonly timeoutMs?: number;
+  readonly closeTimeoutMs?: number;
+  readonly open?: typeof openOwnedState;
 }) {
   const now = options.now ?? Date.now;
   const maxSamples = Math.max(1, Math.min(MAX_SAMPLES, options.maxSamples ?? MAX_SAMPLES));
+  const queue = createProviderUsageHistoryQueue({
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.closeTimeoutMs === undefined ? {} : { closeTimeoutMs: options.closeTimeoutMs }),
+  });
   let handle: OwnedStateHandle | undefined;
   let opening: Promise<OwnedStateHandle | undefined> | undefined;
   let stopped = false;
   let degraded = false;
-  async function get(create: boolean): Promise<OwnedStateHandle | undefined> {
-    if (stopped) return undefined;
+  async function get(create: boolean, signal: AbortSignal): Promise<OwnedStateHandle | undefined> {
+    if (stopped || signal.aborted) return undefined;
     if (handle) return handle;
     if (opening) {
       const opened = await opening;
       // A no-create history read may have won the initialization flight.
       // A retained real fetch must still initialize its own durable writer.
-      return opened ?? (create && !stopped ? get(true) : undefined);
+      return opened ?? (create && !stopped ? get(true, signal) : undefined);
     }
     opening = (async () => {
       if (!create) {
         try { await lstat(join(options.cwd, ".mono-agent", "provider-usage-v1", "state.sqlite")); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
       }
-      const opened = await openOwnedState({
+      const opened = await (options.open ?? openOwnedState)({
+        signal,
         cwd: options.cwd,
         name: "provider-usage-v1",
         label: "Provider quota history",
@@ -92,7 +101,8 @@ export function createProviderUsageHistoryStore(options: {
           .get() as { value?: unknown } | undefined;
         if (typeof key?.value !== "string" || !/^[a-f0-9]{64}$/u.test(key.value))
           throw new Error("Invalid history metadata.");
-        if (stopped) { opened.close(); return undefined; }
+        if (stopped || signal.aborted) { opened.close(); return undefined; }
+        opened.transaction(() => prune(opened));
         handle = opened;
         return opened;
       } catch (error) {
@@ -149,8 +159,8 @@ export function createProviderUsageHistoryStore(options: {
   }
   return {
     forScope(authScope: string): ProviderUsageHistorySink {
-      return {
-        async append(input, accountMaterial, retain) {
+      const operations = {
+        async append(input: ProviderUsage, accountMaterial: string | undefined, retain: () => boolean, signal: AbortSignal) {
           try {
             const usage = parseProviderUsageSnapshot({
               schema: PROVIDER_USAGE_SCHEMA, providers: [input],
@@ -161,8 +171,8 @@ export function createProviderUsageHistoryStore(options: {
               ...(usage.plan === undefined ? {} : { plan: usage.plan }),
             });
             if (Buffer.byteLength(payload) > 2048) throw new Error("History sample exceeds its bound.");
-            const h = await get(true);
-            if (!h || !retain()) return;
+            const h = await get(true, signal);
+            if (!h || !retain() || signal.aborted || stopped) return;
             const at = Date.parse(usage.fetchedAt), scope = digest(h, "quota-scope-v1", [authScope]);
             const fingerprint = accountMaterial === undefined
               ? null : digest(h, "quota-account-v1", [usage.providerId, accountMaterial]);
@@ -208,10 +218,10 @@ export function createProviderUsageHistoryStore(options: {
             degraded = false;
           } catch { degraded = true; } // Disk failure must not rewrite vendor success/backoff or leak diagnostics.
         },
-        async read(input, providers) {
+        async read(input: ProviderUsageHistoryQuery, providers: readonly ProviderUsageId[], signal: AbortSignal) {
           const query = parseProviderUsageHistoryQuery(input);
           try {
-            const h = await get(false);
+            const h = await get(false, signal);
             if (!h) return empty(query, providers, degraded ? "unavailable" : "ready");
             if (degraded) return empty(query, providers, "unavailable");
             const scope = digest(h, "quota-scope-v1", [authScope]);
@@ -284,10 +294,11 @@ export function createProviderUsageHistoryStore(options: {
             }) });
           } catch { return empty(query, providers, "unavailable"); }
         },
-        async clear(providers) {
+        async clear(providers: readonly ProviderUsageId[], signal: AbortSignal) {
           try {
-            const h = await get(false);
+            const h = await get(false, signal);
             if (!h) { if (degraded) throw new Error("unavailable"); return; }
+            signal.throwIfAborted();
             const scope = digest(h, "quota-scope-v1", [authScope]);
             h.transaction(() => {
               for (const provider of providers)
@@ -297,10 +308,19 @@ export function createProviderUsageHistoryStore(options: {
           } catch { throw new Error("Quota history storage is unavailable."); }
         },
       };
+      return {
+        append: (usage, account, retain) => queue.enqueue(signal =>
+          operations.append(usage, account, () => !signal.aborted && retain(), signal)
+        ).catch(() => { degraded = true; }),
+        read: (query, providers) => queue.enqueue(signal => operations.read(query, providers, signal))
+          .catch(() => empty(parseProviderUsageHistoryQuery(query), providers, "unavailable")),
+        clear: providers => queue.enqueue(signal => operations.clear(providers, signal))
+          .catch(() => { throw new Error("Quota history storage is unavailable."); }),
+      };
     },
     async close() {
+      await queue.close();
       stopped = true;
-      await opening?.catch(() => undefined);
       handle?.close(); handle = undefined;
     },
   };

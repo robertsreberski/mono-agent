@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type ProviderUsage, type ProviderUsageHistoryQuery, type ProviderUsageId } from "@mono-agent/contracts";
+import { openOwnedState } from "../durable-state/owned-state-sqlite.js";
 import { createProviderUsageHistoryStore } from "../providers/provider-usage-history.js";
 import { createProviderUsageService } from "../providers/provider-usage.js";
 
@@ -77,8 +78,14 @@ describe("owner-private quota history", () => {
     await sink.append(usage(NOW - 89 * DAY), undefined, retained);
     now += 2 * DAY;
     const range = { ...q, from: new Date(now - 90 * DAY).toISOString(), to: new Date(now).toISOString() };
-    expect((await sink.read(range, ["anthropic"])).providers[0]?.samples).toEqual([]);
-    await sink.append(usage(now), undefined, retained);
+    await s.close();
+    const fresh = store(cwd, () => now).forScope("auth");
+    expect((await fresh.read(range, ["anthropic"])).providers[0]?.samples).toEqual([]);
+    expect(count(cwd)).toBe(0);
+    const inspected = new DatabaseSync(dbPath(cwd));
+    expect(inspected.prepare("SELECT COUNT(*) AS n FROM partitions").get()).toMatchObject({ n: 0 });
+    inspected.close();
+    await fresh.append(usage(now), undefined, retained);
     expect(count(cwd)).toBe(1);
     const db = new DatabaseSync(dbPath(cwd));
     expect((db.prepare("PRAGMA max_page_count").get() as { max_page_count: number }).max_page_count).toBeGreaterThan(0);
@@ -117,6 +124,24 @@ describe("owner-private quota history", () => {
     expect(count(cwd)).toBeGreaterThan(0);
     await sink.clear(["anthropic"]);
     expect((await sink.read(q, ["anthropic"])).storage).toBe("ready");
+  });
+  it("bounds stalled initialization and closes before a late initializer can write", async () => {
+    const cwd = await root();
+    let started!: () => void, release!: () => void, settled = false;
+    const began = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const s = createProviderUsageHistoryStore({ cwd, timeoutMs: 50, closeTimeoutMs: 10,
+      open: async options => {
+        started(); await gate;
+        try { return await openOwnedState(options); } finally { settled = true; }
+      },
+    }); stores.push(s);
+    const pending = s.forScope("auth").append(usage(), undefined, retained);
+    await began;
+    await s.close(); // Must not await the stalled filesystem/open promise.
+    release(); await pending;
+    await vi.waitFor(() => expect(settled).toBe(true));
+    await expect(readFile(dbPath(cwd))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("rolls back a process killed mid-write and reopens the committed samples", async () => {
     const cwd = await root(); const s = store(cwd);
@@ -182,15 +207,16 @@ describe("retained vendor fetch sampling", () => {
     const f = await fixture(provider);
     try {
       await f.service.snapshot(provider);
+      await f.service.history!({ ...q, provider });
       await f.service.snapshot(provider); expect(f.append).toHaveBeenCalledTimes(1);
       f.replace({ ...f.credential(), access: "fictional-access-B", expires: NOW + 2 * DAY });
       await f.service.refresh(provider);
-      expect((await f.sink.read(q, [provider])).providers[0]?.accountChanges).toEqual([]);
+      expect((await f.service.history!({ ...q, provider })).providers[0]?.accountChanges).toEqual([]);
       f.tick();
       const change = provider === "github-copilot" ? { refresh: "fictional-refresh-B" } : provider === "opencode-go" ? { key: "fictional-key-B" } : { accountId: "fictional-account-B", refresh: "fictional-refresh-B" };
       f.replace({ ...f.credential(), ...change });
       await f.service.refresh(provider);
-      const h = await f.sink.read(q, [provider]);
+      const h = await f.service.history!({ ...q, provider });
       expect(h.providers[0]?.accountChanges).toHaveLength(provider === "anthropic" ? 0 : 1);
       f.replace(undefined); // Historical observations remain readable after sign-out.
       expect((await f.service.history!({ ...q, provider })).providers[0]?.samples.length).toBeGreaterThan(0);
@@ -209,6 +235,7 @@ describe("retained vendor fetch sampling", () => {
       const first = f.service.refresh("anthropic"); await began;
       const second = f.service.refresh("anthropic"); release();
       await Promise.all([first, second]);
+      await f.service.history!({ ...q, provider: "anthropic" });
       expect(f.request).toHaveBeenCalledTimes(1); expect(f.append).toHaveBeenCalledTimes(1); expect(count(f.cwd)).toBe(1);
     } finally { release(); f.service.stop(); }
   });
@@ -222,11 +249,76 @@ describe("retained vendor fetch sampling", () => {
       expect(f.append).not.toHaveBeenCalled(); expect(f.request).toHaveBeenCalledTimes(2);
     } finally { f.service.stop(); }
   });
+  it.each(["remove", "replace", "stop"] as const)("publishes before persistence, and preserves the %s fence while a prior append is pending", async mutation => {
+    let credential: Record<string, unknown> | undefined = { type: "oauth", access: "fictional-A", accountId: "fictional-account-A", expires: NOW + DAY };
+    let releaseFetch!: () => void;
+    const gate = new Promise<void>(resolve => { releaseFetch = resolve; });
+    const append = vi.fn(async (_usage: ProviderUsage, _account?: string) => new Promise<void>(() => undefined));
+    let calls = 0;
+    const service = createProviderUsageService({ now: () => NOW, historyTimeoutMs: 40,
+      resolver: Object.assign(vi.fn(), { readCredential: async (id: string) => id === "openai-codex" ? credential : undefined }) as never,
+      fetch: async () => { if (++calls === 2) await gate; return Response.json({ rate_limit: { primary_window: { used_percent: 30 } } }); },
+      history: { append, read: async query => ({ schema: "mono-agent.provider-usage-history.v1", ...query, retentionDays: 90, storage: "ready", providers: [] }), clear: vi.fn() },
+    });
+    try {
+      const first = await service.refresh("openai-codex");
+      expect(first.providers[0]?.windows[0]?.usedPercent).toBe(30);
+      expect(append).not.toHaveBeenCalled(); // publication precedes the persistence event-loop turn
+      await vi.waitFor(() => expect(append).toHaveBeenCalledTimes(1));
+      const pending = service.refresh("openai-codex");
+      await vi.waitFor(() => expect(calls).toBe(2));
+      if (mutation === "stop") await service.stop();
+      else credential = mutation === "remove" ? undefined : { ...credential, access: "fictional-B", accountId: "fictional-account-B" };
+      releaseFetch();
+      expect((await pending).providers).toEqual([]);
+      expect(append.mock.calls[0]?.[1]).toContain("fictional-account-A");
+      expect(append.mock.calls[0]?.[1]).not.toContain("fictional-account-B");
+      if (mutation === "remove" || mutation === "stop") expect((await service.snapshot("openai-codex")).providers).toEqual([]);
+    } finally { releaseFetch(); await service.stop(); }
+  });
+  it("a never-settling append cannot strand snapshot/cache reads or teardown", async () => {
+    const append = vi.fn(async (_usage: ProviderUsage, _account?: string) => new Promise<void>(() => undefined));
+    const service = createProviderUsageService({ now: () => NOW, historyTimeoutMs: 30,
+      resolver: Object.assign(vi.fn(), { readCredential: async () => ({ type: "oauth", access: "fictional-token", expires: NOW + DAY }) }) as never,
+      fetch: async () => Response.json({ five_hour: { utilization: 20 } }),
+      history: { append, read: async query => ({ schema: "mono-agent.provider-usage-history.v1", ...query, retentionDays: 90, storage: "ready", providers: [] }), clear: vi.fn() },
+    });
+    try {
+      expect((await service.snapshot("anthropic")).providers).toHaveLength(1);
+      expect((await service.snapshot("anthropic")).providers).toHaveLength(1);
+      expect((await service.history!({ ...q, provider: "anthropic" })).storage).toBe("unavailable");
+      await service.stop();
+    } finally { await service.stop(); }
+  });
+  it("persists the captured fetched account even if credentials change while initialization waits", async () => {
+    const cwd = await root(); let time = NOW;
+    let accountId = "fictional-A", release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const began = new Promise<void>(resolve => { entered = resolve; });
+    const owner = createProviderUsageHistoryStore({ cwd, now: () => time, open: async options => {
+      entered(); await gate; return openOwnedState(options);
+    } }); stores.push(owner);
+    const service = createProviderUsageService({ now: () => time,
+      resolver: Object.assign(vi.fn(), { readCredential: async (id: string) => id === "openai-codex" ? {
+        type: "oauth", access: "fictional-token", accountId, expires: NOW + DAY,
+      } : undefined }) as never,
+      history: owner.forScope("auth"), fetch: async () => Response.json({ rate_limit: { primary_window: { used_percent: accountId === "fictional-A" ? 20 : 40 } } }),
+    });
+    try {
+      expect((await service.refresh("openai-codex")).providers[0]?.windows[0]?.usedPercent).toBe(20);
+      await began; accountId = "fictional-B"; release();
+      expect((await service.history!({ ...q, provider: "openai-codex" })).providers[0]?.samples[0]?.windows[0]?.usedPercent).toBe(20);
+      time += 300_000; await service.refresh("openai-codex");
+      const history = await service.history!({ ...q, provider: "openai-codex" });
+      expect(history.providers[0]?.accountChanges).toHaveLength(1);
+      expect(history.providers[0]?.samples.map(sample => sample.windows[0]?.usedPercent)).toEqual([20, 40]);
+    } finally { release(); await service.stop(); }
+  });
   it("does not turn a sink error into a vendor error or alter cache freshness", async () => {
     const append = vi.fn(async () => { throw new Error("fictional disk failure"); });
     const service = createProviderUsageService({ now: () => NOW, resolver: Object.assign(vi.fn(), { readCredential: async () => ({ type: "oauth", access: "fictional-token", expires: NOW + DAY }) }) as never,
       fetch: async () => Response.json({ five_hour: { utilization: 30 } }), history: { append, read: vi.fn(), clear: vi.fn() } });
-    try { expect((await service.snapshot("anthropic")).providers[0]?.error).toBeUndefined(); await service.snapshot("anthropic"); expect(append).toHaveBeenCalledTimes(1); }
+    try { expect((await service.snapshot("anthropic")).providers[0]?.error).toBeUndefined(); await service.snapshot("anthropic"); await vi.waitFor(() => expect(append).toHaveBeenCalledTimes(1)); }
     finally { service.stop(); }
   });
 });

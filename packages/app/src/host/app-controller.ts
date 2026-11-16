@@ -657,7 +657,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   ): Promise<ContinuationHistoryRecordResult> { return continuationOperations.recordContinuationHistory(this, conversationId, text, deliveryKey); }
 
   async stop(shutdownDeadline?: number): Promise<void> {
-    for (const service of this.providerUsageServices.values()) service.stop();
+    await Promise.all([...this.providerUsageServices.values()].map(service => service.stop()));
     this.providerUsageServices.clear();
     try {
       try { await this.providerUsageHistory?.close(); }
