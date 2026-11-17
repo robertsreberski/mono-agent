@@ -484,8 +484,9 @@ standalone **Scheduled wake-up** item even if the agent sends no answer.
 
 A wake-up may end silently on the same terms as a process-job completion wake.
 Its prompt offers `FinishSilently({})` and, when that tool is unavailable, an
-exact `NOTHING_TO_REPORT` reply; an empty final answer is a failure. A
-host-certified silent turn, or a final reply that is exactly the sentinel, is
+exact `NOTHING_TO_REPORT` reply; an empty final answer is a failure. Agents do
+not yet admit `FinishSilently` on scheduled wake-ups, so silence currently uses
+the sentinel. A host-certified silent turn, or a final reply that is exactly the sentinel, is
 stored without answer text and creates no response push, leaving only the
 **Scheduled wake-up** item. Narrated sentinels, attachments, MCP apps, restart
 proposals, reply options and reply failures stay visible, and an operator
