@@ -367,7 +367,10 @@ it("refuses independently consumed authority at a different output root through 
 
 it("allows a cold phase start beyond ten seconds without bypassing guarded SDK admission", async () => {
   const started = performance.now();
-  const result = await run({ production: true, scenario: "proof", arm: "switch", rows: productionRows, phaseStartupDelayMs: 11_000 });
+  const result = await run({ production: true, scenario: "proof", arm: "switch", rows: productionRows, phaseStartupDelayMs: 11_000,
+    // This case deliberately spends 11s before setup. Budget the full cold
+    // production proof as well; do not shorten or bypass its real watchdog.
+    deadlines: { requestDeadlineMs: 30_000, phaseDeadlineMs: 60_000, childWatchdogMs: 60_000, runDeadlineMs: 120_000 } });
   expect(performance.now() - started).toBeGreaterThanOrEqual(11_000);
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
   expect(result.received.length).toBeGreaterThanOrEqual(4);
