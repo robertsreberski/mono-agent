@@ -259,7 +259,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
               server.queue.observe(index, message.content); observedTools.add(index);
             }
           }
-          if (baseline) assertE2BaselineRequest(context, { kind: probeMode ? "probe" : "source", sourceTools: source.tools.map(t => t.name) });
+          if (baseline) assertE2BaselineRequest(context, { kind: probeMode ? "probe" : "source", sourceTools: source.tools.map(t => t.name), historySurface });
           onContext({ branch: branchIndex, probe: probeMode, context });
           if (probeMode) {
             retrieval.observeRequest(context);

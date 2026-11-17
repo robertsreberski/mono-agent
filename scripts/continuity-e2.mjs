@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { e2HistorySurface, historySurfaceBinding, assertHistorySurfaceBinding } from "./lib/continuity-e2-history.mjs";
 // Offline preparation only. Paid authority is not an argument this CLI accepts.
 // Capture the fork binding before evaluating any other framework/user module.
 import { runE2SizingProcess, e2SizingErrorDiagnostic } from "./lib/continuity-e2-sizing-process.mjs";
+import { e2HistorySurface, historySurfaceBinding } from "./lib/continuity-e2-history.mjs";
 import { realpathSync, readFileSync, statSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
@@ -67,7 +67,8 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
       const output = privateOutput(args.output, [protocol, limits, ...sizing]);
       const registered = readJSON(limits);
       if (registered?.schema !== "continuity-e2-estimate-limits-v1" || Object.keys(registered).sort().join() !== "probeCounts,roles,schema") fail("E2_ESTIMATE_INVALID");
-      assertHistorySurfaceBinding(registered, { historySurface: args["history-surface"] });
+      // Limits contain role/count envelopes, not a surface. Every sizing record
+      // is independently bound to the CLI selector by estimateE2SizingSet.
       const report = estimateE2SizingSet({ protocol: readJSON(protocol), roles: registered.roles, probeCounts: registered.probeCounts, records: sizing.map(readJSON), replayArm: args["replay-arm"], historySurface: args["history-surface"], catalog: await loadE2Catalog() });
       mkdirSync(output, { mode: 0o700 });
       try { writeFileSync(join(output, "estimate.json"), `${JSON.stringify(report)}\n`, { flag: "wx", mode: 0o600 }); }

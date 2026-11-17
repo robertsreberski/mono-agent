@@ -128,7 +128,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
         if (method === "streamSimple") return (model, context, options) => {
           check(); validateModel(model, original);
           if (baseline) {
-            try { assertE2BaselineRequest(context, { kind: position.probe ? "probe" : "source", sourceTools }); } catch (error) { refuse(error.code); }
+            try { assertE2BaselineRequest(context, { kind: position.probe ? "probe" : "source", sourceTools, historySurface }); } catch (error) { refuse(error.code); }
             if (position.probe && positionRequests >= 1) refuse("E2_PROBE_REQUEST_LIMIT");
           }
           if (!baseline && position.probe && probeLookupRounds !== undefined) {
@@ -158,7 +158,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
         };
         if (method === "completeSimple") return async (model, context, options = {}) => {
           check(); validateModel(model, original);
-          if (baseline) { try { assertE2BaselineRequest(context, { kind: "summary" }); } catch (error) { refuse(error.code); } }
+          if (baseline) { try { assertE2BaselineRequest(context, { kind: "summary", historySurface }); } catch (error) { refuse(error.code); } }
           onRequest(model, context, options, "completeSimple");
           const receipt = [...lifecycle.values()][0];
           if (!receipt || lifecycle.size !== 1 || (context.tools?.length ?? 0) !== 0 || context.messages?.some(m => m.toolsAdded?.length)) refuse("E2_SUMMARY_NOT_AUTHORIZED");

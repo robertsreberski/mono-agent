@@ -22,3 +22,8 @@ export function historyCallScope(name, args) {
   if (["History", "mcp__mono-agent-history__History"].includes(name) && ["said", "tools", "runs"].includes(args?.scope)) return args.scope;
   return undefined;
 }
+
+// Both the lookup safety guard and paid E2 config guard consume this selector.
+export const LOOKUP_TOOL_ALLOWLIST_V1 = Object.freeze({ version: "v1", tools: Object.freeze(["ConversationHistory"]) });
+export const LOOKUP_TOOL_ALLOWLIST_V2 = Object.freeze({ version: "v2", tools: Object.freeze(["ConversationHistory", "History"]) });
+export const lookupToolAllowlist = surface => e2HistorySurface(surface) === "unified" ? LOOKUP_TOOL_ALLOWLIST_V2 : LOOKUP_TOOL_ALLOWLIST_V1;

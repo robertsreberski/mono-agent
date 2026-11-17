@@ -62,8 +62,8 @@ it.each(["said", "tools", "runs"])("attributes unified calls to %s only", scope 
 });
 it.each(["History", "mcp__mono-agent-history__History", "ConversationHistory", "SessionHistory", "RunHistory"])("baseline refuses %s in source tools, calls and results", name => {
   for (const context of [{ tools: [{ name }] }, { messages: [{ role: "toolResult", toolName: name }] }, { messages: [{ role: "assistant", content: [{ type: "toolCall", name }] }] }])
-    expect(() => assertE2BaselineContext(context, { kind: "source" })).toThrow("E2_PROBE_TOOLS_REFUSED");
-  expect(() => assertE2BaselineContext({ mcpServers: { "mono-agent-history": {} } }, { kind: "source" })).toThrow("E2_PROBE_TOOLS_REFUSED");
+    expect(() => assertE2BaselineContext(context, { kind: "source", historySurface: "unified" })).toThrow("E2_PROBE_TOOLS_REFUSED");
+  expect(() => assertE2BaselineContext({ mcpServers: { "mono-agent-history": {} } }, { kind: "source", historySurface: "unified" })).toThrow("E2_PROBE_TOOLS_REFUSED");
 });
 it("keeps metering v1 split-only and selects History-aware v2 explicitly", () => {
   expect(lookupToolAllowlist()).toEqual({ version: "v1", tools: ["ConversationHistory"] });
@@ -145,3 +145,35 @@ it("offers and executes all three shipping scopes through the unified harness", 
     expect(results.every(r => !r.isError)).toBe(true);
   } finally { await opened?.close(); await rm(root, { recursive: true, force: true }); }
 }, 30_000);
+
+it.each([undefined, "split"])("pins the split baseline refusal set to executed base source for %s", async historySurface => {
+  const base = JSON.parse(await readFile(new URL("./fixtures/continuity-e2-split-base.json", import.meta.url)));
+  for (const { context, refusal } of base.baselineSourceCases) {
+    let actual = null;
+    try { assertE2BaselineContext(context, { kind: "source", historySurface }); } catch (error) { actual = error.code; }
+    expect(actual, JSON.stringify(context)).toBe(refusal);
+  }
+});
+it("keeps the capacity scan's explicit 272K fit/fallback fixture byte-identical to base", async () => {
+  const base = JSON.parse(await readFile(new URL("./fixtures/continuity-e2-split-base.json", import.meta.url)));
+  expect(hash(await readFile(new URL("../lib/continuity-e2-capacity.mjs", import.meta.url)))).toBe(base.capacitySourceSha256);
+});
+it("captures the sizing fork binding before evaluating the history helper", async () => {
+  const source = await readFile(new URL("../continuity-e2.mjs", import.meta.url), "utf8");
+  const imports = [...source.matchAll(/^import .* from "([^"]+)";/gmu)].map(m => m[1]);
+  expect(imports[0]).toBe("./lib/continuity-e2-sizing-process.mjs");
+  expect(imports.indexOf("./lib/continuity-e2-history.mjs")).toBeGreaterThan(0);
+});
+it.each([undefined, "split", "unified"])("carries baseline surface from funding into serialized-body checks for %s", async historySurface => {
+  const catalog = await loadE2Catalog(), sol = catalog.find(c => c.model === SOL);
+  const pilot = { registration: { replayArm: "baseline", ...historySurfaceBinding(historySurface), catalog,
+    roles: [{ role: "summary", model: SOL, maxInputTokens: 272000, maxOutputTokens: 128000, expectedOutputTokens: 512 }], toolPolicies: e2ToolPolicies("baseline", historySurface) } };
+  const planned = { kind: "replay", arm: "baseline", budgets: [{ checkpoint: 0, paidRole: "summary", model: SOL, maxRequests: 1 }] };
+  const p = { requestId: "fictional:1", slotId: "b".repeat(64), round: 1, payloadDigest: "a".repeat(64), inputTokens: 100, paidRole: "summary", model: SOL, checkpoint: 0,
+    reservationUnits: e2RequestPrice(sol, { inputTokens: 100, maxOutputTokens: 128000 }).reservationUnits };
+  const { metadata } = e2ExecutionPolicy.admission(pilot, planned, { holds: [], compaction: { checkpoint: 0, operationDigest: "d".repeat(64) } }, p);
+  expect(metadata.historySurface).toBe(historySurface === "unified" ? "unified" : undefined);
+  const body = Buffer.from(JSON.stringify({ model: "gpt-6.1-sol", store: false, stream: true, input: [{ type: "function_call", name: "History", arguments: "{}" }] }));
+  if (historySurface === "unified") expect(() => e2ExecutionPolicy.assertBody(body, metadata)).toThrow("E2_PROBE_TOOLS_REFUSED");
+  else expect(() => e2ExecutionPolicy.assertBody(body, metadata)).not.toThrow();
+});

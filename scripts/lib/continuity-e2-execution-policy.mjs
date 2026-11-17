@@ -76,7 +76,7 @@ function requestFunding(pilot, planned, p, operationDigest, probeRequest) {
   need(budget, "e2_request_limit");
   const reserve = e2RequestPrice(catalog, { inputTokens: p.inputTokens, maxOutputTokens: role.maxOutputTokens }).reservationUnits;
   need(p.reservationUnits === reserve);
-  return { reserve: BigInt(reserve), metadata: { ...(pilot.registration.replayArm === "baseline" ? { replayArm: "baseline" } : {}), model: p.model, paidRole: p.paidRole, checkpoint: p.checkpoint, measuredInputTokens: p.inputTokens,
+  return { reserve: BigInt(reserve), metadata: { ...historySurfaceBinding(pilot.registration.historySurface), ...(pilot.registration.replayArm === "baseline" ? { replayArm: "baseline" } : {}), model: p.model, paidRole: p.paidRole, checkpoint: p.checkpoint, measuredInputTokens: p.inputTokens,
     ...(p.paidRole === "summary" ? { operationDigest } : {}), inputMax: catalog.contextWindow, outputMax: role.maxOutputTokens, catalog: structuredClone(catalog),
     ...(probeRequest === undefined ? {} : { probeRequest }),
     tools: [...requestTools(pilot, planned, p, probeRequest)] } };
@@ -373,7 +373,7 @@ export const e2ExecutionPolicy = Object.freeze({
     if (hold.replayArm === "baseline") {
       const kind = hold.paidRole === "summary" ? "summary"
         : hold.probeRequest !== undefined || hold.paidRole === "probe" ? "probe" : "source";
-      assertE2BaselineRequest(body, { kind, sourceTools: hold.tools });
+      assertE2BaselineRequest(body, { kind, sourceTools: hold.tools, historySurface: hold.historySurface });
     }
   },
 });

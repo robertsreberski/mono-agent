@@ -1,7 +1,8 @@
-import { e2HistorySurface, historyToolName, historyServerName } from "./continuity-e2-history.mjs";
+import { e2HistorySurface, historyToolName, historyServerName, lookupToolAllowlist } from "./continuity-e2-history.mjs";
 import { lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
+export { LOOKUP_TOOL_ALLOWLIST_V1, LOOKUP_TOOL_ALLOWLIST_V2, lookupToolAllowlist } from "./continuity-e2-history.mjs";
 // Scripts-only, fail-closed policy. No credential resolution, provider or send factory.
 const need = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code, outcome: "refused_pre_send" }); };
 export const lookupCacheKey = key => typeof key === "string" && /^[\x21-\x7e]{1,64}$/u.test(key);
@@ -16,9 +17,6 @@ export function assertLookupCacheAssignment(state, assignment) {
     && Number.isInteger(assignment?.index) && assignment.index >= 0 && assignment.index < keys.length
     && lookupCacheKey(assignment.cacheKey) && keys[assignment.index] === assignment.cacheKey, "lookup_cache_assignment_invalid");
 }
-export const LOOKUP_TOOL_ALLOWLIST_V1 = Object.freeze({ version: "v1", tools: Object.freeze(["ConversationHistory"]) });
-export const LOOKUP_TOOL_ALLOWLIST_V2 = Object.freeze({ version: "v2", tools: Object.freeze(["ConversationHistory", "History"]) });
-export const lookupToolAllowlist = surface => e2HistorySurface(surface) === "unified" ? LOOKUP_TOOL_ALLOWLIST_V2 : LOOKUP_TOOL_ALLOWLIST_V1;
 /** Check resolved values, not the flags used to request them. Repeated at every dispatch. */
 export function assertResolvedLookupSafety({ plan, config, arm, captureUpkeepOutput, options, historyEndpoint, forwarded = false, historySurface } = {}) {
   need(plan?.judge === null && config && arm, "lookup_auxiliary_callers_forbidden");

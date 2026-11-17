@@ -1,4 +1,4 @@
-import { e2HistorySurface, historyToolName, historyServerName, assertHistorySurfaceBinding } from "./continuity-e2-history.mjs";
+import { e2HistorySurface, historyToolName, historyServerName, assertHistorySurfaceBinding, lookupToolAllowlist } from "./continuity-e2-history.mjs";
 // One phase actor: real paid requests use the shared guard and its sole send.
 // Scripted setup is handled separately by createE2Models and never reaches here.
 import { readdir, writeFile } from "node:fs/promises";
@@ -105,7 +105,7 @@ export async function createE2PaidModels(a, safety) {
         && value.runtime?.session?.continuity?.ledgerEnabled !== true && value.runtime?.outputSchema == null && value.outputSchema == null,
         "e2_auxiliary_callers_forbidden");
       const workspaces = a.slot.kind === "replay" ? [0, 1].map(branch => e2PhaseWork(a.outputRoot, a.slot, branch)) : [e2PhaseWork(a.outputRoot, a.slot)];
-      need(workspaces.includes(value.runtime.workspace) && (value.tools?.allowedTools ?? []).every(name => [historyTool, "ProofSentinel"].includes(name))
+      need(workspaces.includes(value.runtime.workspace) && (value.tools?.allowedTools ?? []).every(name => (name === "ProofSentinel" || name === historyTool && lookupToolAllowlist(historySurface).tools.includes(name)))
         && !value.tools?.mcpConfigPath, "e2_preparation_invalid");
       need((value.runtime.fallbacks ?? []).length === 0 && (value.runtime.retry?.primaryAttempts ?? 1) === 1
         && value.providers?.piNative?.transport === "sse" && value.providers.piNative.piMaxRetries === 0

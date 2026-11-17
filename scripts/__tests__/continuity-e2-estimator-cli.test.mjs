@@ -1,6 +1,9 @@
 // Pure/offline preparation: no authorization, provider, model or registry is used.
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, realpath, rm, writeFile, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main, parseE2Args } from "../continuity-e2.mjs";
@@ -133,4 +136,36 @@ it("prints the stable missing-R refusal without creating an estimate", async () 
   expect(await main(["--estimate", "--protocol", paths[0], "--sizing", paths[1], "--limits", paths[2], "--output", output], { stdout: () => { throw Error("unexpected output"); }, stderr: value => errors.push(value) })).toBe(1);
   expect(errors).toEqual(["E2_PROBE_LOOKUP_ROUNDS_INVALID\n"]);
   await expect(stat(output)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("runs the unified CLI estimate with a 500K Sol summary envelope and refuses mixed records", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "fictional-unified-estimate-"))); roots.push(root);
+  const f = await fixture();
+  f.roles.find(r => r.role === "summary" && r.model === "openai-codex:gpt-6.1-sol").maxInputTokens = 500000;
+  const row = f.sizing.variants[0].requests.find(r => r.paidRole === "summary" && r.model === "openai-codex:gpt-6.1-sol");
+  Object.assign(row.size, { serializedBytes: 1500000, serializedBytesOver3: 500000, engineFullRequest: 499999, maximum: 500000 });
+  f.sizing.historySurface = "unified";
+  const protocol = join(root, "protocol.json"), sizing = join(root, "sizing.json"), limits = join(root, "limits.json");
+  for (const [path, value] of [[protocol, f.protocol], [sizing, f.sizing], [limits, { schema: "continuity-e2-estimate-limits-v1", roles: f.roles, probeCounts: [] }]]) await writeFile(path, JSON.stringify(value), { mode: 0o600 });
+  const args = ["scripts/continuity-e2.mjs", "--estimate", "--protocol", protocol, "--limits", limits, "--sizing", sizing];
+  const { stdout, stderr } = await promisify(execFile)(process.execPath, [...args, "--output", join(root, "unified"), "--history-surface", "unified"], { cwd: ROOT });
+  expect(stderr).toBe("");
+  const report = JSON.parse(stdout);
+  expect(report.historySurface).toBe("unified");
+  expect(report).toEqual(estimateE2SizingSet({ protocol: f.protocol, roles: f.roles, records: [f.sizing], catalog: await loadE2Catalog(), historySurface: "unified" }));
+  expect(report.fundedSchedule.checkpoints.find(r => r.model === row.model && r.role === "summary")).toMatchObject({ maxInputTokens: 500000, maxReservationUnits: "8840000000" });
+  expect(await readFile(join(root, "unified", "estimate.json"), "utf8")).toBe(stdout);
+  await expect(promisify(execFile)(process.execPath, [...args, "--output", join(root, "mismatch")], { cwd: ROOT })).rejects.toMatchObject({ code: 1, stderr: "e2_authorization_binding_mismatch\n" });
+  await expect(stat(join(root, "mismatch"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+it("keeps actual split CLI estimate output byte-identical with omitted and explicit selectors", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "fictional-split-estimate-"))); roots.push(root);
+  const f = await fixture();
+  const protocol = join(root, "protocol.json"), sizing = join(root, "sizing.json"), limits = join(root, "limits.json");
+  for (const [path, value] of [[protocol, f.protocol], [sizing, f.sizing], [limits, { schema: "continuity-e2-estimate-limits-v1", roles: f.roles, probeCounts: [] }]]) await writeFile(path, JSON.stringify(value), { mode: 0o600 });
+  const args = ["scripts/continuity-e2.mjs", "--estimate", "--protocol", protocol, "--limits", limits, "--sizing", sizing];
+  const omitted = await promisify(execFile)(process.execPath, [...args, "--output", join(root, "omitted")], { cwd: ROOT });
+  const explicit = await promisify(execFile)(process.execPath, [...args, "--output", join(root, "split"), "--history-surface", "split"], { cwd: ROOT });
+  expect(explicit.stdout).toBe(omitted.stdout); expect(explicit.stderr).toBe("");
+  expect(JSON.parse(omitted.stdout)).toMatchObject({ forecastMinimumCapUnits: "9025809000", worstCaseCapUnits: "26716000000" });
 });
