@@ -35,6 +35,7 @@ import { createToolContext } from "../../tools/shared/tool-context.js";
 
 import { createModels, createProvider, envApiKeyAuth } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { registerPiSupplementModels } from "../../providers/pi/supplement.js";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { randomUUID } from "node:crypto";
 import { estimateTokens } from "../../engine/compaction-kit/compaction.js";
@@ -234,6 +235,7 @@ export function buildRunModels(runtime: PiRuntime, options: PiOptions, runtimeWa
           ? {}
           : { authContext: options.providerCheckAuthContext }),
       });
+      registerPiSupplementModels(models);
     }
   }
   // Decorate only after ordinary credential construction; OAuth stays Models-owned.

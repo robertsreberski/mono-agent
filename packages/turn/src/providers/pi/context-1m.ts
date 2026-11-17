@@ -1,4 +1,4 @@
-import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
+import { getPiCatalogModel } from "./supplement.js";
 
 /** Conservative opt-in window; eligibility is catalog inference, not entitlement. */
 export const CONTEXT_1M_TOKENS = 1_000_000;
@@ -13,7 +13,7 @@ export function supportsPiContext1M(reference: string): boolean {
   const provider = reference.slice(0, separator);
   const id = reference.slice(separator + 1);
   if (separator < 0 || !["openai", "openai-codex"].includes(provider) || !id.startsWith("gpt-")) return false;
-  const model = getBuiltinModel((provider) as any, id);
+  const model = getPiCatalogModel(provider, id);
   return (model?.contextWindow === 272_000 || model?.contextWindow === 500_000)
     && model.cost?.tiers?.some((tier) => tier.inputTokensAbove === 272_000) === true;
 }

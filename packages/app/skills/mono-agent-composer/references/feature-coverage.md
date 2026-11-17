@@ -9,6 +9,11 @@ and is not evidence of import support. Import performs no cron or model turn and
 accepts at most 32 KiB of decoded UTF-8 text with a source-qualified 512-byte
 idempotency key and a 4096-byte conversation id.
 
+GPT-6.2 Sol and Astra are available as `openai:gpt-6.2-sol` /
+`openai:gpt-6.2-astra` and the same IDs on `openai-codex` via a temporary
+Pi 1.5.2 catalog backfill. They use sibling effort maps (no `none` or `ultra`),
+authentication and `context1M` eligibility; no default route changes.
+
 ## Runtime
 
 | Capability | Coverage | Where | Registry config ids |

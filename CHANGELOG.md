@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add GPT-6.2 Sol and Astra on `openai` and `openai-codex` to model
+  resolution, pickers, guided setup and validation, with long-input pricing
+  and the same effort and `context1M` support as their sibling models.
+
 - Add an opt-in, observational `--replay-arm history-ab` mode to the offline
   continuity E2 harness: probe-only runs from a frozen committed snapshot with
   the continuity pack withheld, comparing split `ConversationHistory` against

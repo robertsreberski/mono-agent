@@ -20,6 +20,19 @@ function unavailableFetch(): Promise<Response> {
 
 // Pi 0.99.1 removes kimi-k2.6; test discovery against a currently listed chat model.
 describe("supported wizard model catalog", () => {
+  it("lists all four GPT-6.2 routes with sibling efforts in guided init", async () => {
+    const result = await discoverWizardModelCandidates({
+      inspectPiAuthStore: missingAuthStore,
+      execFile: async () => { throw new Error("fictional unavailable CLI"); },
+      fetch: unavailableFetch as never,
+    });
+    for (const provider of ["openai", "openai-codex"]) for (const variant of ["sol", "astra"]) {
+      const row = result.candidates.find((candidate) => candidate.value === `${provider}:gpt-6.2-${variant}`);
+      const sibling = result.candidates.find((candidate) => candidate.value === `${provider}:${variant === "sol" ? "gpt-6.1-sol" : "gpt-6-astra"}`);
+      expect(row).toMatchObject({ source: "pi", authState: "auth_required" });
+      expect(row?.supportedEfforts).toEqual(sibling?.supportedEfforts);
+    }
+  });
   it("rejects unsupported remote and undeclared custom providers in manual guided entry", () => {
     expect(guidedPiProviderProblem("cloudflare-workers-ai")).toMatch(/Configure other Pi providers manually/u);
     expect(guidedPiProviderProblem("amazon-bedrock")).toMatch(/Configure other Pi providers manually/u);

@@ -28,12 +28,26 @@ their original context.
 
 Contributors: run `pnpm run clean` once after updating a checkout built before this change.
 
+## Unreleased GPT-6.2 catalog backfill
+
+- `openai:gpt-6.2-sol`, `openai:gpt-6.2-astra` and the same model IDs on
+  `openai-codex` now behave as built-ins without changing the pinned Pi version
+  or default route. Existing config needs no migration. They retain sibling
+  effort maps and conservative 272K windows (500K for Codex Sol), including
+  `context1M` eligibility; pricing includes the >272K whole-request tier.
+- This is a temporary gap supplement, not a catalog override: a native Pi row
+  with the same provider + id takes precedence. After upgrading Pi to a version
+  containing all four rows, remove `src/providers/pi/supplement.ts`, its imports
+  and registration call, and the gap tests; keep native integration coverage.
+  GitHub Copilot availability and `ultra` effort are not added.
+
 ## Unreleased Pi 1.5.2 compatibility
 
 - Pi AI and Pi Agent Core are exact-pinned to `1.5.2`, including development
   fixtures and packed-consumer resolution. Catalog snapshots derive their data
   fields from the pinned Pi model type and remain defensive deep clones.
-- Built-in models come only from Pi's chat catalog: Claude Fable 5.2, Haiku 5.5,
+- Apart from the temporary GPT-6.2 backfill above, built-in models come from
+  Pi's chat catalog: Claude Fable 5.2, Haiku 5.5,
   GPT-6.1 Terra, Kimi K3.1 Pro, Hy4, MiniMax M3.1 Flash, Muse Ember/Wonder and
   Gemini 4 Argon need no local supplements. Availability still depends on the
   provider/account. Restricted models absent from Pi are not advertised.

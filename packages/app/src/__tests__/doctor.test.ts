@@ -31,6 +31,22 @@ beforeEach(async () => {
 });
 
 describe("doctor Pi provider catalog", () => {
+  it.each(["openai", "openai-codex"])("accepts GPT-6.2 routes on %s without accepting unknown models", (provider) => {
+    for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
+      const config = resolveJsonMonoAgentConfig({ cwd: dir, json: { runtime: { model: `${provider}:${id}` }, context: { identityPath: "IDENTITY.md" } } });
+      expect(piModelResolutionIssue(config, config.runtime.model)).toBeUndefined();
+      expect(piModelResolutionIssue(config, parseMonoRuntimeModelReference(`${provider}:gpt-6.3-sol`))).toContain("pi model not found");
+    }
+  });
+  it.each(["openai", "openai-codex"])("validates GPT-6.2 primary and fallback routes on %s", async (provider) => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Fictional identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: `${provider}:gpt-6.2-sol`, fallbacks: [{ model: `${provider}:gpt-6.2-astra` }] },
+      context: { identityPath: "IDENTITY.md" },
+    });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false, allowFilesystemWrites: false });
+    expect(sectionById(report, "runtime").status).toBe("ok");
+  });
   it("accepts exact models from every runtime-owned built-in provider", () => {
     const config = resolveJsonMonoAgentConfig({
       cwd: dir,
