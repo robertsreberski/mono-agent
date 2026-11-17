@@ -427,8 +427,13 @@ it("writes scoring artifacts privately and refuses outputs in the checkout", asy
 const E2_IMPORT_SHAPES = {
   "scripts/lib/continuity-e2-ab.mjs": {
     "./continuity-dataset.mjs": "{ digest as canonicalDigest }",
-    // Relocation rewrites the restored copy's sidecar path pointers only.
+    // Relocation rewrites the restored copy's sidecar path pointers and scans every SQLite table read-only.
     "node:sqlite": "{ DatabaseSync }",
+  },
+  "scripts/lib/continuity-e2-ab-score.mjs": {
+    // Receipts are bound to the registration's canonical digest and the writer's capture caps.
+    "./continuity-dataset.mjs": "{ digest as canonicalDigest }",
+    "./continuity-e2-probe-receipts.mjs": "{ E2_PROBE_RECEIPT_LIMITS }",
   },
   "scripts/lib/continuity-e2-summary-plan.mjs": {
     "./continuity-dataset.mjs": "{ digest }",
@@ -631,7 +636,7 @@ const E2_DYNAMIC_SHAPES = {
       "{runE2HistoryAbSizing,e2AbFrozenRecord,assertE2HistoryAbBinding}"
     ],
     "./lib/continuity-e2-ab-score.mjs": [
-      "{scoreE2HistoryAb,readE2AbReceipts}"
+      "{scoreE2HistoryAb,readE2AbReceipts,e2AbScoringInputs}"
     ],
     "./lib/continuity-e2-paid-entry.mjs": [
       "{runE2Paid}",

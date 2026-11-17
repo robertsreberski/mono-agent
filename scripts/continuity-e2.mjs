@@ -17,7 +17,7 @@ import { guardedProtocol } from "./lib/continuity-guarded-protocols.mjs";
 import { loadE2Catalog } from "./lib/continuity-e2-pricing.mjs";
 import { E2_REPLAY_SCENARIOS } from "./lib/continuity-e2-protected.mjs";
 import { e2ReplayArm } from "./lib/continuity-e2-protocol.mjs";
-export const USAGE = "Usage: node scripts/continuity-e2.mjs size --source DIR --protocol FILE --output NEW_DIR [--summary faux-short|faux-max|protected-exact|protected-refusal] [--history-surface split|unified] [--replay-arm continuity|baseline] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs size --replay-arm history-ab --history-ab FILE --source DIR --protocol FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs ab-bind --replay FILE --snapshot DIR --branch N --checkpoint N --rows ID[,ID...] [--primary ID[,ID...]] [--arms A,B,C] --output NEW_DIR\n       node scripts/continuity-e2.mjs ab-score --binding FILE --run DIR --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs score --answers FILE --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs proofs --output NEW_DIR [--history-surface split|unified] [--arm switch|cancel|idle|pressure|all] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs --estimate --protocol FILE --limits FILE --sizing FILE [--sizing FILE...] [--history-surface split|unified] [--replay-arm continuity|baseline|history-ab] [--history-ab FILE] --output NEW_DIR\n       node scripts/continuity-e2.mjs run --summary real [--history-surface split|unified] [--replay-arm continuity|baseline|history-ab] --registration FILE --sha256 HASH --authorization FILE --credentials FILE --output EMPTY_DIR\n       node scripts/continuity-e2.mjs proofs --real [--history-surface split|unified] --registration FILE --sha256 HASH --authorization FILE --credentials FILE --output EMPTY_DIR\n       node scripts/continuity-e2.mjs reconcile --output DIR";
+export const USAGE = "Usage: node scripts/continuity-e2.mjs size --source DIR --protocol FILE --output NEW_DIR [--summary faux-short|faux-max|protected-exact|protected-refusal] [--history-surface split|unified] [--replay-arm continuity|baseline] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs size --replay-arm history-ab --history-ab FILE --source DIR --protocol FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs ab-bind --replay FILE --snapshot DIR --branch N --checkpoint N --rows ID[,ID...] [--primary ID[,ID...]] [--arms A,B,C] --output NEW_DIR\n       node scripts/continuity-e2.mjs ab-score --registration FILE --sha256 HASH --run DIR --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs score --answers FILE --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs proofs --output NEW_DIR [--history-surface split|unified] [--arm switch|cancel|idle|pressure|all] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs --estimate --protocol FILE --limits FILE --sizing FILE [--sizing FILE...] [--history-surface split|unified] [--replay-arm continuity|baseline|history-ab] [--history-ab FILE] --output NEW_DIR\n       node scripts/continuity-e2.mjs run --summary real [--history-surface split|unified] [--replay-arm continuity|baseline|history-ab] --registration FILE --sha256 HASH --authorization FILE --credentials FILE --output EMPTY_DIR\n       node scripts/continuity-e2.mjs proofs --real [--history-surface split|unified] --registration FILE --sha256 HASH --authorization FILE --credentials FILE --output EMPTY_DIR\n       node scripts/continuity-e2.mjs reconcile --output DIR";
 export function parseE2Args(argv) {
   const [selected, ...tail] = argv, command = selected === "--estimate" ? "estimate" : selected;
   const real = command === "run" || command === "proofs" && tail.includes("--real");
@@ -27,7 +27,7 @@ export function parseE2Args(argv) {
   const required = real ? [...paid, ...(command === "run" ? ["summary"] : [])] : command === "reconcile" ? ["output"]
     : command === "size" ? ["source", "protocol", "output"] : command === "score" ? ["answers", "keys", "output"]
     : command === "proofs" ? ["output"] : command === "estimate" ? ["protocol", "limits", "sizing", "output"]
-    : command === "ab-bind" ? ["replay", "snapshot", "branch", "checkpoint", "rows", "output"] : command === "ab-score" ? ["binding", "run", "keys", "output"] : null;
+    : command === "ab-bind" ? ["replay", "snapshot", "branch", "checkpoint", "rows", "output"] : command === "ab-score" ? ["registration", "sha256", "run", "keys", "output"] : null;
   if (!required) fail("E2_ARGUMENTS_INVALID");
   const result = { command, ...(real ? { real: true } : {}) }, allowed = [...required, ...(["size", "run", "proofs", "estimate"].includes(command) ? ["history-surface"] : []), ...(["size", "run", "estimate"].includes(command) ? ["replay-arm"] : []), ...(["size", "estimate"].includes(command) ? ["history-ab"] : []), ...(command === "ab-bind" ? ["primary", "arms"] : []), ...(!real && command === "size" ? ["summary", "diagnostics"] : !real && command === "proofs" ? ["arm", "diagnostics"] : [])];
   for (let i = 0; i < rest.length; i += 2) {
@@ -83,14 +83,17 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
       writePrivate(output, "history-ab.json", historyAb);
       stdout(`${JSON.stringify({ schema: historyAb.schema, arms: historyAb.arms.map(a => a.arm), rows: historyAb.rows.length, primary: historyAb.primary.length, files: historyAb.frozen.receipt.files })}\n`);
     } else if (args.command === "ab-score") {
-      const bindingFile = inputPath(process.cwd(), args.binding), keys = inputPath(process.cwd(), args.keys), run = realpathSync(resolve(args.run));
-      const output = privateOutput(args.output, [bindingFile, keys, run]), historyAb = readJSON(bindingFile);
-      const [{ scoreE2HistoryAb, readE2AbReceipts }, { e2AbArmLetters, e2AbSlotArm, assertE2HistoryAbBinding }] = await Promise.all([import("./lib/continuity-e2-ab-score.mjs"), import("./lib/continuity-e2-ab.mjs")]);
-      assertE2HistoryAbBinding(historyAb);
+      const registration = inputPath(process.cwd(), args.registration), keys = inputPath(process.cwd(), args.keys), run = realpathSync(resolve(args.run));
+      const output = privateOutput(args.output, [registration, keys, run]);
+      const [{ scoreE2HistoryAb, readE2AbReceipts, e2AbScoringInputs }, { e2AbArmLetters, e2AbSlotArm, assertE2HistoryAbBinding }] = await Promise.all([import("./lib/continuity-e2-ab-score.mjs"), import("./lib/continuity-e2-ab.mjs")]);
+      // Provenance: the registration by its sha256, the keys by the registration's own binding.
+      if (statSync(registration).size > MAX_SOURCE_BYTES || statSync(keys).size > MAX_SOURCE_BYTES) fail("E2_INPUT_TOO_LARGE");
+      const { pilot, evaluator } = e2AbScoringInputs({ registrationBytes: readFileSync(registration), registrationSha256: args.sha256, keysBytes: readFileSync(keys) });
+      const historyAb = assertE2HistoryAbBinding(pilot.registration.historyAb);
       // Lookups are derived from each phase's probe receipts, never a separate counter file.
       const arms = Object.fromEntries(e2AbArmLetters(historyAb).map(arm => [arm, { answers: readJSON(inputPath(run, join("work", e2AbSlotArm(arm), "answers.json"))),
         receipts: readE2AbReceipts(join(run, "work", e2AbSlotArm(arm), "probe-receipts")) }]));
-      const report = scoreE2HistoryAb({ historyAb, evaluator: readJSON(keys), arms });
+      const report = scoreE2HistoryAb({ pilot, evaluator, arms });
       writePrivate(output, "ab-score.json", report);
       stdout(`${JSON.stringify(report.arms.map(a => ({ arm: a.arm, answers: a.overall.answers, lookups: a.overall.lookups, lookupUnverified: a.overall.lookupEvidence.missing + a.overall.lookupEvidence.inconsistent, correct: a.overall.correct })))}\n`);
     } else if (args.command === "estimate" && args["replay-arm"] === "history-ab") {

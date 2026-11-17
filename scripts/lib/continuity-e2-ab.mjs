@@ -217,8 +217,8 @@ export function buildE2HistoryAbRegistration({ code, build, catalog, source, pro
 // The frozen tree pins its own absolute work root: the sidecar's `artifact_root`
 // (the shipping writer refuses any other root), artifact references, run
 // summaries and session headers. A restore at a new root rewrites exactly those
-// path pointers on the COPY, proves none of the old root remains anywhere, and
-// never touches the frozen snapshot. Anything it cannot relocate is refused.
+// path pointers on the COPY, proves no decoded value anywhere still names the old
+// root, and never touches the frozen snapshot. Anything it cannot relocate is refused.
 const TOOL_OUTPUT_SUFFIX = "/artifacts/tool-output";
 const TOOL_HISTORY_DATABASE = join("history", "tool-history", "tool-lifecycles.sqlite");
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0", "latin1");
@@ -235,15 +235,99 @@ async function treeFiles(root, prefix = "") {
 const remapPath = (value, from, to) => typeof value === "string" ? value === from ? to : value.startsWith(`${from}/`) ? `${to}${value.slice(from.length)}` : value
   : Array.isArray(value) ? value.map(v => remapPath(v, from, to))
     : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, remapPath(v, from, to)])) : value;
-// Rewrite whole JSON path strings only, then prove the parsed value changed exactly as a path remap would.
+// One JSON string token (keys included) in a valid JSON text; outside strings JSON has no quotes.
+const JSON_STRING_TOKEN = /"(?:[^"\\]|\\.)*"/gsu;
+const JSON_ESCAPES = Object.freeze({ b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" });
+// One layer of JSON string escapes (`\/`, `\u002f`, `\\`, ...), left to right.
+const unescapeJSON = s => s.includes("\\") ? s.replace(/\\u([0-9a-fA-F]{4})|\\(.)/gsu, (_, hex, c) => hex ? String.fromCharCode(parseInt(hex, 16)) : JSON_ESCAPES[c] ?? c) : s;
+// One layer of percent-encoding (`%2F`), UTF-8 where valid, byte-wise otherwise.
+const percentDecode = s => s.includes("%") ? s.replace(/(?:%[0-9a-fA-F]{2})+/gu, m => {
+  try { return decodeURIComponent(m); } catch { return m.replace(/%([0-9a-fA-F]{2})/gu, (_, h) => String.fromCharCode(parseInt(h, 16))); }
+}) : s;
+const DECODE_DEPTH = 4;
+/**
+ * True when `text` names `from` literally or under any nesting (up to four
+ * layers) of the encodings a path survives in: JSON string escapes (including
+ * JSON nested in JSON strings) and percent-encoding.
+ */
+export function e2AbCarriesRoot(text, from) {
+  const seen = new Set([text]);
+  let frontier = [text];
+  for (let depth = 0; depth <= DECODE_DEPTH && frontier.length; depth++) {
+    if (frontier.some(v => v.includes(from))) return true;
+    const next = [];
+    for (const v of frontier) for (const d of [unescapeJSON(v), percentDecode(v)]) if (!seen.has(d)) { seen.add(d); next.push(d); }
+    frontier = next;
+  }
+  return false;
+}
+const jsonValues = (name, text) => name.endsWith(".jsonl") ? text.split("\n").filter(line => line.length).map(line => JSON.parse(line)) : [JSON.parse(text)];
+// Every decoded string of a parsed JSON value, keys included.
+function* jsonStrings(value) {
+  if (typeof value === "string") yield value;
+  else if (Array.isArray(value)) for (const v of value) yield* jsonStrings(v);
+  else if (value !== null && typeof value === "object") for (const [k, v] of Object.entries(value)) { yield k; yield* jsonStrings(v); }
+}
+/**
+ * Parse a JSON/JSONL carrier and remap every whole-path string whose DECODED
+ * value names the old root, whatever its escapes; any other decoded occurrence
+ * (a partial path, a nested encoding, a key) refuses. Bytes outside rewritten
+ * string tokens are kept. The rewrite is proved against a pure path remap of
+ * the parsed values. Returns the new text, or undefined when nothing changed
+ * (including an unparsable file, which the decoded scan then judges).
+ */
 function relocateJSON(name, text, from, to) {
-  if (!/\.jsonl?$/u.test(name)) relocationRefused();
-  const next = text.split(`"${from}"`).join(`"${to}"`).split(`"${from}/`).join(`"${to}/`);
-  if (next.includes(from)) relocationRefused();
-  const values = value => name.endsWith(".jsonl") ? value.split("\n").filter(line => line.length).map(line => JSON.parse(line)) : [JSON.parse(value)];
-  let before, after; try { before = values(text); after = values(next); } catch { relocationRefused(); }
+  let before; try { before = jsonValues(name, text); } catch { return undefined; }
+  let changed = false;
+  const next = text.replace(JSON_STRING_TOKEN, token => {
+    const value = JSON.parse(token);
+    if (!value.includes(from)) { if (e2AbCarriesRoot(value, from)) relocationRefused(); return token; }
+    if (value !== from && !value.startsWith(`${from}/`)) relocationRefused();
+    changed = true;
+    return JSON.stringify(remapPath(value, from, to));
+  });
+  if (!changed) return undefined;
+  let after; try { after = jsonValues(name, next); } catch { relocationRefused(); }
   if (JSON.stringify(remapPath(before, from, to)) !== JSON.stringify(after)) relocationRefused();
   return next;
+}
+// Every stored value of every table (shadow tables of virtual tables included) and the schema text.
+function sqliteCarriesRoot(path, from) {
+  let db;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    const tables = db.prepare("SELECT type, name, sql FROM sqlite_master").all();
+    for (const { name, sql, type } of tables) {
+      if (typeof sql === "string" && e2AbCarriesRoot(sql, from)) return true;
+      if (type !== "table" || /^\s*CREATE\s+VIRTUAL\s+TABLE/iu.test(sql ?? "")) continue;
+      for (const row of db.prepare(`SELECT * FROM "${String(name).replaceAll('"', '""')}"`).iterate())
+        for (const value of Object.values(row)) {
+          const text = typeof value === "string" ? value : value instanceof Uint8Array ? Buffer.from(value).toString("utf8") : undefined;
+          if (text !== undefined && e2AbCarriesRoot(text, from)) return true;
+        }
+    }
+    return false;
+  } catch (error) { if (error?.code === "E2_AB_RELOCATION_REFUSED") throw error; return relocationRefused(); }
+  finally { db?.close(); }
+}
+/**
+ * Proof over the whole copy: no file's bytes, no decoded text view, no parsed
+ * JSON/JSONL string or key, and no SQLite table value or schema names the old
+ * root. Anything undecodable that might carry it refuses.
+ */
+export async function assertE2AbRootAbsent(root, from) {
+  const needle = Buffer.from(from);
+  for (const name of await treeFiles(root)) {
+    const bytes = await readFile(join(root, name));
+    if (bytes.includes(needle)) relocationRefused();
+    if (bytes.length >= SQLITE_HEADER.length && bytes.subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER)) { if (sqliteCarriesRoot(join(root, name), from)) relocationRefused(); continue; }
+    const text = bytes.toString("utf8");
+    if (e2AbCarriesRoot(text, from)) relocationRefused();
+    if (/\.jsonl?$/u.test(name)) {
+      let values; try { values = jsonValues(name, text); } catch { continue; }
+      for (const value of values) for (const s of jsonStrings(value)) if (e2AbCarriesRoot(s, from)) relocationRefused();
+    }
+  }
 }
 /**
  * Relocate a restored copy of the frozen tree to `work` (its realpath). Returns
@@ -261,8 +345,8 @@ export async function relocateE2AbWork(work) {
     const root = db.prepare("SELECT value FROM metadata WHERE key='artifact_root'").get()?.value;
     if (typeof root !== "string" || !root.endsWith(TOOL_OUTPUT_SUFFIX)) relocationRefused();
     from = root.slice(0, -TOOL_OUTPUT_SUFFIX.length);
-    // Absolute, normalized, JSON-literal-safe and unrelated to the new root by prefix.
-    if (!isAbsolute(from) || resolve(from) !== from || JSON.stringify(from) !== `"${from}"` || from !== to && (`${to}/`.startsWith(`${from}/`) || `${from}/`.startsWith(`${to}/`))) relocationRefused();
+    // Absolute, normalized, JSON-literal-safe, unrelated to the new root by prefix and absent from it.
+    if (!isAbsolute(from) || resolve(from) !== from || JSON.stringify(from) !== `"${from}"` || from !== to && (`${to}/`.startsWith(`${from}/`) || `${from}/`.startsWith(`${to}/`) || to.includes(from))) relocationRefused();
     if (from === to) return result;
     const refs = db.prepare("SELECT host_path FROM artifact_refs").all();
     if (refs.some(r => typeof r.host_path !== "string" || !r.host_path.startsWith(`${from}/`))) relocationRefused();
@@ -276,18 +360,15 @@ export async function relocateE2AbWork(work) {
     if (result.metadata !== 1 || result.artifactRefs !== refs.length || db.prepare("SELECT value FROM metadata WHERE key='artifact_root'").get()?.value !== `${to}${TOOL_OUTPUT_SUFFIX}`
       || db.prepare("SELECT host_path FROM artifact_refs").all().some(r => !r.host_path.startsWith(`${to}/`))) relocationRefused();
   } finally { db?.close(); }
-  const needle = Buffer.from(from);
-  for (const name of await treeFiles(to)) {
-    const path = join(to, name), bytes = await readFile(path);
-    if (!bytes.includes(needle)) continue;
-    // Only JSON path strings are rewritable; any other carrier (including another SQLite file) refuses.
-    if (bytes.subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER)) relocationRefused();
-    const text = bytes.toString("utf8");
-    if (!Buffer.from(text).equals(bytes)) relocationRefused();
-    await writeFile(path, relocateJSON(name, text, from, to)); result.files++;
+  // Every JSON/JSONL carrier is parsed and its decoded strings remapped or refused, whatever the raw bytes show.
+  for (const name of (await treeFiles(to)).filter(n => /\.jsonl?$/u.test(n))) {
+    const path = join(to, name), bytes = await readFile(path), text = bytes.toString("utf8");
+    if (!Buffer.from(text).equals(bytes)) continue; // Not UTF-8 text: the decoded scan below judges it.
+    const next = relocateJSON(name, text, from, to);
+    if (next !== undefined) { await writeFile(path, next); result.files++; }
   }
-  // Proof: no file anywhere in the relocated tree still names the old root.
-  for (const name of await treeFiles(to)) if ((await readFile(join(to, name))).includes(needle)) relocationRefused();
+  // Proof: no file, decoded value or SQLite table value anywhere in the copy still names the old root.
+  await assertE2AbRootAbsent(to, from);
   // Session headers name the new workspace exactly.
   for (const name of (await treeFiles(to)).filter(n => /^sessions\/journals\/[^/]+\.jsonl$/u.test(n))) {
     const first = (await readFile(join(to, name), "utf8")).split("\n", 1)[0];
@@ -300,28 +381,71 @@ export async function relocateE2AbWork(work) {
 
 // ---- History health latch ---------------------------------------------------------
 // Production History is fail-open (warnings only) and warning dispatch swallows
-// callback exceptions, so a throwing callback cannot stop a run. Latch every
-// degradation signal here; the run refuses before each request and after each probe.
+// callback exceptions, so a throwing callback cannot stop a run. Latch genuine
+// store and infrastructure unavailability here; the run refuses before each
+// request and after each probe. A model's own lookup mistake (a typo'd or
+// missing record, a bad cursor, query or scope) is recorded and scored, never latched.
+//
+// Every History store/endpoint warning latches: writer acquisition failure
+// (including `history_artifact_root_mismatch`), `sidecar_unavailable` and the
+// other continuity/persistence warnings, and the endpoint failing to start.
+// They come from the store and the composition, never from model arguments;
+// the parenthesized shipping code only labels the report.
 const HISTORY_WARNING_CODE = /\(([a-z][a-z0-9_]{0,63})\)/u;
-export function e2AbHistoryHealth() {
-  const codes = {};
+// The explicit shipping result code for a store that cannot be read: the
+// catch-all of the said (ConversationHistory), tools (SessionHistory) and runs
+// (RunHistory) handlers and of the unified History server's dispatch.
+export const E2_AB_STORE_UNAVAILABLE_CODES = Object.freeze(["history_unavailable"]);
+const LOOKUP_CODE = /^[a-z][a-z0-9_]{0,63}$/u;
+// The shipping handler's own structured result: MCP structuredContent as the
+// turn records it, else the JSON envelope in the model-facing text.
+function historyResultBody(part) {
+  const structured = part?.raw_result?.details?.raw?.structuredContent;
+  if (object(structured)) return structured;
+  const text = typeof part?.content === "string" ? part.content : (Array.isArray(part?.content) ? part.content : []).filter(b => b?.type === "text").map(b => b.text).join("\n");
+  const joined = text.replace(/\n?\[continued section \d+ of \d+\]\n/gu, ""), start = joined.search(/^\s*\{\s*"(?:action|status|error)"\s*:/mu);
+  try { const body = start < 0 ? undefined : JSON.parse(joined.slice(start)); return object(body) ? body : undefined; } catch { return undefined; }
+}
+/**
+ * Classify one History result: `{ latch }` for store unavailability by explicit
+ * code or the reader's own `available: false` search flag; `{ lookup }` for a
+ * model-correctable lookup outcome; otherwise null. Content-free.
+ */
+export function e2AbHistoryResultClass(body) {
+  if (!object(body)) return null;
+  const code = object(body.error) && typeof body.error.code === "string" ? body.error.code : undefined;
+  if (code !== undefined && E2_AB_STORE_UNAVAILABLE_CODES.includes(code)) return { latch: code };
+  // The said reader found no readable continuity store (no database, no schema, or a pending purge).
+  if (body.action === "search" && body.available === false) return { latch: "history_store_unavailable" };
+  if (code !== undefined) return { lookup: LOOKUP_CODE.test(code) ? code : "lookup_error" };
+  // A said get for an absent record. In-band it matches an unreadable store; the
+  // store itself is re-checked after every result (see `observe`).
+  if (body.action === "get" && body.status === "unavailable") return { lookup: "record_unavailable" };
+  return null;
+}
+export function e2AbHistoryHealth({ toolName, verifyStore = () => {} } = {}) {
+  const codes = {}, lookupErrors = {}, calls = new Set();
   const note = code => { codes[code] = (codes[code] ?? 0) + 1; };
+  const own = name => toolName === undefined || name === toolName || typeof name === "string" && name.endsWith(`__${toolName}`);
   return {
-    warn(message) { const text = String(message); note(text.match(HISTORY_WARNING_CODE)?.[1] ?? (/could not start/u.test(text) ? "history_unavailable" : "history_warning")); },
+    warn(message) { const text = String(message); note(text.match(HISTORY_WARNING_CODE)?.[1] ?? (/endpoint could not start/u.test(text) ? "history_endpoint_unavailable" : "history_warning")); },
     note,
-    // An offered History result that reports the store itself unavailable.
+    // Offered History results: latch store unavailability, count lookup mistakes, and re-check the store after each result.
     observe(event) {
-      if (event?.type !== "user") return;
-      for (const part of event.message?.content ?? []) if (part?.type === "tool_result") {
-        const text = typeof part.content === "string" ? part.content : (Array.isArray(part.content) ? part.content : []).filter(b => b?.type === "text").map(b => b.text).join("\n");
-        const start = text.search(/^\s*\{\s*"(?:action|status)"\s*:/mu);
-        let body; try { body = start < 0 ? undefined : JSON.parse(text.slice(start)); } catch { /* unparsed bodies are not store status */ }
-        if (body?.status === "unavailable" || body?.available === false) note("history_result_unavailable");
+      for (const part of event?.message?.content ?? []) {
+        if (event.type === "assistant" && part?.type === "tool_use" && own(part.name)) calls.add(part.id);
+        if (event.type !== "user" || part?.type !== "tool_result" || toolName !== undefined && !calls.has(part.tool_use_id)) continue;
+        calls.delete(part.tool_use_id);
+        const result = e2AbHistoryResultClass(historyResultBody(part));
+        if (result?.latch) note(result.latch);
+        else if (result?.lookup) lookupErrors[result.lookup] = (lookupErrors[result.lookup] ?? 0) + 1;
+        // A reader that cannot open the store, whatever the result said, latches before the next request.
+        try { verifyStore(); } catch { note("history_reader_unavailable"); }
       }
     },
     get degraded() { return Object.keys(codes).length > 0; },
     assert() { if (Object.keys(codes).length) fail("E2_HISTORY_DEGRADED"); },
-    report: () => ({ warnings: Object.values(codes).reduce((n, v) => n + v, 0), codes: { ...codes } }),
+    report: () => ({ warnings: Object.values(codes).reduce((n, v) => n + v, 0), codes: { ...codes }, lookupErrors: { ...lookupErrors } }),
   };
 }
 const CONTINUITY_FAILURES = ["writeFailures", "recoveryFailures", "maintenanceFailures", "idempotencyConflicts"];
@@ -382,7 +506,7 @@ export async function runE2HistoryAb({ source, protocol, historyAb, frozen, arm,
   const work = join(output, `branch-${point.branch}`, "work");
   await mkdir(work, { recursive: true, mode: 0o700 });
   const retrieval = createE2ProbeReceipts({ output, enabled: probeReceipts, allScopes: true, ...(paidAdapter?.probeReceiptBinding?.() ?? { slotId: "offline-ab-sizing" }), noteProgressGap: () => paidAdapter?.noteProgressGap() });
-  const probe = e2ProbeMeasurement(surface), health = e2AbHistoryHealth();
+  const probe = e2ProbeMeasurement(surface), health = e2AbHistoryHealth({ toolName, verifyStore: () => historyStats(modules, work) });
   let opened, prompt, probeRequests = 0;
   const route = createE2Models({ pi: modules.pi, estimators, models: [{ model: SOL }], limits: branch.limits, summary: real ? "real" : "faux-short", soul, paidAdapter,
     probeLookupRounds: R, replayArm: E2_AB_REPLAY_ARM, historySurface: surface, abArm: arm, abDescriptionSha256: contract.description.sha256,

@@ -2799,16 +2799,32 @@ sending; the controller re-checks the serialized body independently.
 The frozen tree pins its own absolute work root: the sidecar's `artifact_root`
 (which the shipping writer enforces), artifact references, run summaries and
 session headers. After the receipt-verified restore, the harness rewrites exactly
-those path pointers on the copy, proves no file in the copy still names the old
-root, and refuses (`E2_AB_RELOCATION_REFUSED`) anything else that carries it.
-The frozen snapshot is never written. Before the first request of every probe,
-the shipping writer must open the relocated store and the reader must report
-healthy continuity with retained records. Production History is fail-open, so
-every History warning (writer, sidecar, endpoint) or unavailable History result
-is latched rather than thrown: a latched degradation refuses the next request
-and voids the probe (`E2_HISTORY_DEGRADED`). Restoring at the frozen run's
-original root is not used: that directory belongs to the committed run's own
-evidence, and the authorization requires a disjoint output root.
+those path pointers on the copy. Every JSON and JSONL file is parsed whatever its
+raw bytes show, so a whole path string written with escapes such as `\/` or
+`\u002f` is decoded and remapped. The harness then proves that no decoded value
+in the copy still names the old root: file bytes, JSON string escapes (including
+JSON nested in strings), percent-encoding, parsed JSON strings and keys, and every
+SQLite table value and schema. Anything else that carries the old root refuses
+(`E2_AB_RELOCATION_REFUSED`). The frozen snapshot is never written.
+
+Before the first request of every probe, the shipping writer must open the
+relocated store and the reader must report healthy continuity with retained
+records. Production History is fail-open, so genuine store and infrastructure
+unavailability is latched rather than thrown. A latched degradation refuses the
+next request and voids the probe (`E2_HISTORY_DEGRADED`). The latch covers:
+
+- every History store or endpoint warning, such as writer acquisition failure
+  (`history_artifact_root_mismatch`), `sidecar_unavailable` or an endpoint that
+  could not start;
+- a lookup result with the shipping code `history_unavailable`, or a said search
+  whose reader reports `available: false`;
+- a store that no longer opens when re-checked after any lookup result.
+
+A model's own lookup mistake does not latch. A typo'd or missing record, or a bad
+query, cursor or scope, is counted by code in the phase's `history.lookupErrors`,
+and the answer is scored. Restoring at the frozen run's original root is not
+used: that directory belongs to the committed run's own evidence, and the
+authorization requires a disjoint output root.
 
 | Arm | Surface | Description |
 |---|---|---|
@@ -2859,12 +2875,24 @@ retry exposure is reported separately. Paid entry must pass
 Each phase writes `answers.json`, an informational frozen `score.json` and its
 probe receipts. A/B receipts cover every offered scope (`History` said, tools
 and runs, and `ConversationHistory`), name the tool and scope on each call, and
-close every probe with a `settled` receipt. `ab-score --binding FILE --run DIR
---keys FILE --output NEW_DIR` classifies every answer with the frozen `scoreE2`
-on that single answer (`ratePass` correct, `blocking` confident wrong,
-`rateMiss` abstain) and crosses it with lookups derived only from the validated
-receipt stream for that arm, row and repeat. An item whose receipts are missing
-or inconsistent is reported as unverified, never as "no lookup". It reports, per
+close every probe with a `settled` receipt. `ab-score --registration FILE
+--sha256 HASH --run DIR --keys FILE --output NEW_DIR` checks the registration
+against its SHA-256 and the keys against the registration's own binding. It
+classifies every answer with the frozen `scoreE2` on that single answer
+(`ratePass` correct, `blocking` confident wrong, `rateMiss` abstain). It then
+crosses each answer with lookups derived only from the validated receipt stream
+for that arm, row and repeat.
+
+A receipt is verified only when it matches what the registration expects: the
+registration's canonical digest, the arm's own slot, the arm, the frozen branch,
+the global checkpoint and a registered row and repeat. Probes must appear once
+each, in registered order, each closed by its `settled` receipt. Every captured
+tool name, call id and argument must be whole, and its SHA-256 and lengths are
+recomputed. Each lookup scope is re-derived from those argument bytes. Results
+and metadata are recomputed where whole and length-checked where truncated.
+
+An item whose receipts are missing or fail any check is reported as unverified,
+never as "no lookup". It reports, per
 arm, overall and for the primary subset: lookup evidence, lookup rate, correct,
 wrong without lookup, wrong after lookup, abstain and correct without lookup (a
 contamination flag). **The A/B is observational,
