@@ -71,6 +71,12 @@ function requestTools(pilot, planned, p, probeRequest) {
   need((e2ReplayArm(pilot.registration.replayArm) === E2_AB_REPLAY_ARM) === (ab !== undefined), "e2_registration_invalid");
   return probeRequest === rounds + 1 ? tools.replayFinal : ab === undefined ? tools.replay : tools.abReplay[ab];
 }
+// The registered arm's offered History description (B compact, C directive, A ConversationHistory).
+function abDescriptionSha256(pilot, ab) {
+  const value = pilot.registration.historyAb?.arms?.find(a => a?.arm === ab)?.description?.sha256;
+  need(typeof value === "string" && /^[a-f0-9]{64}$/u.test(value), "e2_registration_invalid");
+  return value;
+}
 // Funding is shared; only the controller owns live hold counts and lifecycle admission.
 function requestFunding(pilot, planned, p, operationDigest, probeRequest) {
   need(sameFields(p, E2_PERMIT_CONTRACT.admissionFields) && E2_PAID_ROLES.includes(p.paidRole) && count(p.checkpoint) && count(p.inputTokens));
@@ -81,7 +87,7 @@ function requestFunding(pilot, planned, p, operationDigest, probeRequest) {
   const reserve = e2RequestPrice(catalog, { inputTokens: p.inputTokens, maxOutputTokens: role.maxOutputTokens }).reservationUnits;
   need(p.reservationUnits === reserve);
   const ab = planned.kind === "replay" ? e2AbArmOfSlot(planned.arm) : undefined;
-  return { reserve: BigInt(reserve), metadata: { ...historySurfaceBinding(pilot.registration.historySurface), ...(pilot.registration.replayArm === "baseline" ? { replayArm: "baseline" } : {}), ...(ab === undefined ? {} : { replayArm: E2_AB_REPLAY_ARM, abArm: ab }), model: p.model, paidRole: p.paidRole, checkpoint: p.checkpoint, measuredInputTokens: p.inputTokens,
+  return { reserve: BigInt(reserve), metadata: { ...historySurfaceBinding(pilot.registration.historySurface), ...(pilot.registration.replayArm === "baseline" ? { replayArm: "baseline" } : {}), ...(ab === undefined ? {} : { replayArm: E2_AB_REPLAY_ARM, abArm: ab, abDescriptionSha256: abDescriptionSha256(pilot, ab) }), model: p.model, paidRole: p.paidRole, checkpoint: p.checkpoint, measuredInputTokens: p.inputTokens,
     ...(p.paidRole === "summary" ? { operationDigest } : {}), inputMax: catalog.contextWindow, outputMax: role.maxOutputTokens, catalog: structuredClone(catalog),
     ...(probeRequest === undefined ? {} : { probeRequest }),
     tools: [...requestTools(pilot, planned, p, probeRequest)] } };
@@ -165,7 +171,7 @@ export const e2ExecutionPolicy = Object.freeze({
     const role = contract.e2.pilot.registration.roles.find(r => r.role === contract.e2.paidRole && r.model === contract.e2.model);
     const allowed = requestTools(contract.e2.pilot, contract.e2.planned, contract.e2, contract.e2.probeRequest);
     const ab = contract.e2.planned?.kind === "replay" ? e2AbArmOfSlot(contract.e2.planned.arm) : undefined;
-    this.assertBody(Buffer.from(JSON.stringify(body)), { model: contract.e2.model, tools: allowed, ...(contract.e2.probeRequest === undefined ? {} : { probeRequest: contract.e2.probeRequest }), ...(ab === undefined ? {} : { abArm: ab }) });
+    this.assertBody(Buffer.from(JSON.stringify(body)), { model: contract.e2.model, tools: allowed, ...(contract.e2.probeRequest === undefined ? {} : { probeRequest: contract.e2.probeRequest }), ...(ab === undefined ? {} : { abArm: ab, abDescriptionSha256: abDescriptionSha256(contract.e2.pilot, ab) }) });
     need(role && (contract.effort === "off" ? [undefined, "none"].includes(body.reasoning?.effort) : body.reasoning?.effort === contract.effort) && Array.isArray(body.input)
       && Object.keys(body).every(k => ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "tools", "reasoning"].includes(k)), "e2_payload_forbidden");
     // Shipping compaction deliberately disables body caching. Its authenticated
@@ -378,7 +384,12 @@ export const e2ExecutionPolicy = Object.freeze({
     if (hold.probeRequest !== undefined) need(tools.length === hold.tools.length, "e2_tools_forbidden");
     validateBody(body);
     // The controller's own pack-withheld boundary, independent of the child filter.
-    if (hold.abArm !== undefined) assertE2NoContinuityPack(body);
+    if (hold.abArm !== undefined) {
+      assertE2NoContinuityPack(body);
+      // Every offered tool carries exactly the registered arm's description bytes.
+      need(typeof hold.abDescriptionSha256 === "string" && /^[a-f0-9]{64}$/u.test(hold.abDescriptionSha256)
+        && tools.every(t => typeof t.description === "string" && rawDigest(t.description) === hold.abDescriptionSha256), "e2_tools_forbidden");
+    }
     if (hold.replayArm === "baseline") {
       const kind = hold.paidRole === "summary" ? "summary"
         : hold.probeRequest !== undefined || hold.paidRole === "probe" ? "probe" : "source";

@@ -174,7 +174,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           if (position.probe) {
             if (++report.probeRequests > limits.probeRequests) refuse("E2_PROBE_REQUEST_LIMIT");
           } else if (++report.sourceRequests > limits.sourceRequests) refuse("E2_SOURCE_REQUEST_LIMIT");
-          try { assertEffectiveSoul(context, soul); sourceContext(context); } catch (error) { refuse(error?.code === "E2_SOUL_MISMATCH" || ["E2_PROBE_REQUEST_LIMIT", "E2_PROBE_TOOLS_REFUSED", "E2_STEER_NOT_DELIVERED", ...(ab ? ["E2_AB_PACK_PRESENT"] : [])].includes(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); }
+          try { assertEffectiveSoul(context, soul); sourceContext(context); } catch (error) { refuse(error?.code === "E2_SOUL_MISMATCH" || ["E2_PROBE_REQUEST_LIMIT", "E2_PROBE_TOOLS_REFUSED", "E2_STEER_NOT_DELIVERED", ...(ab ? ["E2_AB_PACK_PRESENT", "E2_HISTORY_DEGRADED"] : [])].includes(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); }
           const paidRole = position.probe ? (positionRequests++ === 0 ? "probe" : "continuation") : position.paidRole ?? null;
           report.requestSizing.push({ turn: position.turn, message: position.message, role: paidRole ?? "setup-scripted", paidRole,
             model: keyOf(model), maxOutputTokens: options?.maxTokens ?? model.maxTokens, size: sizeContext(context, estimators) });

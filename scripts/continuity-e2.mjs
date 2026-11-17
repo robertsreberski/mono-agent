@@ -85,13 +85,14 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
     } else if (args.command === "ab-score") {
       const bindingFile = inputPath(process.cwd(), args.binding), keys = inputPath(process.cwd(), args.keys), run = realpathSync(resolve(args.run));
       const output = privateOutput(args.output, [bindingFile, keys, run]), historyAb = readJSON(bindingFile);
-      const [{ scoreE2HistoryAb }, { e2AbArmLetters, e2AbSlotArm, assertE2HistoryAbBinding }] = await Promise.all([import("./lib/continuity-e2-ab-score.mjs"), import("./lib/continuity-e2-ab.mjs")]);
+      const [{ scoreE2HistoryAb, readE2AbReceipts }, { e2AbArmLetters, e2AbSlotArm, assertE2HistoryAbBinding }] = await Promise.all([import("./lib/continuity-e2-ab-score.mjs"), import("./lib/continuity-e2-ab.mjs")]);
       assertE2HistoryAbBinding(historyAb);
-      const arms = Object.fromEntries(e2AbArmLetters(historyAb).map(arm => [arm, Object.fromEntries(["answers", "lookups"].map(name =>
-        [name, readJSON(inputPath(run, join("work", e2AbSlotArm(arm), `${name}.json`)))]))]));
+      // Lookups are derived from each phase's probe receipts, never a separate counter file.
+      const arms = Object.fromEntries(e2AbArmLetters(historyAb).map(arm => [arm, { answers: readJSON(inputPath(run, join("work", e2AbSlotArm(arm), "answers.json"))),
+        receipts: readE2AbReceipts(join(run, "work", e2AbSlotArm(arm), "probe-receipts")) }]));
       const report = scoreE2HistoryAb({ historyAb, evaluator: readJSON(keys), arms });
       writePrivate(output, "ab-score.json", report);
-      stdout(`${JSON.stringify(report.arms.map(a => ({ arm: a.arm, answers: a.overall.answers, lookups: a.overall.lookups, correct: a.overall.correct })))}\n`);
+      stdout(`${JSON.stringify(report.arms.map(a => ({ arm: a.arm, answers: a.overall.answers, lookups: a.overall.lookups, lookupUnverified: a.overall.lookupEvidence.missing + a.overall.lookupEvidence.inconsistent, correct: a.overall.correct })))}\n`);
     } else if (args.command === "estimate" && args["replay-arm"] === "history-ab") {
       const protocol = inputPath(process.cwd(), args.protocol), limits = inputPath(process.cwd(), args.limits), bindingFile = inputPath(process.cwd(), args["history-ab"]);
       const sizing = args.sizing.map(path => inputPath(process.cwd(), path)), output = privateOutput(args.output, [protocol, limits, bindingFile, ...sizing]);

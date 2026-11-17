@@ -7,6 +7,9 @@
   the continuity pack withheld, comparing split `ConversationHistory` against
   unified `History` with compact or directive descriptions in one registration.
   It never replays the source, makes no summary requests and is never the gate.
+  Restored snapshots are relocated to the new run's root, any History
+  degradation refuses the probe, and lookups are scored only from validated
+  probe receipts.
 
 - Restore lookup directives in the unified `History` tool's `said` scope:
   check `History` for exact earlier values, identifiers or quotations instead

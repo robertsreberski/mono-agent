@@ -427,6 +427,8 @@ it("writes scoring artifacts privately and refuses outputs in the checkout", asy
 const E2_IMPORT_SHAPES = {
   "scripts/lib/continuity-e2-ab.mjs": {
     "./continuity-dataset.mjs": "{ digest as canonicalDigest }",
+    // Relocation rewrites the restored copy's sidecar path pointers only.
+    "node:sqlite": "{ DatabaseSync }",
   },
   "scripts/lib/continuity-e2-summary-plan.mjs": {
     "./continuity-dataset.mjs": "{ digest }",
@@ -562,7 +564,7 @@ const E2_DYNAMIC_SHAPES = {
     'new URL("../../packages/app/dist/request-tools/history.js", import.meta.url).href': ["{historyDescription}"],
     'new URL("../../packages/app/dist/request-tools/history-policy.js", import.meta.url).href': ["{resolveHistoryScopes}"],
     'new URL("../../packages/app/dist/request-tools/conversation-history.js", import.meta.url).href': [".CONVERSATION_HISTORY_DESCRIPTION"],
-    "./continuity-e2-replay.mjs": ["{treeReceipt}", "{restoreCheckpoint,e2ProbeMeasurement,privateModes}"],
+    "./continuity-e2-replay.mjs": ["{treeReceipt}", "{restoreCheckpoint,treeReceipt,e2ProbeMeasurement,privateModes}"],
     "./continuity-runner.mjs": ["{openHarness,productionModules}"],
     "./continuity-e2-probe-receipts.mjs": ["{createE2ProbeReceipts}"],
     "./continuity-e2-progress.mjs": ["{writeE2Progress,writeE2ProgressGap}"],
@@ -629,7 +631,7 @@ const E2_DYNAMIC_SHAPES = {
       "{runE2HistoryAbSizing,e2AbFrozenRecord,assertE2HistoryAbBinding}"
     ],
     "./lib/continuity-e2-ab-score.mjs": [
-      "{scoreE2HistoryAb}"
+      "{scoreE2HistoryAb,readE2AbReceipts}"
     ],
     "./lib/continuity-e2-paid-entry.mjs": [
       "{runE2Paid}",

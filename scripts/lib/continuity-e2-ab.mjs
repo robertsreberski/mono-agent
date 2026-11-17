@@ -2,12 +2,13 @@
 // Observational (`qualification: false`), never the release gate. No source
 // replay, no paid summaries; the frozen protocol, questions, keys and scorer
 // are read-only inputs selected by registered row id.
-import { lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { lstat, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fail, ROOT } from "./continuity-observation-input.mjs";
 import { digest, validateSource } from "./continuity-recorded-schema.mjs";
 import { digest as canonicalDigest } from "./continuity-dataset.mjs";
-import { E2_AB_REPLAY_ARM, E2_AB_ARM_SURFACES, E2_AB_ARMS, e2AbArm, e2AbSlotArm, historyArguments, historyCallScope, historyConfig, historyServerName, historyToolName } from "./continuity-e2-history.mjs";
+import { E2_AB_REPLAY_ARM, E2_AB_ARM_SURFACES, E2_AB_ARMS, e2AbArm, e2AbSlotArm, historyArguments, historyConfig, historyServerName, historyToolName } from "./continuity-e2-history.mjs";
 import { SOL, protocolDigest, validateProtocol, assertE2ProbeLookupRounds } from "./continuity-e2-protocol.mjs";
 import { validateE2Questions, scoreE2 } from "./continuity-e2-score.mjs";
 import { createE2Models, estimatedReply, loadE2Estimators, shippingSoul } from "./continuity-e2-models.mjs";
@@ -19,7 +20,6 @@ export { E2_AB_REPLAY_ARM, E2_AB_ARMS, e2AbSlotArm } from "./continuity-e2-histo
 export const E2_AB_BINDING_SCHEMA = "continuity-e2-history-ab-v1";
 export const E2_AB_SIZING_SCHEMA = "continuity-e2-ab-sizing-v1";
 export const E2_AB_RUN_SCHEMA = "continuity-e2-ab-run-v1";
-export const E2_AB_LOOKUPS_SCHEMA = "continuity-e2-ab-lookups-v1";
 export const E2_AB_PROBE_PROMPT = "Use retained conversation evidence to continue safely. Do not perform effects.";
 const need = (ok, code = "E2_AB_BINDING_INVALID") => { if (!ok) fail(code); };
 const object = v => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -152,7 +152,7 @@ export function normalizeE2AbSizing(protocol, record, historyAb) {
     && Array.isArray(record.arms) && record.arms.map(a => a?.arm).join() === e2AbArmLetters(historyAb).join(), "E2_ESTIMATE_INVALID");
   const arms = new Map();
   for (const [i, arm] of record.arms.entries()) {
-    const { requestSizing, probes, withheldPacks, ...contract } = arm;
+    const { requestSizing, probes, withheldPacks, relocation: _relocation, history: _history, ...contract } = arm;
     need(same(contract, historyAb.arms[i]) && ordinal(withheldPacks) && Array.isArray(requestSizing) && requestSizing.length === 2 * (R + 1)
       && Array.isArray(probes) && probes.length === 2 && probes.every(p => p.requests === R + 1), "E2_ESTIMATE_INVALID");
     const rows = requestSizing.map(row => abRow(row, checkpoint));
@@ -213,18 +213,148 @@ export function buildE2HistoryAbRegistration({ code, build, catalog, source, pro
     toolPolicies: structuredClone(E2_AB_TOOL_POLICIES), sizing, probeCounts: e2AbProbeCounts(protocolValue, historyAb), replayArm: E2_AB_REPLAY_ARM, historyAb: historyAb };
 }
 
-// ---- Probe-only execution ----------------------------------------------------------
-function lookupCounter() {
-  const counts = { said: 0, tools: 0, runs: 0 };
-  return { counts, reset() { counts.said = counts.tools = counts.runs = 0; },
-    observe(event) {
-      if (event?.type !== "assistant") return;
-      for (const part of event.message?.content ?? []) if (part?.type === "tool_use") {
-        const scope = historyCallScope(part.name, part.input) ?? (typeof part.name === "string" && part.name.endsWith("__ConversationHistory") ? "said" : undefined);
-        if (scope) counts[scope]++;
-      }
-    } };
+// ---- Relocated restore --------------------------------------------------------------
+// The frozen tree pins its own absolute work root: the sidecar's `artifact_root`
+// (the shipping writer refuses any other root), artifact references, run
+// summaries and session headers. A restore at a new root rewrites exactly those
+// path pointers on the COPY, proves none of the old root remains anywhere, and
+// never touches the frozen snapshot. Anything it cannot relocate is refused.
+const TOOL_OUTPUT_SUFFIX = "/artifacts/tool-output";
+const TOOL_HISTORY_DATABASE = join("history", "tool-history", "tool-lifecycles.sqlite");
+const SQLITE_HEADER = Buffer.from("SQLite format 3\0", "latin1");
+const relocationRefused = () => fail("E2_AB_RELOCATION_REFUSED");
+async function treeFiles(root, prefix = "") {
+  const files = [];
+  for (const name of (await readdir(join(root, prefix))).sort()) {
+    const relative = prefix ? join(prefix, name) : name, s = await lstat(join(root, relative));
+    if (s.isSymbolicLink() || !s.isFile() && !s.isDirectory()) relocationRefused();
+    if (s.isDirectory()) files.push(...await treeFiles(root, relative)); else files.push(relative);
+  }
+  return files;
 }
+const remapPath = (value, from, to) => typeof value === "string" ? value === from ? to : value.startsWith(`${from}/`) ? `${to}${value.slice(from.length)}` : value
+  : Array.isArray(value) ? value.map(v => remapPath(v, from, to))
+    : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, remapPath(v, from, to)])) : value;
+// Rewrite whole JSON path strings only, then prove the parsed value changed exactly as a path remap would.
+function relocateJSON(name, text, from, to) {
+  if (!/\.jsonl?$/u.test(name)) relocationRefused();
+  const next = text.split(`"${from}"`).join(`"${to}"`).split(`"${from}/`).join(`"${to}/`);
+  if (next.includes(from)) relocationRefused();
+  const values = value => name.endsWith(".jsonl") ? value.split("\n").filter(line => line.length).map(line => JSON.parse(line)) : [JSON.parse(value)];
+  let before, after; try { before = values(text); after = values(next); } catch { relocationRefused(); }
+  if (JSON.stringify(remapPath(before, from, to)) !== JSON.stringify(after)) relocationRefused();
+  return next;
+}
+/**
+ * Relocate a restored copy of the frozen tree to `work` (its realpath). Returns
+ * content-free counts; refuses unless every old-root pointer was rewritten.
+ */
+export async function relocateE2AbWork(work) {
+  const to = await realpath(work), database = join(to, TOOL_HISTORY_DATABASE);
+  let s; try { s = await lstat(database); } catch { relocationRefused(); }
+  if (!s.isFile()) relocationRefused();
+  const result = { relocated: false, metadata: 0, artifactRefs: 0, files: 0 };
+  let from, db;
+  try {
+    db = new DatabaseSync(database);
+    if (db.prepare("PRAGMA journal_mode").get()?.journal_mode !== "delete") relocationRefused();
+    const root = db.prepare("SELECT value FROM metadata WHERE key='artifact_root'").get()?.value;
+    if (typeof root !== "string" || !root.endsWith(TOOL_OUTPUT_SUFFIX)) relocationRefused();
+    from = root.slice(0, -TOOL_OUTPUT_SUFFIX.length);
+    // Absolute, normalized, JSON-literal-safe and unrelated to the new root by prefix.
+    if (!isAbsolute(from) || resolve(from) !== from || JSON.stringify(from) !== `"${from}"` || from !== to && (`${to}/`.startsWith(`${from}/`) || `${from}/`.startsWith(`${to}/`))) relocationRefused();
+    if (from === to) return result;
+    const refs = db.prepare("SELECT host_path FROM artifact_refs").all();
+    if (refs.some(r => typeof r.host_path !== "string" || !r.host_path.startsWith(`${from}/`))) relocationRefused();
+    // Zero freed cell bytes so the old root cannot survive in the file image.
+    db.prepare("PRAGMA secure_delete=ON").run(); db.prepare("BEGIN IMMEDIATE").run();
+    try {
+      result.metadata = Number(db.prepare("UPDATE metadata SET value=? WHERE key='artifact_root' AND value=?").run(`${to}${TOOL_OUTPUT_SUFFIX}`, root).changes);
+      result.artifactRefs = Number(db.prepare("UPDATE artifact_refs SET host_path=? || substr(host_path, ?) WHERE substr(host_path, 1, ?)=?").run(to, from.length + 1, from.length + 1, `${from}/`).changes);
+      db.prepare("COMMIT").run();
+    } catch (error) { db.prepare("ROLLBACK").run(); throw error; }
+    if (result.metadata !== 1 || result.artifactRefs !== refs.length || db.prepare("SELECT value FROM metadata WHERE key='artifact_root'").get()?.value !== `${to}${TOOL_OUTPUT_SUFFIX}`
+      || db.prepare("SELECT host_path FROM artifact_refs").all().some(r => !r.host_path.startsWith(`${to}/`))) relocationRefused();
+  } finally { db?.close(); }
+  const needle = Buffer.from(from);
+  for (const name of await treeFiles(to)) {
+    const path = join(to, name), bytes = await readFile(path);
+    if (!bytes.includes(needle)) continue;
+    // Only JSON path strings are rewritable; any other carrier (including another SQLite file) refuses.
+    if (bytes.subarray(0, SQLITE_HEADER.length).equals(SQLITE_HEADER)) relocationRefused();
+    const text = bytes.toString("utf8");
+    if (!Buffer.from(text).equals(bytes)) relocationRefused();
+    await writeFile(path, relocateJSON(name, text, from, to)); result.files++;
+  }
+  // Proof: no file anywhere in the relocated tree still names the old root.
+  for (const name of await treeFiles(to)) if ((await readFile(join(to, name))).includes(needle)) relocationRefused();
+  // Session headers name the new workspace exactly.
+  for (const name of (await treeFiles(to)).filter(n => /^sessions\/journals\/[^/]+\.jsonl$/u.test(n))) {
+    const first = (await readFile(join(to, name), "utf8")).split("\n", 1)[0];
+    let header; try { header = JSON.parse(first); } catch { relocationRefused(); }
+    if (header?.cwd !== undefined && header.cwd !== to) relocationRefused();
+  }
+  result.relocated = true;
+  return result;
+}
+
+// ---- History health latch ---------------------------------------------------------
+// Production History is fail-open (warnings only) and warning dispatch swallows
+// callback exceptions, so a throwing callback cannot stop a run. Latch every
+// degradation signal here; the run refuses before each request and after each probe.
+const HISTORY_WARNING_CODE = /\(([a-z][a-z0-9_]{0,63})\)/u;
+export function e2AbHistoryHealth() {
+  const codes = {};
+  const note = code => { codes[code] = (codes[code] ?? 0) + 1; };
+  return {
+    warn(message) { const text = String(message); note(text.match(HISTORY_WARNING_CODE)?.[1] ?? (/could not start/u.test(text) ? "history_unavailable" : "history_warning")); },
+    note,
+    // An offered History result that reports the store itself unavailable.
+    observe(event) {
+      if (event?.type !== "user") return;
+      for (const part of event.message?.content ?? []) if (part?.type === "tool_result") {
+        const text = typeof part.content === "string" ? part.content : (Array.isArray(part.content) ? part.content : []).filter(b => b?.type === "text").map(b => b.text).join("\n");
+        const start = text.search(/^\s*\{\s*"(?:action|status)"\s*:/mu);
+        let body; try { body = start < 0 ? undefined : JSON.parse(text.slice(start)); } catch { /* unparsed bodies are not store status */ }
+        if (body?.status === "unavailable" || body?.available === false) note("history_result_unavailable");
+      }
+    },
+    get degraded() { return Object.keys(codes).length > 0; },
+    assert() { if (Object.keys(codes).length) fail("E2_HISTORY_DEGRADED"); },
+    report: () => ({ warnings: Object.values(codes).reduce((n, v) => n + v, 0), codes: { ...codes } }),
+  };
+}
+const CONTINUITY_FAILURES = ["writeFailures", "recoveryFailures", "maintenanceFailures", "idempotencyConflicts"];
+function historyStats(modules, work) {
+  let stats; try { stats = new modules.conversation.ToolHistoryReader(join(work, "history")).stats(); } catch { fail("E2_HISTORY_DEGRADED"); }
+  const c = stats?.continuity;
+  if (!c || c.degraded === true || !Number.isSafeInteger(c.records) || c.records <= 0 || CONTINUITY_FAILURES.some(k => !Number.isSafeInteger(stats[k]))) fail("E2_HISTORY_DEGRADED");
+  return { records: c.records, ...Object.fromEntries(CONTINUITY_FAILURES.map(k => [k, stats[k]])) };
+}
+/**
+ * Before any request: the relocated store holds retained evidence, and the
+ * shipping writer opens it with the run's own artifact root (the exact check that
+ * otherwise fails as `history_artifact_root_mismatch` mid-run, silently).
+ */
+export async function e2AbHistoryPreflight(modules, work, health) {
+  const before = historyStats(modules, work);
+  let handle;
+  try { handle = await modules.conversation.acquireToolHistoryWriter({ root: join(work, "history"), artifactRoot: join(work, "artifacts", "tool-output"), continuityEnabled: true, onWarning: m => health.warn(m) }); }
+  catch (error) { health.note([error?.code, error?.name].find(v => typeof v === "string" && /^history_[a-z0-9_]{1,64}$/u.test(v)) ?? "history_writer_unavailable"); }
+  finally { await handle?.release(); }
+  health.assert();
+  const after = historyStats(modules, work);
+  if (JSON.stringify(after) !== JSON.stringify(before)) fail("E2_HISTORY_DEGRADED");
+  return after;
+}
+/** After a probe: no new store failures and continuity still healthy. */
+function assertHistoryUndegraded(modules, work, baseline, health) {
+  health.assert();
+  const after = historyStats(modules, work);
+  if (CONTINUITY_FAILURES.some(k => after[k] > baseline[k])) fail("E2_HISTORY_DEGRADED");
+}
+
+// ---- Probe-only execution ----------------------------------------------------------
 /**
  * One arm at one frozen checkpoint. `summary: "faux"` is offline sizing (two
  * generic repeats with scripted lookups); `"real"` runs every registered row twice
@@ -232,7 +362,8 @@ function lookupCounter() {
  */
 export async function runE2HistoryAb({ source, protocol, historyAb, frozen, arm, output, summary = "faux", paidAdapter, questions, evaluator, modules, onContext = () => {}, probeReceipts = true }) {
   const real = summary === "real";
-  if (!["faux", "real"].includes(summary) || real !== (paidAdapter !== undefined) || real && (modules !== undefined || !questions || !evaluator)) fail("E2_MODELS_SEAM_REFUSED");
+  // Paid rows require their lookup receipts: scoring derives lookups from them alone.
+  if (!["faux", "real"].includes(summary) || real !== (paidAdapter !== undefined) || real && (modules !== undefined || !questions || !evaluator || probeReceipts !== true)) fail("E2_MODELS_SEAM_REFUSED");
   const { assertE2PhaseAdapter } = await import("./continuity-e2-runtime.mjs");
   if (real) assertE2PhaseAdapter(paidAdapter);
   protocol = validateProtocol(protocol, source); assertE2HistoryAbBinding(historyAb);
@@ -242,7 +373,7 @@ export async function runE2HistoryAb({ source, protocol, historyAb, frozen, arm,
   const rows = real ? e2AbQuestions(questions, evaluator, historyAb, protocol) : null;
   if (real) await paidAdapter.assertHistoryAb({ arm, output, historyAb, source, protocol, questions, evaluator, frozen });
   const R = protocol.probeLookupRounds, requestCount = R + 1, surface = contract.historySurface, toolName = contract.toolName, server = historyServerName(surface);
-  const [{ restoreCheckpoint, e2ProbeMeasurement, privateModes }, { openHarness, productionModules }, { createE2ProbeReceipts }, { writeE2Progress, writeE2ProgressGap }] = await Promise.all([
+  const [{ restoreCheckpoint, treeReceipt, e2ProbeMeasurement, privateModes }, { openHarness, productionModules }, { createE2ProbeReceipts }, { writeE2Progress, writeE2ProgressGap }] = await Promise.all([
     import("./continuity-e2-replay.mjs"), import("./continuity-runner.mjs"), import("./continuity-e2-probe-receipts.mjs"), import("./continuity-e2-progress.mjs")]);
   const estimators = await loadE2Estimators(), soul = await shippingSoul(surface);
   need(soul.rawDigest === contract.soul.rawDigest && soul.normalizedDigest === contract.soul.normalizedDigest, "E2_SOUL_MISMATCH");
@@ -250,12 +381,14 @@ export async function runE2HistoryAb({ source, protocol, historyAb, frozen, arm,
   await mkdir(output, { mode: 0o700 });
   const work = join(output, `branch-${point.branch}`, "work");
   await mkdir(work, { recursive: true, mode: 0o700 });
-  const retrieval = createE2ProbeReceipts({ output, enabled: probeReceipts, ...(paidAdapter?.probeReceiptBinding?.() ?? { slotId: "offline-ab-sizing" }), noteProgressGap: () => paidAdapter?.noteProgressGap() });
-  const probe = e2ProbeMeasurement(surface), lookups = lookupCounter();
+  const retrieval = createE2ProbeReceipts({ output, enabled: probeReceipts, allScopes: true, ...(paidAdapter?.probeReceiptBinding?.() ?? { slotId: "offline-ab-sizing" }), noteProgressGap: () => paidAdapter?.noteProgressGap() });
+  const probe = e2ProbeMeasurement(surface), health = e2AbHistoryHealth();
   let opened, prompt, probeRequests = 0;
   const route = createE2Models({ pi: modules.pi, estimators, models: [{ model: SOL }], limits: branch.limits, summary: real ? "real" : "faux-short", soul, paidAdapter,
     probeLookupRounds: R, replayArm: E2_AB_REPLAY_ARM, historySurface: surface, abArm: arm, abDescriptionSha256: contract.description.sha256,
     sourceContext(context) {
+      // A latched History degradation refuses before this request is sized, guarded or sent.
+      health.assert();
       // The filtered request: the current prompt (after the host envelope) is still last.
       const users = context.messages.filter(m => m.role === "user"), last = users.at(-1);
       const lastText = typeof last?.content === "string" ? last.content : (last?.content ?? []).filter(p => p.type === "text").map(p => p.text).join("\n");
@@ -277,13 +410,13 @@ export async function runE2HistoryAb({ source, protocol, historyAb, frozen, arm,
     if (event.type === "context_compaction" && event.status === "running") fail("E2_PROBE_SUMMARY_FORBIDDEN");
     route.observe(event);
   };
-  const onHostEvent = event => { retrieval.observe(event); lookups.observe(event); };
+  const onHostEvent = event => { retrieval.observe(event); health.observe(event); };
   const open = async () => {
     opened = await openHarness({ modules, work, authPath: real ? paidAdapter.credentialPath() : join(output, "absent-auth.json"), model: point.model.model, effort: point.model.effort,
       clock: { value: new Date("2042-03-01T09:00:00Z") }, tools: false, e2: paidAdapter, ...(contract.descriptionVariant ? { historyDescriptionVariant: contract.descriptionVariant } : {}),
       configPatch: { runtime: { retry: { primaryAttempts: 1 }, fallbacks: [], compaction: { enabled: true }, session: { continuity: { enabled: true, ledgerEnabled: false, upkeep: { enabled: false } } } },
         tools: { ...historyConfig(surface), allowedTools: [toolName] }, providers: { piNative: { transport: "sse", piMaxRetries: 0 } } },
-      onHistoryWarning: () => fail("E2_HISTORY_DEGRADED"),
+      onHistoryWarning: message => health.warn(message),
       hostOptions: { runtimeOptionsForRequest: () => ({ runtimeOptions: { model: modules.host.parseMonoRuntimeModelReference(point.model.model), effort: point.model.effort } }) },
       route: async options => {
         if (options.piResolvedModel || options.piResolvedModels) fail("E2_MODELS_SEAM_REFUSED");
@@ -295,36 +428,45 @@ export async function runE2HistoryAb({ source, protocol, historyAb, frozen, arm,
   const report = { schema: real ? E2_AB_RUN_SCHEMA : E2_AB_SIZING_SCHEMA, replayArm: E2_AB_REPLAY_ARM, qualification: false, semanticQualification: false, usage: "estimated-not-measured",
     ...contract, sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), bindingSha256: e2AbSizingBinding(historyAb),
     probeLookupRounds: R, frozen: { replaySha256: historyAb.frozen.replay.sha256, receipt: historyAb.frozen.receipt, branch: point.branch, checkpoint: point.checkpoint }, checkpoint: point.global, probes: [] };
-  const answers = { schema: "continuity-e2-answers-v1", answers: [] }, observed = { schema: E2_AB_LOOKUPS_SCHEMA, arm, lookups: [] };
+  const answers = { schema: "continuity-e2-answers-v1", answers: [] };
+  let relocated;
   try {
     for (const item of items) {
+      // Verified restore of the frozen bytes, then a validated relocation of the copy.
       await restoreCheckpoint(work, historyAb.frozen.snapshot, historyAb.frozen.receipt);
-      probe.reset(); lookups.reset(); prompt = real ? item.q.prompt : E2_AB_PROBE_PROMPT;
-      retrieval.begin({ branch: point.branch, checkpoint: point.global, repeat: item.repeat, itemOrdinal: item.itemOrdinal, arm });
+      const moved = await relocateE2AbWork(work), movedReceipt = await treeReceipt(work);
+      if (relocated === undefined) relocated = { ...moved, receipt: movedReceipt };
+      else if (!same({ ...moved, receipt: movedReceipt }, relocated)) fail("E2_SNAPSHOT_MISMATCH");
+      const baseline = await e2AbHistoryPreflight(modules, work, health);
+      probe.reset(); prompt = real ? item.q.prompt : E2_AB_PROBE_PROMPT;
+      retrieval.begin({ branch: point.branch, checkpoint: point.global, repeat: item.repeat, itemOrdinal: item.itemOrdinal, arm, ...(real ? { rowId: item.q.id } : {}) });
       route.setPosition({ branch: point.branch, turn: point.turn, message: point.message, model: point.model.model, probe: true });
       await open();
       let response;
       try {
         response = await opened.harness.run({ conversationId: source.conversationId, userMessage: prompt, metadata: { source: "web", web: { model: point.model.model, effort: point.model.effort } },
           onEvent: onHostEvent, abortSignal: AbortSignal.timeout(branch.limits.timeoutMs) });
-      } finally { await retrieval.flush(); }
+      } finally { retrieval.settle(); await retrieval.flush(); }
       await paidAdapter?.flush(); route.assertSettled();
+      // Degradation latched at any point of the probe voids it, whatever the model saw.
+      assertHistoryUndegraded(modules, work, baseline, health);
       const text = response.text ?? response.content;
       if (response.failure || !probe.firstContext || !real && probe.requests !== requestCount || real && typeof text !== "string") fail(real ? "E2_REPLAY_FAILED" : "E2_PROBE_FAILED");
       if (real) {
         const answer = { id: item.q.id, repeat: item.repeat, text, witness: probe.witness, excludedSteps: point.excludedSteps, excludedCoverage: point.excludedCoverage };
         try { await writeE2Progress(output, answers.answers.length + 1, await paidAdapter.answerBinding(), answer); }
         catch { paidAdapter.noteProgressGap(); try { await writeE2ProgressGap(output, paidAdapter.report().progressGap); } catch { /* Final report carries the gap count. */ } }
-        answers.answers.push(answer); observed.lookups.push({ id: item.q.id, repeat: item.repeat, ...lookups.counts });
+        answers.answers.push(answer);
       }
-      report.probes.push({ repeat: item.repeat, ...(real ? { itemOrdinal: item.itemOrdinal } : {}), requests: probe.requests, initialContext: probe.firstContext, lookups: { ...lookups.counts } });
+      report.probes.push({ repeat: item.repeat, ...(real ? { itemOrdinal: item.itemOrdinal } : {}), requests: probe.requests, initialContext: probe.firstContext, continuityRecords: baseline.records });
       await opened.close(); opened = null;
     }
     const routed = route.report();
-    Object.assign(report, { requestSizing: routed.requestSizing, probeRequests: routed.probeRequests, withheldPacks: routed.withheldPacks });
+    Object.assign(report, { requestSizing: routed.requestSizing, probeRequests: routed.probeRequests, withheldPacks: routed.withheldPacks, relocation: relocated, history: health.report() });
     if (real) {
       const keys = { schema: evaluator.schema, keys: historyAb.rows.map(id => evaluator.keys.find(k => k.id === id)) };
-      for (const [name, value] of [["answers.json", answers], ["lookups.json", observed], ["score.json", scoreE2(answers, keys)]])
+      // Lookups are never counted here: scoring derives them from the probe receipts.
+      for (const [name, value] of [["answers.json", answers], ["score.json", scoreE2(answers, keys)]])
         await writeFile(join(output, name), `${JSON.stringify(value)}\n`, { flag: "wx", mode: 0o600 });
       report.progressGap = paidAdapter.report().progressGap;
       await writeFile(join(output, "history-ab.json"), `${JSON.stringify(report)}\n`, { flag: "wx", mode: 0o600 });
@@ -345,7 +487,7 @@ export async function runE2HistoryAbSizing({ source, protocol, historyAb, frozen
       const r = await runE2HistoryAb({ source, protocol, historyAb, frozen, arm, output: join(output, e2AbSlotArm(arm)), summary: "faux", modules, onContext });
       const { schema: _s, replayArm: _r, qualification: _q, semanticQualification: _sq, usage: _u, sourceDigest: _sd, protocolDigest: _pd, bindingSha256: _b, probeLookupRounds: _l,
         frozen: _f, checkpoint: _c, probeRequests: _p, progressGap: _g, ...rest } = r;
-      arms.push({ ...rest, probes: r.probes.map(({ lookups: _lookups, ...p }) => p) });
+      arms.push(rest);
     }
     assertE2SizingIdentity(sizingIdentity, await e2SizingIdentity());
     const report = { schema: E2_AB_SIZING_SCHEMA, replayArm: E2_AB_REPLAY_ARM, qualification: false, semanticQualification: false, usage: "estimated-not-measured",

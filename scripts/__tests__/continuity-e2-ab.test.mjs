@@ -9,14 +9,17 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import http from "node:http";
 import { zstdDecompressSync } from "node:zlib";
+import { DatabaseSync } from "node:sqlite";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { digest as hash } from "../lib/continuity-recorded-schema.mjs";
 import { digest } from "../lib/continuity-dataset.mjs";
 import { productionModules } from "../lib/continuity-runner.mjs";
 import { E2_AB_ARMS, E2_AB_TOOL_POLICIES, e2AbArmContract, e2AbProbeCounts, e2AbPhaseSchedule, e2AbSlotArm, e2AbFrozenCheckpoint, e2AbFrozenRecord, e2AbSizingBinding,
-  assertE2AbSnapshot, assertE2HistoryAbBinding, estimateE2HistoryAb, normalizeE2AbSizing, runE2HistoryAb, runE2HistoryAbSizing } from "../lib/continuity-e2-ab.mjs";
+  assertE2AbSnapshot, assertE2HistoryAbBinding, estimateE2HistoryAb, normalizeE2AbSizing, runE2HistoryAb, runE2HistoryAbSizing,
+  relocateE2AbWork, e2AbHistoryHealth, e2AbHistoryPreflight } from "../lib/continuity-e2-ab.mjs";
 import { e2AbArmOfSlot, e2SlotHistorySurface } from "../lib/continuity-e2-history.mjs";
-import { scoreE2HistoryAb, classifyE2AbAnswer } from "../lib/continuity-e2-ab-score.mjs";
+import { scoreE2HistoryAb, classifyE2AbAnswer, e2AbLookupEvidence, readE2AbReceipts } from "../lib/continuity-e2-ab-score.mjs";
+import { createE2ProbeReceipts } from "../lib/continuity-e2-probe-receipts.mjs";
 import { createE2Models, estimatedReply, loadE2Estimators, shippingSoul, sizeContext } from "../lib/continuity-e2-models.mjs";
 import { assertE2NoContinuityPack, withoutE2ContinuityPack, e2PhaseBase } from "../lib/continuity-e2-lineage.mjs";
 import { e2ExecutionPolicy } from "../lib/continuity-e2-execution-policy.mjs";
@@ -84,10 +87,19 @@ it("restores the frozen snapshot at a new absolute root and sizes every arm pack
     expect(JSON.stringify(own[0].messages.slice(0, -1))).toBe(JSON.stringify(own[4].messages.slice(0, -1)));
     expect(arm.probes[0].initialContext).toEqual(arm.probes[1].initialContext);
     expect(own[0].messages.filter(m => m.role === "user").length).toBeGreaterThan(1);
+    // The copy was relocated (sidecar root, run summaries, session header) and History stayed healthy:
+    // no writer, sidecar or availability warning was latched and the store held retained evidence.
+    expect(arm.relocation).toMatchObject({ relocated: true, metadata: 1, artifactRefs: 0 });
+    expect(arm.relocation.files).toBeGreaterThan(0);
+    expect(arm.history).toEqual({ warnings: 0, codes: {} });
+    expect(arm.probes.map(p => p.continuityRecords)).toEqual([15, 15]);
   }
   // Restored copies live under the new root only; the frozen tree is untouched.
   await assertE2AbSnapshot(f.binding);
-  expect((await readdir(join(output, "history-ab-B", "branch-0", "work"))).sort()).toEqual((await readdir(f.snapshot)).sort());
+  const moved = join(output, "history-ab-B", "branch-0", "work");
+  expect((await readdir(moved)).sort()).toEqual((await readdir(f.snapshot)).sort());
+  const db = new DatabaseSync(join(moved, "history", "tool-history", "tool-lifecycles.sqlite"), { readOnly: true });
+  try { expect(db.prepare("SELECT value FROM metadata WHERE key='artifact_root'").get().value).toBe(join(await realpath(moved), "artifacts", "tool-output")); } finally { db.close(); }
   const sizing = JSON.parse(await readFile(join(output, "sizing.json")));
   expect(digest(sizing)).toBe(digest(report));
   expect(() => normalizeE2AbSizing(f.trace.protocol, sizing, f.binding)).not.toThrow();
@@ -112,6 +124,55 @@ it("restores the frozen snapshot at a new absolute root and sizes every arm pack
   await expect(e2AbFrozenRecord({ ...f.binding, frozen: { ...f.binding.frozen, replay: { ...f.binding.frozen.replay, sha256: "0".repeat(64) } } })).rejects.toThrow("E2_SNAPSHOT_MISMATCH");
   expect(() => e2AbFrozenCheckpoint(f.frozen, { ...f.binding, frozen: { ...f.binding.frozen, receipt: { ...f.binding.frozen.receipt, digest: "0".repeat(64) } } })).toThrow("E2_AB_BINDING_INVALID");
   expect(() => e2AbFrozenCheckpoint(f.frozen, f.binding, { protocol: { ...f.trace.protocol, probeLookupRounds: 2 } })).toThrow("E2_AB_BINDING_INVALID");
+}, TIMEOUT);
+
+it("relocates the restored copy, refuses what it cannot relocate and latches History degradation before any request", async () => {
+  const root = await scratch(), f = await abFrozenFixture(root), modules = await productionModules(ROOT);
+  const { restoreCheckpoint } = await import("../lib/continuity-e2-replay.mjs");
+  const copy = async name => { const work = join(root, name, "work"); await mkdir(work, { recursive: true, mode: 0o700 }); await restoreCheckpoint(work, f.snapshot, f.binding.frozen.receipt); return work; };
+  const open = (work, options = {}) => new DatabaseSync(join(work, "history", "tool-history", "tool-lifecycles.sqlite"), options);
+  const frozenRoot = (() => { const db = open(f.snapshot, { readOnly: true }); try { return db.prepare("SELECT value FROM metadata WHERE key='artifact_root'").get().value.slice(0, -"/artifacts/tool-output".length); } finally { db.close(); } })();
+  // An unrelocated copy is exactly the silent failure: the shipping writer refuses its pinned root.
+  const plain = await copy("plain"), unrelocated = e2AbHistoryHealth();
+  await expect(e2AbHistoryPreflight(modules, plain, unrelocated)).rejects.toThrow("E2_HISTORY_DEGRADED");
+  expect(unrelocated.report()).toEqual({ warnings: 1, codes: { history_artifact_root_mismatch: 1 } });
+  // Relocated, the same copy names only its own root and History opens healthy with retained evidence.
+  const relocation = await relocateE2AbWork(plain), healthy = e2AbHistoryHealth();
+  expect(relocation).toMatchObject({ relocated: true, metadata: 1, artifactRefs: 0 });
+  await expect(e2AbHistoryPreflight(modules, plain, healthy)).resolves.toMatchObject({ records: 15 });
+  expect(healthy.report()).toEqual({ warnings: 0, codes: {} });
+  const journals = await readdir(join(plain, "sessions", "journals"));
+  for (const name of journals) expect(JSON.parse((await readFile(join(plain, "sessions", "journals", name), "utf8")).split("\n", 1)[0]).cwd).toBe(plain);
+  expect(await relocateE2AbWork(plain)).toEqual({ relocated: false, metadata: 0, artifactRefs: 0, files: 0 });
+  // Persisted artifact references move with the tree.
+  const refs = await copy("refs"), db = open(refs, { enableForeignKeyConstraints: false });
+  try { db.prepare("INSERT INTO artifact_refs VALUES (?,?,?,?,?,?,?)").run("fictional-artifact", "fictional-conversation", "fictional-run", "fictional-call", join(frozenRoot, "artifacts", "tool-output", "fictional-run", "out.txt"), "available", 1); } finally { db.close(); }
+  expect(await relocateE2AbWork(refs)).toMatchObject({ relocated: true, artifactRefs: 1 });
+  const moved = open(refs, { readOnly: true });
+  try { expect(moved.prepare("SELECT host_path FROM artifact_refs").get().host_path).toBe(join(refs, "artifacts", "tool-output", "fictional-run", "out.txt")); } finally { moved.close(); }
+  // Unrelocatable pointers refuse: an artifact outside the frozen tree, a non-JSON carrier, a partial path string.
+  const outside = await copy("outside"), odb = open(outside, { enableForeignKeyConstraints: false });
+  try { odb.prepare("INSERT INTO artifact_refs VALUES (?,?,?,?,?,?,?)").run("fictional-artifact", "fictional-conversation", "fictional-run", "fictional-call", "/fictional/elsewhere/out.txt", "available", 1); } finally { odb.close(); }
+  await expect(relocateE2AbWork(outside)).rejects.toThrow("E2_AB_RELOCATION_REFUSED");
+  const prose = await copy("prose"); await appendFile(join(prose, "IDENTITY.md"), `Fictional workspace ${frozenRoot}\n`);
+  await expect(relocateE2AbWork(prose)).rejects.toThrow("E2_AB_RELOCATION_REFUSED");
+  const partial = await copy("partial"); await writeFile(join(partial, "artifacts", "fictional.json"), JSON.stringify({ note: `see ${frozenRoot}/artifacts` }), { mode: 0o600 });
+  await expect(relocateE2AbWork(partial)).rejects.toThrow("E2_AB_RELOCATION_REFUSED");
+  // The latch: warning dispatch swallows callback errors, so a degradation must refuse on its own.
+  const warning = "Continuity is degraded (sidecar_unavailable); fictional coverage gap.";
+  const wrap = onOpen => ({ ...modules, app: { ...modules.app, createConfiguredConversationHarness: async options => { onOpen(options.onToolHistoryWarning); return modules.app.createConfiguredConversationHarness(options); } } });
+  const run = async (name, onOpen, onFirst = () => {}) => {
+    const contexts = [], error = await runE2HistoryAb({ source: f.trace.source, protocol: f.trace.protocol, historyAb: f.binding, frozen: f.frozen, arm: "B", output: join(root, name), modules: wrap(onOpen),
+      onContext: c => { contexts.push(c); if (contexts.length === 1) onFirst(); } }).catch(e => e);
+    return { error, contexts };
+  };
+  // Degraded before the first request: nothing is sized, guarded or sent.
+  const early = await run("early", warn => warn(warning));
+  expect(early.error?.code).toBe("E2_HISTORY_DEGRADED"); expect(early.contexts).toHaveLength(0);
+  // Degraded after the first request: the next request refuses and the probe is void (no report).
+  let later; const midway = await run("midway", warn => { later = () => warn(warning); }, () => later());
+  expect(midway.error?.code).toBe("E2_HISTORY_DEGRADED"); expect(midway.contexts).toHaveLength(1);
+  await assertE2AbSnapshot(f.binding);
 }, TIMEOUT);
 
 async function abRoute({ arm = "B", context, position = { probe: true }, description, ...options } = {}) {
@@ -191,17 +252,26 @@ it("pins offered description bytes, tool, probe position, summaries and arm bind
   // Legacy routes keep their exact report shape.
   expect(createE2Models({ ...base, soul: split }).report()).toEqual({ sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], requestSizing: [] });
 }, TIMEOUT);
-it("applies the controller's own pack-withheld body boundary only to A/B holds", () => {
-  const body = input => Buffer.from(JSON.stringify({ model: "gpt-6.1-sol", stream: true, store: false, tools: [{ type: "function", name: "History" }], input }));
+it("applies the controller's own pack-withheld body and description boundary only to A/B holds", async () => {
+  const contracts = Object.fromEntries(await Promise.all(E2_AB_ARMS.map(async arm => [arm, await e2AbArmContract(arm)])));
+  const described = Object.fromEntries(await Promise.all(E2_AB_ARMS.map(async arm => [arm, (await abContext(arm)).tools[0].description])));
+  const body = (input, arm = "B", description = described[arm]) => Buffer.from(JSON.stringify({ model: "gpt-6.1-sol", stream: true, store: false,
+    tools: [{ type: "function", name: contracts[arm].toolName, ...(description === null ? {} : { description }) }], input }));
   const current = { role: "user", content: [{ type: "input_text", text: "Fictional current probe question" }] };
   const pack = { role: "user", content: [{ type: "input_text", text: `${PACK}Fictional` }] };
-  const hold = { model: SOL, tools: ["History"], probeRequest: 1 };
-  expect(() => e2ExecutionPolicy.assertBody(body([current]), { ...hold, abArm: "B" })).not.toThrow();
-  expect(() => e2ExecutionPolicy.assertBody(body([pack, current]), { ...hold, abArm: "B" })).toThrow("e2_payload_forbidden");
-  expect(() => e2ExecutionPolicy.assertBody(body([{ ...pack, role: "assistant", content: [{ type: "output_text", text: `${PACK}Fictional` }] }, current]), { ...hold, abArm: "C" })).toThrow("e2_payload_forbidden");
+  const hold = (arm = "B") => ({ model: SOL, tools: [contracts[arm].toolName], probeRequest: 1, abArm: arm, abDescriptionSha256: contracts[arm].description.sha256 });
+  for (const arm of E2_AB_ARMS) expect(() => e2ExecutionPolicy.assertBody(body([current], arm), hold(arm))).not.toThrow();
+  expect(() => e2ExecutionPolicy.assertBody(body([pack, current]), hold("B"))).toThrow("e2_payload_forbidden");
+  expect(() => e2ExecutionPolicy.assertBody(body([{ ...pack, role: "assistant", content: [{ type: "output_text", text: `${PACK}Fictional` }] }, current], "C"), hold("C"))).toThrow("e2_payload_forbidden");
+  // A C hold offering the compact (B) description, or any other bytes, is refused by the controller itself.
+  expect(() => e2ExecutionPolicy.assertBody(body([current], "C", described.B), hold("C"))).toThrow("e2_tools_forbidden");
+  expect(() => e2ExecutionPolicy.assertBody(body([current], "B", described.C), hold("B"))).toThrow("e2_tools_forbidden");
+  expect(() => e2ExecutionPolicy.assertBody(body([current], "B", `${described.B} `), hold("B"))).toThrow("e2_tools_forbidden");
+  expect(() => e2ExecutionPolicy.assertBody(body([current], "B", null), hold("B"))).toThrow("e2_tools_forbidden");
+  expect(() => e2ExecutionPolicy.assertBody(body([current], "C"), { ...hold("C"), abDescriptionSha256: undefined })).toThrow("e2_tools_forbidden");
   // Continuity probes legitimately carry their pack; that path is unchanged.
-  expect(() => e2ExecutionPolicy.assertBody(body([pack, current]), hold)).not.toThrow();
-});
+  expect(() => e2ExecutionPolicy.assertBody(body([pack, current]), { model: SOL, tools: ["History"], probeRequest: 1 })).not.toThrow();
+}, TIMEOUT);
 
 it("binds arms, variants, rows and the frozen tree into one registration and refuses every mismatch", async () => {
   const root = await scratch(), f = await abNativeFixture(root); vi.stubEnv("CI", undefined);
@@ -267,13 +337,22 @@ it("binds arms, variants, rows and the frozen tree into one registration and ref
     expect(e2SlotHistorySurface(r, slot)).toBe(arm === "A" ? "split" : "unified");
     expect(e2PhaseBase("/fictional/root", slot)).toBe(`/fictional/root/work/${slot.arm}`);
     const first = e2ExecutionPolicy.admission(f.pilot, slot, { holds: [] }, permit("probe", slot)).metadata;
-    expect(first).toMatchObject({ replayArm: "history-ab", abArm: arm, probeRequest: 1, tools: [arm === "A" ? "ConversationHistory" : "History"] });
+    expect(first).toMatchObject({ replayArm: "history-ab", abArm: arm, abDescriptionSha256: (await e2AbArmContract(arm)).description.sha256, probeRequest: 1, tools: [arm === "A" ? "ConversationHistory" : "History"] });
     expect(first).not.toHaveProperty("historySurface");
     const last = e2ExecutionPolicy.admission(f.pilot, slot, { holds: [1, 2, 3].map(n => ({ checkpoint: 2, probeRequest: n, paidRole: n === 1 ? "probe" : "continuation", model: SOL })) }, permit("continuation", slot)).metadata;
     expect(last).toMatchObject({ probeRequest: 4, tools: [] });
     expect(() => e2ExecutionPolicy.admission(f.pilot, slot, { holds: [] }, { ...permit("summary", slot) })).toThrow();
   }
   expect(() => e2ExecutionPolicy.admission({ registration: { ...r, replayArm: undefined } }, r.schedule[0], { holds: [] }, permit("probe", r.schedule[0]))).toThrow("e2_registration_invalid");
+  // The payload guard derives the expected description from the registered arm, not from the request.
+  const [compact, directive] = [(await abContext("B")).tools[0].description, (await abContext("C")).tools[0].description];
+  const payload = description => ({ model: "gpt-6.1-sol", stream: true, store: false, reasoning: { effort: "high" }, input: [{ role: "user", content: [{ type: "input_text", text: "Fictional current probe question" }] }],
+    tools: [{ type: "function", name: "History", description, parameters: { type: "object", properties: {} }, strict: false }] });
+  const paid = slot => ({ effort: "high", e2: { pilot: f.pilot, planned: slot, paidRole: "probe", model: SOL, checkpoint: 2, probeRequest: 1 } });
+  expect(() => e2ExecutionPolicy.assertPayload(payload(directive), 1, paid(r.schedule[2]))).not.toThrow();
+  expect(() => e2ExecutionPolicy.assertPayload(payload(compact), 1, paid(r.schedule[1]))).not.toThrow();
+  expect(() => e2ExecutionPolicy.assertPayload(payload(compact), 1, paid(r.schedule[2]))).toThrow("e2_tools_forbidden");
+  expect(() => e2ExecutionPolicy.assertPayload(payload(directive), 1, paid(r.schedule[1]))).toThrow("e2_tools_forbidden");
   expect(() => e2SlotHistorySurface({ ...r, historySurface: "unified" }, r.schedule[0])).toThrow("e2_registration_invalid");
 }, TIMEOUT);
 
@@ -331,33 +410,72 @@ it("estimates the A/B minimum as the no-cache aggregate plus the largest reserva
   expect(await main(args(files["wrong-limits"]), io)).toBe(1); expect(err.pop()).toBe("E2_PROBE_COUNTS_REQUIRED\n");
 });
 
-it("scores each answer with the frozen scorer and crosses it with lookups per arm, overall and primary", () => {
+// Fictional receipt streams written by the shipping all-scope receipt writer.
+const AB_TOOL = { A: "mcp__mono-agent-conversation-history__ConversationHistory", B: "mcp__mono-agent-history__History", C: "mcp__mono-agent-history__History" };
+async function abReceipts(root, arm, items, { allScopes = true, name = `receipts-${arm}` } = {}) {
+  const output = join(root, name); await mkdir(output, { mode: 0o700 });
+  const receipts = createE2ProbeReceipts({ output, slotId: `fictional-slot-${arm}`, allScopes });
+  let n = 0;
+  for (const { id, repeat, scopes = [], settle = true } of items) {
+    receipts.begin({ branch: 0, checkpoint: 2, repeat, itemOrdinal: AB_ROWS.indexOf(id) + 1, arm, rowId: id });
+    for (const scope of scopes) {
+      const callId = `fictional-call-${++n}`;
+      receipts.observeRequest({ messages: [{ role: "user", content: "Fictional request" }] });
+      receipts.observe({ type: "assistant", message: { content: [{ type: "tool_use", id: callId, name: AB_TOOL[arm], input: { ...(arm === "A" ? {} : { scope }), action: "search", query: "Fictional", limit: 1 } }] } });
+      receipts.observe({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: callId, content: [{ type: "text", text: '{"action":"search","status":"available","count":1,"items":[]}' }] }] } });
+    }
+    if (settle) receipts.settle();
+  }
+  await receipts.flush();
+  return readE2AbReceipts(join(output, "probe-receipts"));
+}
+it("scores each answer with the frozen scorer and crosses it with receipt-derived lookups per arm, overall and primary", async () => {
+  const root = await scratch();
   const binding = { schema: "continuity-e2-history-ab-v1", frozen: { replay: { path: "/fictional/replay.json", sha256: "a".repeat(64) }, snapshot: "/fictional/snapshot", branch: 0, checkpoint: 2,
     receipt: { digest: "b".repeat(64), files: 3 } }, arms: E2_AB_ARMS.map(arm => ({ arm })), rows: AB_ROWS, primary: AB_PRIMARY };
-  const evaluator = abKeys(), lookups = (arm, rows) => ({ schema: "continuity-e2-ab-lookups-v1", arm, lookups: rows.map(([id, repeat, said, tools = 0, runs = 0]) => ({ id, repeat, said, tools, runs })) });
-  const answer = (id, repeat, text, witness = true) => ({ id, repeat, text, witness, excludedSteps: [], excludedCoverage: [] });
-  const [exact, referent, control] = AB_ROWS;
+  const evaluator = abKeys(), answer = (id, repeat, text, witness = true) => ({ id, repeat, text, witness, excludedSteps: [], excludedCoverage: [] });
+  const [exact, referent, control] = AB_ROWS, answers = list => ({ schema: "continuity-e2-answers-v1", answers: list });
   const arms = {
-    // A: correct after lookup, contaminated correct without lookup, wrong without lookup, abstain, wrong after lookup, missing.
-    A: { answers: { schema: "continuity-e2-answers-v1", answers: [answer(exact, 1, "Fictional response"), answer(exact, 2, "**Fictional response.**"), answer(referent, 1, "Fictional other"), answer(referent, 2, "I don't know"), answer(control, 1, "Fictional other")] },
-      lookups: lookups("A", [[exact, 1, 2], [exact, 2, 0], [referent, 1, 0], [referent, 2, 1], [control, 1, 0, 1]]) },
-    B: { answers: { schema: "continuity-e2-answers-v1", answers: AB_ROWS.flatMap(id => [1, 2].map(repeat => answer(id, repeat, "Fictional response"))) },
-      lookups: lookups("B", AB_ROWS.flatMap(id => [1, 2].map(repeat => [id, repeat, 1]))) },
-    C: { answers: { schema: "continuity-e2-answers-v1", answers: [answer(exact, 1, "Fictional response", false)] }, lookups: lookups("C", [[exact, 1, 0, 0, 1]]) },
+    // A: correct after lookup, contaminated correct without lookup, wrong without lookup, abstain after lookup, wrong after lookup, missing.
+    A: { answers: answers([answer(exact, 1, "Fictional response"), answer(exact, 2, "**Fictional response.**"), answer(referent, 1, "Fictional other"), answer(referent, 2, "I don't know"), answer(control, 1, "Fictional other")]),
+      receipts: await abReceipts(root, "A", [{ id: exact, repeat: 1, scopes: ["said", "said"] }, { id: exact, repeat: 2 }, { id: referent, repeat: 1 }, { id: referent, repeat: 2, scopes: ["said"] }, { id: control, repeat: 1, scopes: ["said"] }]) },
+    // B: every scope of the unified tool is attributed from its own call receipt.
+    B: { answers: answers(AB_ROWS.flatMap(id => [1, 2].map(repeat => answer(id, repeat, "Fictional response")))),
+      receipts: await abReceipts(root, "B", AB_ROWS.flatMap((id, i) => [1, 2].map(repeat => ({ id, repeat, scopes: [["said", "tools", "runs"][i]] })))) },
+    // C: an inconclusive answer after a runs lookup, and an answer whose probe never settled.
+    C: { answers: answers([answer(exact, 1, "Fictional response", false), answer(exact, 2, "Fictional response")]),
+      receipts: await abReceipts(root, "C", [{ id: exact, repeat: 1, scopes: ["runs"] }, { id: exact, repeat: 2, scopes: [], settle: false }]) },
   };
   const report = scoreE2HistoryAb({ historyAb: binding, evaluator, arms });
-  expect(report).toMatchObject({ schema: "continuity-e2-ab-score-v1", qualification: false, gate: "not-applicable-observational", rows: 3, primaryRows: 1, mapping: { ratePass: "correct", blocking: "wrong", rateMiss: "abstain" } });
+  expect(report).toMatchObject({ schema: "continuity-e2-ab-score-v1", qualification: false, gate: "not-applicable-observational", lookupSource: "validated-probe-receipts", rows: 3, primaryRows: 1, mapping: { ratePass: "correct", blocking: "wrong", rateMiss: "abstain" } });
   const [a, b, c] = report.arms;
-  expect(a.overall).toMatchObject({ answers: 6, lookups: 3, lookupRate: 0.5, correct: 2, correctWithoutLookup: 1, wrongWithoutLookup: 1, wrongAfterLookup: 1, abstain: 1, missing: 1, byScope: { said: 2, tools: 1, runs: 0 } });
+  expect(a.overall).toMatchObject({ answers: 5, lookups: 3, lookupRate: 0.6, lookupEvidence: { verified: 5, missing: 0, inconsistent: 0 }, correct: 2, correctWithoutLookup: 1, wrongWithoutLookup: 1, wrongAfterLookup: 1, abstain: 1, missing: 1, byScope: { said: 3, tools: 0, runs: 0 } });
   expect(a.primary).toMatchObject({ answers: 2, lookups: 1, correct: 2, correctWithoutLookup: 1, wrongWithoutLookup: 0, missing: 0 });
-  expect(a.items.find(i => i.id === control && i.repeat === 1)).toMatchObject({ classification: "blocking", outcome: "wrong", lookup: true, scopes: { said: 0, tools: 1, runs: 0 } });
-  expect(b.overall).toMatchObject({ answers: 6, lookups: 6, lookupRate: 1, correct: 6, correctWithoutLookup: 0 });
-  // Without a witness the frozen scorer is inconclusive: reported as such, never as correct.
-  expect(c.overall).toMatchObject({ correct: 0, missing: 5, other: { inconclusive: 1 }, byScope: { runs: 1 } });
+  expect(a.items.find(i => i.id === exact && i.repeat === 1)).toMatchObject({ classification: "ratePass", outcome: "correct", lookupEvidence: "verified", lookup: true, scopes: { said: 2, tools: 0, runs: 0 } });
+  expect(b.overall).toMatchObject({ answers: 6, lookups: 6, lookupRate: 1, correct: 6, correctWithoutLookup: 0, byScope: { said: 2, tools: 2, runs: 2 } });
+  // Without a witness the frozen scorer is inconclusive; an unsettled probe is unverified, never "no lookup".
+  expect(c.overall).toMatchObject({ answers: 2, correct: 1, correctWithoutLookup: 0, correctLookupUnverified: 1, missing: 4, other: { inconclusive: 1 }, byScope: { runs: 1 },
+    lookups: 1, lookupRate: 1, lookupEvidence: { verified: 1, missing: 1, inconsistent: 0 } });
+  expect(c.items.find(i => i.id === exact && i.repeat === 2)).toMatchObject({ outcome: "correct", lookupEvidence: "missing", lookup: null, scopes: null });
   expect(classifyE2AbAnswer(answer(exact, 2, "Fictional response"), evaluator.keys.find(k => k.id === exact))).toBe("ratePass");
   expect(JSON.stringify(report)).not.toContain("Fictional other");
-  for (const bad of [{ ...arms, D: arms.A }, { A: arms.A, B: arms.B }, { ...arms, A: { ...arms.A, lookups: lookups("B", []) } },
-    { ...arms, A: { ...arms.A, lookups: lookups("A", [[exact, 1, 2]]) } }, { ...arms, B: { ...arms.B, answers: { ...arms.B.answers, answers: [...arms.B.answers.answers, answer(exact, 1, "x")] } } }])
+  // Inconsistent receipts: a call whose recorded scope contradicts its arguments, a lost entry, another arm's stream,
+  // a response without its call, or no receipts at all. None of them can read as "no lookup".
+  const evidence = (arm, receipts) => [...e2AbLookupEvidence(binding, arm, receipts).values()].map(e => e.status);
+  const relabeled = structuredClone(arms.B.receipts); relabeled.find(r => r.value.phase === "call").value.scope = "tools";
+  expect(evidence("B", relabeled)).toEqual(["inconsistent", "verified", "verified", "verified", "verified", "verified"]);
+  expect(evidence("B", arms.B.receipts.filter((_, i) => i !== 1))).toEqual(Array(6).fill("inconsistent"));
+  expect(evidence("A", arms.B.receipts)).toEqual(Array(6).fill("inconsistent"));
+  const orphan = structuredClone(arms.B.receipts); orphan.find(r => r.value.phase === "call").value.callId.sha256 = "0".repeat(64);
+  expect(evidence("B", orphan)[0]).toBe("inconsistent");
+  const unsettled = scoreE2HistoryAb({ historyAb: binding, evaluator, arms: { ...arms, A: { ...arms.A, receipts: [] } } }).arms[0];
+  expect(unsettled.overall).toMatchObject({ answers: 5, lookups: 0, lookupRate: null, lookupEvidence: { verified: 0, missing: 5 }, correctWithoutLookup: 0, correctLookupUnverified: 2, wrongWithoutLookup: 0, wrongLookupUnverified: 2 });
+  expect(readE2AbReceipts(join(root, "absent"))).toEqual([]);
+  // Omitted, the legacy receipt stream stays said-only and unsettled, byte for byte.
+  const legacy = await abReceipts(root, "B", [{ id: exact, repeat: 1, scopes: ["said", "tools", "runs"] }], { allScopes: false, name: "legacy" });
+  expect(legacy.map(r => [r.value.phase, Object.hasOwn(r.value, "scope"), Object.hasOwn(r.value, "tool")])).toEqual([["call", false, false], ["response", false, false]]);
+  for (const bad of [{ ...arms, D: arms.A }, { A: arms.A, B: arms.B }, { ...arms, A: { ...arms.A, receipts: undefined } },
+    { ...arms, B: { ...arms.B, answers: { ...arms.B.answers, answers: [...arms.B.answers.answers, answer(exact, 1, "x")] } } }])
     expect(() => scoreE2HistoryAb({ historyAb: binding, evaluator, arms: bad })).toThrow("E2_SCORING_INVALID");
   expect(() => scoreE2HistoryAb({ historyAb: { ...binding, rows: ["fictional-missing-key"], primary: [] }, evaluator, arms })).toThrow("E2_SCORING_INVALID");
 });
@@ -430,7 +548,13 @@ it("executes all three arms in one guarded run from the frozen snapshot through 
     expect(JSON.stringify(body)).not.toContain("### Conversation continuity pack");
     expect(tools.map(t => [t.name.endsWith(contract.toolName), hash(t.description)])).toEqual([[true, contract.description.sha256]]);
     const output = body.input.find(item => item.type === "function_call_output");
-    if (output) expect(output.output).toContain('"action":"search"');
+    // Lookups read retained evidence from the relocated copy of the frozen store.
+    if (output) { expect(output.output).toContain('"action":"search"'); expect(output.output).toMatch(/"count":[1-9]/u); }
+  }
+  for (const arm of E2_AB_ARMS) {
+    const phase = JSON.parse(await readFile(join(f.args.outputRoot, "work", `history-ab-${arm}`, "history-ab.json")));
+    expect(phase.relocation).toMatchObject({ relocated: true, metadata: 1 }); expect(phase.history).toEqual({ warnings: 0, codes: {} });
+    await expect(readFile(join(f.args.outputRoot, "work", `history-ab-${arm}`, "lookups.json"))).rejects.toMatchObject({ code: "ENOENT" });
   }
   // The frozen tree is unchanged and each arm restored its own copy under the run's output root.
   await assertE2AbSnapshot(f.ab.binding);
@@ -442,7 +566,7 @@ it("executes all three arms in one guarded run from the frozen snapshot through 
   expect(err).toEqual([]);
   const score = JSON.parse(await readFile(join(scoreOutput, "ab-score.json")));
   for (const arm of score.arms) {
-    expect(arm.overall).toMatchObject({ answers: 4, lookups: 2, lookupRate: 0.5, correct: 2, correctWithoutLookup: 0, wrongWithoutLookup: 2, wrongAfterLookup: 0, abstain: 0, missing: 0, byScope: { said: 2 } });
+    expect(arm.overall).toMatchObject({ answers: 4, lookups: 2, lookupRate: 0.5, lookupEvidence: { verified: 4, missing: 0, inconsistent: 0 }, correct: 2, correctWithoutLookup: 0, wrongWithoutLookup: 2, wrongAfterLookup: 0, abstain: 0, missing: 0, byScope: { said: 2 } });
     expect(arm.primary).toMatchObject({ answers: 2, lookups: 2, correct: 2 });
   }
   expect(JSON.stringify(score)).not.toContain("Fictional other");

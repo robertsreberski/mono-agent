@@ -43,8 +43,18 @@ function metadata(text) {
   if (typeof body.chunk === "string") result.chunkBytes = Buffer.byteLength(body.chunk);
   return result;
 }
-export function createE2ProbeReceipts({ output, slotId, registrationSha256, noteProgressGap = () => {}, enabled = true }) {
-  let binding, requestContext, requestOrdinal = 0, ordinal = 0, progressGap = 0, queue = Promise.resolve(), capped = false;
+// Lookup scope of one offered History call; ConversationHistory is always said.
+function lookupScope(name, input) {
+  return historyCallScope(name, input) ?? (typeof name === "string" && name.endsWith("__ConversationHistory") ? "said" : undefined);
+}
+/**
+ * `allScopes` (pack-withheld A/B only) captures every History scope and the
+ * ConversationHistory surface, names the tool and scope on each call, and closes
+ * every probe with a `settled` receipt so an absent lookup is provable, not inferred.
+ * Omitted, the said-only receipt stream is byte-identical.
+ */
+export function createE2ProbeReceipts({ output, slotId, registrationSha256, noteProgressGap = () => {}, enabled = true, allScopes = false }) {
+  let binding, requestContext, requestOrdinal = 0, ordinal = 0, progressGap = 0, queue = Promise.resolve(), capped = false, published = { calls: 0, responses: 0 };
   const calls = new Map();
   function gap() {
     progressGap = Math.min(4096, noteProgressGap() ?? progressGap + 1);
@@ -57,7 +67,12 @@ export function createE2ProbeReceipts({ output, slotId, registrationSha256, note
     queue = queue.then(() => writeE2ProbeReceipt(output, entry, value)).catch(() => { gap(); });
   }
   return {
-    begin(value) { binding = { slotId, ...(registrationSha256 ? { registrationSha256 } : {}), ...value }; requestOrdinal = 0; calls.clear(); },
+    begin(value) { binding = { slotId, ...(registrationSha256 ? { registrationSha256 } : {}), ...value }; requestOrdinal = 0; calls.clear(); published = { calls: 0, responses: 0 }; },
+    // A/B only: the probe's closing receipt, published after its last host event.
+    settle() {
+      if (!enabled || !binding || !allScopes) return;
+      publish({ schema: "continuity-e2-probe-receipt-v1", phase: "settled", ...binding, requests: requestOrdinal, calls: published.calls, responses: published.responses, unanswered: calls.size });
+    },
     observeRequest(context) {
       if (!enabled || !binding) return;
       requestOrdinal++; requestContext = undefined;
@@ -68,14 +83,15 @@ export function createE2ProbeReceipts({ output, slotId, registrationSha256, note
       if (!enabled || !binding) return;
       try {
         for (const part of event.message?.content ?? []) {
-          if (event.type === "assistant" && part.type === "tool_use" && (part.name === "ConversationHistory" || part.name?.endsWith("__ConversationHistory") || historyCallScope(part.name, part.input) === "said")) {
-            const call = { ...binding, requestOrdinal, ...(requestContext ? { requestContext } : {}), callId: bounded(String(part.id), 1024), arguments: bounded(JSON.stringify(part.input), E2_PROBE_RECEIPT_LIMITS.argumentsBytes) };
+          const scope = allScopes && event.type === "assistant" && part.type === "tool_use" ? lookupScope(part.name, part.input) : undefined;
+          if (event.type === "assistant" && part.type === "tool_use" && (scope !== undefined || part.name === "ConversationHistory" || part.name?.endsWith("__ConversationHistory") || historyCallScope(part.name, part.input) === "said")) {
+            const call = { ...binding, requestOrdinal, ...(requestContext ? { requestContext } : {}), ...(allScopes ? { tool: bounded(String(part.name), 256), scope } : {}), callId: bounded(String(part.id), 1024), arguments: bounded(JSON.stringify(part.input), E2_PROBE_RECEIPT_LIMITS.argumentsBytes) };
             // Bound retained call state too; the entry cap is shared by all probes.
             if (ordinal >= E2_PROBE_RECEIPT_LIMITS.entries) { publish({}); continue; }
-            calls.set(part.id, call);
+            calls.set(part.id, call); published.calls++;
             publish({ schema: "continuity-e2-probe-receipt-v1", phase: "call", ...call });
           } else if (event.type === "user" && part.type === "tool_result" && calls.has(part.tool_use_id)) {
-            const call = calls.get(part.tool_use_id); calls.delete(part.tool_use_id);
+            const call = calls.get(part.tool_use_id); calls.delete(part.tool_use_id); published.responses++;
             const text = responseText(part.content);
             publish({ schema: "continuity-e2-probe-receipt-v1", phase: "response", ...call, isError: part.is_error === true,
               response: bounded(text, E2_PROBE_RECEIPT_LIMITS.responseBytes), metadata: bounded(JSON.stringify(metadata(responseText(part.content, false))), E2_PROBE_RECEIPT_LIMITS.metadataBytes) });

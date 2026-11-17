@@ -2796,6 +2796,20 @@ protocol's lookup rounds and withdraws tools on the final request. A pack, or an
 unauthenticated summary claim, left in a request refuses before sizing or
 sending; the controller re-checks the serialized body independently.
 
+The frozen tree pins its own absolute work root: the sidecar's `artifact_root`
+(which the shipping writer enforces), artifact references, run summaries and
+session headers. After the receipt-verified restore, the harness rewrites exactly
+those path pointers on the copy, proves no file in the copy still names the old
+root, and refuses (`E2_AB_RELOCATION_REFUSED`) anything else that carries it.
+The frozen snapshot is never written. Before the first request of every probe,
+the shipping writer must open the relocated store and the reader must report
+healthy continuity with retained records. Production History is fail-open, so
+every History warning (writer, sidecar, endpoint) or unavailable History result
+is latched rather than thrown: a latched degradation refuses the next request
+and voids the probe (`E2_HISTORY_DEGRADED`). Restoring at the frozen run's
+original root is not used: that directory belongs to the committed run's own
+evidence, and the authorization requires a disjoint output root.
+
 | Arm | Surface | Description |
 |---|---|---|
 | `A` | split `ConversationHistory`, default soul | shipping `ConversationHistory` text |
@@ -2805,7 +2819,10 @@ sending; the controller re-checks the serialized body independently.
 The description variant is an internal harness option threaded to the shipping
 `History` server; there is no config key. Each arm's surface, soul digests,
 tool name and offered description bytes (SHA-256 and length) are recomputed
-from the bound build, pinned in the binding and asserted on every offered tool.
+from the bound build, pinned in the binding and asserted on every offered tool,
+by the probe route and again by the controller: each A/B hold carries its
+registered arm's description digest and the serialized body must offer exactly
+those bytes.
 
 ```sh
 # Content-free binding: frozen replay record, snapshot tree, row ids, arms
@@ -2839,13 +2856,18 @@ no-cache aggregate plus the largest single reservation (`minimumCapUnits`);
 retry exposure is reported separately. Paid entry must pass
 `--replay-arm history-ab`; no surface selector applies.
 
-Each phase writes `answers.json`, `lookups.json` and an informational frozen
-`score.json`. `ab-score --binding FILE --run DIR --keys FILE --output NEW_DIR`
-classifies every answer with the frozen `scoreE2` on that single answer
-(`ratePass` correct, `blocking` confident wrong, `rateMiss` abstain) and crosses
-it with lookups by scope. It reports, per arm, overall and for the primary
-subset: lookup rate, correct, wrong without lookup, wrong after lookup, abstain
-and correct without lookup (a contamination flag). **The A/B is observational,
+Each phase writes `answers.json`, an informational frozen `score.json` and its
+probe receipts. A/B receipts cover every offered scope (`History` said, tools
+and runs, and `ConversationHistory`), name the tool and scope on each call, and
+close every probe with a `settled` receipt. `ab-score --binding FILE --run DIR
+--keys FILE --output NEW_DIR` classifies every answer with the frozen `scoreE2`
+on that single answer (`ratePass` correct, `blocking` confident wrong,
+`rateMiss` abstain) and crosses it with lookups derived only from the validated
+receipt stream for that arm, row and repeat. An item whose receipts are missing
+or inconsistent is reported as unverified, never as "no lookup". It reports, per
+arm, overall and for the primary subset: lookup evidence, lookup rate, correct,
+wrong without lookup, wrong after lookup, abstain and correct without lookup (a
+contamination flag). **The A/B is observational,
 `qualification: false`, never the release gate.** Omitting the mode leaves every
 existing registration, policy, schedule, estimate and CLI path unchanged.
 
