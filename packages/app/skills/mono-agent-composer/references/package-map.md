@@ -185,3 +185,14 @@ retired in 0.21.0 and are rejected at load with the replacement named. Tier
 aliases (`haiku`, `sonnet`, `opus`) are not model ids; use an exact model id.
 
 Provider credentials belong in the provider/runtime environment, not in committed config.
+
+### Opt-in unified history
+
+Set `tools.history.unified: true` to replace the three app-owned history tools
+with `History` on `mono-agent-history`. Default false. Required `scope` is `said`,
+`tools` or `runs`; the existing readers/storage are unchanged. Allowing `History`
+grants all scopes; legacy tool names and snake_case/MCP/server-wildcard spellings
+remain policy aliases for their scope. Config old-name denies remove one scope,
+while request-level denies fail closed over the frozen aliases. The default soul
+and memory recovery hints switch only in unified mode; custom souls are not
+rewritten (doctor warns). Children retain their existing tool surface.

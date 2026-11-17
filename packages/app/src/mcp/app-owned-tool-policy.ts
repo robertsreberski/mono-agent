@@ -5,6 +5,7 @@ export const APP_OWNED_MCP_SERVERS: Readonly<Record<string, readonly string[]>> 
   "mono-agent-conversation-history": ["ConversationHistory"],
   "mono-agent-session-history": ["SessionHistory"],
   "mono-agent-run-history": ["RunHistory"],
+  "mono-agent-history": [],
   "mono-agent-memory-journal": [],
   "mono-agent-memory-write": [],
   "mono-agent-provider-usage": [],
@@ -22,7 +23,7 @@ export const APP_OWNED_MCP_SERVERS: Readonly<Record<string, readonly string[]>> 
  * only at app factories, never by guessing ownership from a discovered name.
  * Legacy history aliases are bare-only; adapter aliases also accept MCP spelling.
  */
-export function appOwnedMcpServerSpec(serverName: string, spec: Record<string, unknown>): Record<string, unknown> {
+export function appOwnedMcpServerSpec(serverName: string, spec: Record<string, unknown>, policyAliases?: Readonly<Record<string, readonly string[]>>): Record<string, unknown> {
   if (!Object.hasOwn(APP_OWNED_MCP_SERVERS, serverName)) return spec;
   const aliases: Record<string, string[]> = {};
   for (const [legacy, canonical] of Object.entries(LEGACY_TOOL_ALIASES)) {
@@ -33,5 +34,6 @@ export function appOwnedMcpServerSpec(serverName: string, spec: Record<string, u
   if (serverName === "mono-agent-reply-artifacts") aliases.PublishReplyFile = ["publish_reply_file"];
   // Mutate only this freshly created spec: spreading would drop existing
   // non-enumerable sandbox/private-capability metadata.
-  return Object.assign(spec, { appOwnedTools: { version: 1, aliases } });
+  const frozenAliases = Object.freeze(Object.fromEntries(Object.entries(policyAliases ?? aliases).map(([name, values]) => [name, Object.freeze([...values])])));
+  return Object.assign(spec, { appOwnedTools: Object.freeze({ version: 1, aliases: frozenAliases }) });
 }

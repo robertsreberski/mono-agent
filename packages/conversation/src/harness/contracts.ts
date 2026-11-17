@@ -316,6 +316,8 @@ export interface ConversationHarnessMcpRequestContextOptions {
 export interface ConversationHarnessOptions {
   readonly identityPath: string;
   readonly soulPath?: string;
+  /** App-selected default only; an explicit core/soul still wins. */
+  readonly defaultCore?: "legacy" | "unified";
   readonly skillsRoot?: string;
   readonly selectedSkills?: readonly string[];
   readonly skillMaxBytes?: number;

@@ -1446,3 +1446,18 @@ Abandoned switch billing states reject redelivered messages both when starting
 a switch and when authorizing an existing pending switch. This guard lasts only
 while those states are retained: a later completed switch garbage-collects old
 billing states. Pending messages are never queued or replayed.
+
+## Unified history surface (opt-in)
+
+With `tools.history.unified: true`, retained conversation evidence is retrieved
+through `History` with `scope: "said"`; managed-tool lifecycle evidence through
+`scope: "tools"`; and run settlement evidence through `scope: "runs"`. The flag
+defaults to false, leaving the existing tools and routing unchanged. No storage,
+retention or cursor migration is needed. Disabling or damaging continuity does
+not disable the independent tool-lifecycle and run-artifact readers.
+
+For isolated proactive recovery, start with `History {scope:"runs"}`, inspect
+a cancelled/interrupted candidate, and follow its exact tools-scope action with
+`includeIsolated: true`. Current-run and foreign-conversation restrictions remain.
+Evidence recovery never automatically resumes or reruns interrupted work.
+See [the unified reader](/tools/mcp/#opt-in-history-one-scoped-reader).

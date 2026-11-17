@@ -583,3 +583,29 @@ describe("MemoryJournal capability, policy, and routing separation", () => {
     await expect(extension.cleanup?.()).resolves.toBeUndefined();
   });
 });
+
+
+it("changes memory recovery guidance only in unified mode, never stored evidence", async () => {
+  const outputs: string[] = [];
+  for (const unifiedHistory of [undefined, false, true]) {
+    const recall = createMemoryRecallServer({ recall: async () => [], close: async () => {} }, { ...(unifiedHistory === undefined ? {} : { unifiedHistory }) });
+    const client = new Client({ name: "fictional-routing", version: "1" });
+    const [a, b] = InMemoryTransport.createLinkedPair(); await recall.connect(a); await client.connect(b);
+    const evidence = "Fictional journal quote names ConversationHistory verbatim.";
+    const journal = await connectJournal(fakeJournalStore([memoryRecord("fixture", { text: evidence })]), { runId: "fictional", ...(unifiedHistory === undefined ? {} : { unifiedHistory }) });
+    try {
+      const list = await client.listTools(), result = await client.callTool({ name: "MemoryRecall", arguments: { query: "fictional" } });
+      const journalList = await journal.client.listTools();
+      const journalResult = await journal.client.callTool({ name: "MemoryJournal", arguments: firstPageArguments() });
+      outputs.push(JSON.stringify({ list, result, journalList }));
+      const descriptions = [list.tools[0]!.description, journalList.tools[0]!.description].join("\n");
+      if (unifiedHistory) {
+        expect(descriptions).not.toMatch(/ConversationHistory|SessionHistory|RunHistory/u);
+        expect(descriptions).toContain('History with {scope:"runs"}');
+        expect(result.structuredContent).toMatchObject({ navigation: { relatedTools: [{ tool: "History", arguments: { scope: "runs" } }] } });
+        expect(journalResult.content).toEqual(expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining(evidence) })]));
+      } else expect(descriptions).toContain("RunHistory");
+    } finally { await client.close(); await recall.close(); await journal.close(); }
+  }
+  expect(outputs[0]).toBe(outputs[1]);
+});

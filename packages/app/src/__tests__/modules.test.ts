@@ -168,6 +168,8 @@ describe("known-tools", () => {
     expect(suggestToolName("read")).toBe("Read");
     expect(suggestToolName("BASH")).toBe("Bash");
     expect(suggestToolName("zzz")).toBeUndefined();
+    expect(suggestToolName("history")).toBeUndefined();
+    expect(isKnownToolName("History")).toBe(false);
   });
 });
 

@@ -328,3 +328,12 @@ it("assembles the unified prompt end to end with the app-owned availability", as
   expect(replay).not.toContain("Use SessionHistory");
   expect(replay).not.toContain("ConversationHistory search/get");
 });
+
+
+it("never advertises ConversationHistory when unified scopes are explicitly set", () => {
+  for (const scopes of [{ said: false, tools: true, runs: true }, { said: false, tools: false, runs: false }, { said: true, tools: true, runs: true }]) {
+    const gap = coverageGapMessage(true, undefined, scopes);
+    expect(gap).not.toContain("ConversationHistory");
+    expect(gap.includes('History search/get (scope "said")')).toBe(scopes.said);
+  }
+});

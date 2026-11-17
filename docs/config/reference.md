@@ -227,6 +227,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `tools.disallowedTools` | `string[]` | `--` | [] | `["Read","Grep"]` | Configures disallowedTools for the tools section. |
 | `tools.filesystem.readableRoots` | `string[]` | `--` | unset | `["/srv/shared/reference"]` | Extra roots for managed Read, Glob, and Grep while sandbox.mode is off. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled. |
 | `tools.filesystem.writableRoots` | `string[]` | `--` | unset | `["/srv/shared/output"]` | Extra roots for managed Write and Edit while sandbox.mode is off; writable roots are also readable. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled. |
+| `tools.history.unified` | `boolean` | `--` | false | `true` | Opt in to one read-only History tool with required said/tools/runs scope instead of the three legacy history tools. Default false; old tool names remain policy aliases for their scopes. Allowing History grants all scopes; denies win. |
 | `tools.mcpCallMaxTotalTimeoutMs` | `integer` | `--` | 2700000 | `2700000` | Configures mcpCallMaxTotalTimeoutMs for the tools section. |
 | `tools.mcpCallTimeoutMs` | `integer` | `--` | 120000 | `120000` | Configures mcpCallTimeoutMs for the tools section. |
 | `tools.mcpConfigPath` | `string` | `--` | unset | `example` | Configures mcpConfigPath for the tools section. |

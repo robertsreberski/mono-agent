@@ -400,6 +400,8 @@ export interface MonoAgentConfig {
       readonly readableRoots: readonly string[];
       readonly writableRoots: readonly string[];
     };
+    /** Opt-in unified History reader; absent means the split tools remain. */
+    readonly history?: { readonly unified: boolean };
     /** BuJo-only, owner-web dated conversation evidence; absent means disabled. */
     readonly conversationSearch?: { readonly datedSnippets: boolean };
     /** Opt-in local desktop control via the separately installed cua-driver. */

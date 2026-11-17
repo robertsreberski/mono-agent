@@ -118,6 +118,16 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
     ? undefined
     : jsonChoice<SkillDisclosureMode>(contextJson.skillDisclosure, "context.skillDisclosure", ["index", "full"], "full");
   const memory = readMemoryConfig(json.memory, cwd);
+  const historyJson = toolsJson?.history;
+  if (historyJson !== undefined && (typeof historyJson !== "object" || historyJson === null || Array.isArray(historyJson)
+    || Object.keys(historyJson).some(key => key !== "unified"))) {
+    throw new MonoAgentConfigError("invalid_json", "Expected tools.history to contain only unified.", { path: "tools.history" });
+  }
+  const rawUnifiedHistory = (historyJson as Record<string, unknown> | undefined)?.unified;
+  if (rawUnifiedHistory !== undefined && typeof rawUnifiedHistory !== "boolean") {
+    throw new MonoAgentConfigError("invalid_json", "Expected a boolean.", { path: "tools.history.unified" });
+  }
+  const unifiedHistory = rawUnifiedHistory === true;
   const conversationSearchJson = toolsJson?.conversationSearch;
   if (conversationSearchJson !== undefined && (typeof conversationSearchJson !== "object" || conversationSearchJson === null
     || Array.isArray(conversationSearchJson) || Object.keys(conversationSearchJson).some((key) => key !== "datedSnippets"))) {
@@ -272,6 +282,7 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
             writableRoots: fileToolWritableRoots,
           },
         }),
+    ...(unifiedHistory ? { history: { unified: true } } : {}),
     ...(datedSnippets ? { conversationSearch: { datedSnippets: true } } : {}),
     ...(computerUse === undefined ? {} : { computerUse }),
     ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),

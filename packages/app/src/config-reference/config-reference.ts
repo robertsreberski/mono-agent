@@ -1427,6 +1427,7 @@ function typeFromKind(kind: JsonEnvFieldSpec["kind"], id: string): ConfigReferen
 }
 
 function inferType(id: string): ConfigReferenceType {
+  if (id === "tools.history.unified") return "boolean";
   if (id === "tools.conversationSearch.datedSnippets") return "boolean";
   if (id === "runtime.model") return "string | object";
   if (id === "artifacts.replyFiles.maxStorageBytes") return "integer | unlimited";
@@ -1502,6 +1503,7 @@ function defaultLabelFor(id: string): string {
 
 function defaultValueFor(id: string): SettingsJsonValue | undefined {
   const defaults: Record<string, SettingsJsonValue> = {
+    "tools.history.unified": false,
     "tools.conversationSearch.datedSnippets": false,
     "runtime.fallbacks": [],
     subagents: { enabled: false },
@@ -1746,6 +1748,7 @@ function descriptionFor(id: string): string {
   if (id === "memory.capture.intentLifecycle") return "BuJo capture-only, default-off owner-supported intention state and inclusive civil end proposals. Reuses note status and due=; state changes supersede, never infer completion from a date. Tasks stay authoritative in the task app.";
   if (id === "memory.recall.intentExpiry") return "BuJo-only, default-off: exclude all dated notes and done/dropped notes from automatic sections, including unexpired/ambiguous legacy dates. Deliberate recall interprets reviewed note due= as an inclusive civil end. Requires reviewed curate audit before enablement; independent of intentLifecycle; no backfill.";
   if (id === "memory.recall.recency") return "BuJo-only, default-off bounded secondary recency ranking for relevance-qualified deliberate event/unlabelled-note hits: at most 0.02, 30-day half-life. Facts/preferences never decay; base scores, floors and automatic retrieval are unchanged.";
+  if (id === "tools.history.unified") return "Opt in to one read-only History tool with required said/tools/runs scope instead of the three legacy history tools. Default false; old tool names remain policy aliases for their scopes. Allowing History grants all scopes; denies win.";
   if (id === "tools.conversationSearch.datedSnippets") return "Opt in to dated SearchConversations message evidence on verified owner web turns. Requires local BuJo memory; disabled by default. Telegram and the console UI keep legacy search. No new index or stored history fields.";
   if (id === "memory.capture.cron") return "Set false to skip automatic capture and raw audit for host-identified cron turns (including run-now); other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.";
   if (id === "memory.capture.webhook") return "Set false to skip automatic capture and raw audit for host-identified webhook turns; other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.";

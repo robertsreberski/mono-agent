@@ -128,6 +128,7 @@ export type RunArtifactCommitHook = (event: RunArtifactCommitEvent) => void | Pr
 export interface ConfiguredAgentInternalHooks {
   /** Reuse the controller-created endpoint; standalone configured harnesses construct their own. */
   /** null explicitly suppresses the standalone fallback on unsupported controller routes. */
+  readonly historyExtension?: NonNullable<ConfiguredConversationHarnessOptions["runtimeOptionsForRequest"]> | null;
   readonly conversationHistoryExtension?: NonNullable<ConfiguredConversationHarnessOptions["runtimeOptionsForRequest"]> | null;
   /**
    * App-owned hook invoked after the local JSONL running/terminal summary is

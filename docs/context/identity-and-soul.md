@@ -131,3 +131,16 @@ The fallback is **the default soul text, not your identity**. Leaving out `soulP
 - [Context assembly](/context/assembly/) — full order and sizing of the prompt context
 - [Config blueprint](/config/blueprint/) — the annotated `mono-agent.config.json`
 - [Environment variables](/config/env-vars/) — every `MONO_AGENT_*` override
+
+## Unified history routing
+
+When `tools.history.unified: true` and no custom soul is configured, the app
+selects a default soul that routes to the required `History` scopes: `said`,
+`tools` and `runs`, when available. The flag is false by default and the legacy
+default soul is unchanged.
+
+A custom `context.soulPath` is passed through unchanged. Update references to
+`ConversationHistory`, `SessionHistory` and `RunHistory` to the corresponding
+`History` scopes before opting in. Doctor warns about those legacy names in a
+custom soul and shows the policy mapping. A programmatically supplied custom
+core also wins over the selected default.

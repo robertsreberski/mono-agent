@@ -37,7 +37,7 @@ export interface ContinuityPack {
  * does when ConversationHistory is unavailable. */
 export function coverageGapMessage(conversationHistoryAvailable: boolean, degradedReason: string | undefined, historyScopes?: UnifiedHistoryAvailability): string {
   const unifiedRetrieval = historyScopes?.said === true;
-  const retrievalMaySucceed = (conversationHistoryAvailable || unifiedRetrieval)
+  const retrievalMaySucceed = (historyScopes === undefined ? conversationHistoryAvailable : unifiedRetrieval)
     && !["purge_pending", "source_changed", "unavailable", "boundary_unavailable"].includes(degradedReason ?? "");
   return retrievalMaySucceed
     ? unifiedRetrieval

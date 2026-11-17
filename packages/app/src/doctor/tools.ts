@@ -1,7 +1,7 @@
 import { assertComputerUseServerNameAvailable, COMPUTER_USE_SERVER_NAME } from "../host/computer-use.js";
 import { persistentSubagentsEnabled, subagentInstancesRoot } from "../subagents/subagent-instances.js";
 import { constants } from "node:fs";
-import { access, stat } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { isIP } from "node:net";
 import { resolve } from "node:path";
 import {
@@ -27,6 +27,19 @@ export async function toolsSection(config: MonoAgentConfig, input: ValidateMonoA
   const details: string[] = [];
   let status: ValidationStatus = "ok";
 
+  if (config.tools.history?.unified === true) {
+    details.push('Unified History policy: ConversationHistory → said; SessionHistory → tools; RunHistory → runs. Allowing History grants all scopes; denies win.');
+    if (config.context.soulPath !== undefined) {
+      try {
+        const soul = await readFile(config.context.soulPath, "utf8");
+        const old = ["ConversationHistory", "SessionHistory", "RunHistory"].filter(name => soul.includes(name));
+        if (old.length > 0) {
+          status = "waiting";
+          details.push(`Custom soulPath mentions legacy history tools (${old.join(", ")}); update routing to History scopes. Custom soul text is not rewritten.`);
+        }
+      } catch { /* The context section owns missing/unreadable soul diagnostics. */ }
+    }
+  }
   const allowedTools = config.tools.allowedTools;
   const allowAll = isAllowAllTools(allowedTools);
   if (allowAll) {
@@ -53,6 +66,15 @@ export async function toolsSection(config: MonoAgentConfig, input: ValidateMonoA
     details.push(`Allowed tools: ${allowedTools.join(", ")}.`);
     let mcpNoteAdded = false;
     for (const name of allowedTools) {
+      // History is an opt-in parent-only tool, never a generally known child
+      // tool or typo suggestion. MCP-prefixed names remain server-owned.
+      if (name === "History") {
+        if (config.tools.history?.unified !== true) {
+          status = "waiting";
+          details.push(`${name} requires tools.history.unified: true; the unified history tool will not be offered.`);
+        }
+        continue;
+      }
       const renamedTo = renamedToolName(name);
       if (renamedTo !== undefined) {
         // A renamed built-in has no alias, so the old entry grants nothing.

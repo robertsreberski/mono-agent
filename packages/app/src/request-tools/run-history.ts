@@ -62,7 +62,7 @@ const NESTED_RUN_HISTORY_RESULT_OMISSION =
   "[nested RunHistory result omitted; inspect the referenced run directly]";
 const CURSOR_VERSION = 1;
 
-const RUN_HISTORY_INPUT_SCHEMA = z.object({
+export const RUN_HISTORY_INPUT_SCHEMA = z.object({
   /** Optional for the agent-friendly shorthand forms documented below. */
   action: z.enum(["list", "search", "inspect"]).optional(),
   query: z.string().optional(),
@@ -98,6 +98,7 @@ interface RunHistoryNavigation {
 }
 
 interface RunHistoryBinding {
+  readonly unifiedHistory?: boolean;
   readonly artifactDir: string;
   /** Request conversation id. Daily rollover buckets are ignored when configured. */
   readonly conversationId: string;
@@ -159,7 +160,7 @@ export function createRunHistoryRuntimeExtension(
   });
 }
 
-async function handleRunHistoryRequest(binding: RunHistoryBinding, input: RunHistoryInput) {
+export async function handleRunHistoryRequest(binding: RunHistoryBinding, input: RunHistoryInput) {
   const inferredAction: RunHistoryAction = input.action
     ?? (input.runId !== undefined || input.run_id !== undefined
       ? "inspect"
@@ -394,7 +395,7 @@ async function loadInspectableRun(
   return {
     kind: "ok",
     summary: detail.summary,
-    projection: projectRun(detail.summary, detail.events, binding.artifactDir),
+    projection: projectRun(detail.summary, detail.events, binding.artifactDir, binding.unifiedHistory),
     warnings: [
       ...(artifactWarning ? [ARTIFACT_WARNING] : []),
       ...(eventInputTruncated ? [EVENT_INPUT_TRUNCATED_WARNING] : []),
@@ -1060,6 +1061,7 @@ function projectRun(
   summary: RecordedRunListItem,
   events: readonly RecordedRunEvent[],
   artifactDir: string,
+  unifiedHistory = false,
 ): ProjectedRun {
   const timeline: ProjectedTimelineEntry[] = [];
   const callsById = new Map<string, ProjectedToolEntry>();
@@ -1138,7 +1140,8 @@ function projectRun(
               [RUN_HISTORY_TOOL_NAME, RUN_HISTORY_LEGACY_TOOL_NAME],
               requestScopedNestedResult(linked.name, ["ConversationHistory", "conversation_history"],
                 boundedProjectedValue(normalizeToolResultContent(block.content, artifactDir), artifactDir)),
-              NESTED_RUN_HISTORY_RESULT_OMISSION,
+              unifiedHistory ? "[nested history-tool result omitted; inspect the referenced source directly]" : NESTED_RUN_HISTORY_RESULT_OMISSION,
+              unifiedHistory,
             ),
             isError: block.is_error === true,
             ...(timestamp === undefined ? {} : { timestamp }),

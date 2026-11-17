@@ -71,6 +71,7 @@ export async function prepareHarnessContext(
           runId: contextOptions.turnId,
         }) === true,
       }),
+      ...(options.defaultCore === undefined ? {} : { defaultCore: options.defaultCore }),
       ...(options.soulPath === undefined ? {} : { soulPath: options.soulPath }),
       ...(history.length === 0 ? {} : { history }),
       ...(options.skillsRoot !== undefined
