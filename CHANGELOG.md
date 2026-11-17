@@ -13,7 +13,10 @@
 
 - Add the opt-in `History` tool behind `tools.history.unified` (default false),
   with required `said`, `tools` and `runs` scopes, legacy-name policy aliases,
-  and mode-aware history guidance and diagnostics.
+  and mode-aware history guidance and diagnostics. The unified `said` scope now
+  carries imperative lookup directives (check `History` for exact earlier
+  values, read hits before reformulating, finish cursors, page before claiming
+  insufficiency).
 
 - Add the internal unified-`History` conversation seams (scope-aware text
   variants, default-soul selection, app-owned name recognition). Behaviour is
