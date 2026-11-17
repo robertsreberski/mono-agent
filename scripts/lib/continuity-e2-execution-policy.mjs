@@ -335,7 +335,7 @@ export const e2ExecutionPolicy = Object.freeze({
     need(slot && planned && slot.slotId === planned.slotId && [...protocol.policy.SLOT_TERMINALS, null].includes(slot.terminal)
       && [null, 0, 1].includes(slot.score), "e2_receipt_invalid");
     const spend = accountRun([slot]);
-    const row = { ...historySurfaceBinding(state.pilot?.registration?.historySurface), ...(planned.arm === "baseline" ? { replayArm: "baseline", qualification: false } : {}), compactionRefusals: e2RefusalCounts([slot]), retries: e2RetryCounts([slot]), ...(slot.diagnostics && Object.keys(slot.diagnostics).length ? { diagnostics: slot.diagnostics } : {}), schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
+    const row = { ...historySurfaceBinding(state.historySurface), ...(planned.arm === "baseline" ? { replayArm: "baseline", qualification: false } : {}), compactionRefusals: e2RefusalCounts([slot]), retries: e2RetryCounts([slot]), ...(slot.diagnostics && Object.keys(slot.diagnostics).length ? { diagnostics: slot.diagnostics } : {}), schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
       score: ["completed", "wrong"].includes(slot.terminal) ? slot.score : null,
       qualityMeasured: state.schema === protocol.policy.REAL_CONTROLLER && slot.holds.length > 0 && ["completed", "wrong"].includes(slot.terminal) && slot.score !== null,
       calls: { admitted: slot.holds.length, consumed: slot.holds.filter(h => h.consumed).length, settled: slot.holds.filter(h => h.settlement).length,
@@ -354,7 +354,7 @@ export const e2ExecutionPolicy = Object.freeze({
       need(count(r.position) && r.position < visited && !seen.has(r.position) && digest(r) === digest(this.slotReceipt(state, r.position, accountRun, protocol)), "e2_receipt_invalid"); seen.add(r.position);
     }
     const spend = accountRun(state.slots);
-    return { ...historySurfaceBinding(state.pilot?.registration?.historySurface), ...(state.schedule.some(p => p.arm === "baseline") ? { replayArm: "baseline", qualification: false } : {}), compactionRefusals: e2RefusalCounts(state.slots), retries: e2RetryCounts(state.slots), schema: protocol.schemas.report, authorization: state.schema === protocol.policy.REAL_CONTROLLER, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-validation" : "faux-only",
+    return { ...historySurfaceBinding(state.historySurface), ...(state.schedule.some(p => p.arm === "baseline") ? { replayArm: "baseline", qualification: false } : {}), compactionRefusals: e2RefusalCounts(state.slots), retries: e2RetryCounts(state.slots), schema: protocol.schemas.report, authorization: state.schema === protocol.policy.REAL_CONTROLLER, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-validation" : "faux-only",
       qualityMeasured: receipts.some(r => r.qualityMeasured), schedule: { planned: state.schedule.length, visited, missing: visited - seen.size, remaining: state.schedule.length - visited }, stop: state.stop,
       costs: { unitsPerUSD: protocol.policy.USD_UNITS.toString(), capUnits: state.capUnits, ...Object.fromEntries(Object.entries(spend).filter(([key]) => key.endsWith("Units"))) },
       phases: [...receipts].sort((a, b) => a.position - b.position).map(({ slotId: _slotId, sha256: _sha256, ...r }) => r) };

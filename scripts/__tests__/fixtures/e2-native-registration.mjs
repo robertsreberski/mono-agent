@@ -1,3 +1,4 @@
+import { historySurfaceBinding } from "../../lib/continuity-e2-history.mjs";
 import { E2_PROTECTED_SIZING } from "../../lib/continuity-e2-protected.mjs";
 import { E2_RETRY_POLICY } from "../../lib/continuity-e2-retry.mjs";
 // Fictional source/build/account artifacts, exclusively beneath the caller's temporary root.
@@ -7,7 +8,7 @@ import { digest } from "../../lib/continuity-dataset.mjs";
 import { digest as hash } from "../../lib/continuity-recorded-schema.mjs";
 import { ROOT } from "../../lib/continuity-observation-input.mjs";
 import { E2_REGISTRATION_SCHEMA, E2_PLAN_SCHEMA, E2_ASSUMPTIONS, E2_AUTHORIZATION_SCHEMA } from "../../lib/continuity-e2-policy.mjs";
-import { E2_TOOL_POLICIES, e2CodeDigest, e2PhaseSchedule } from "../../lib/continuity-e2-registration.mjs";
+import { e2ToolPolicies, e2CodeDigest, e2PhaseSchedule } from "../../lib/continuity-e2-registration.mjs";
 import { e2AuthorizationBindings } from "../../lib/continuity-e2-authorization.mjs";
 import { loadE2Catalog } from "../../lib/continuity-e2-pricing.mjs";
 import { shippingSoul } from "../../lib/continuity-e2-models.mjs";
@@ -20,7 +21,7 @@ const save = (path, value) => writeFile(path, JSON.stringify(value), { mode: 0o6
 // budget also covers C1's pre-controller sizing (62s end-to-end when throttled).
 export const E2_NATIVE_TEST_TIMEOUT_MS = 90_000;
 export const E2_NATIVE_DEADLINES = Object.freeze({ requestDeadlineMs: 30_000, phaseDeadlineMs: 30_000, childWatchdogMs: 30_000, runDeadlineMs: 60_000 });
-export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000000000000", rows = null, replay = false, probeLookupRounds = 1, deadlines = E2_NATIVE_DEADLINES } = {}) {
+export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000000000000", rows = null, replay = false, probeLookupRounds = 1, deadlines = E2_NATIVE_DEADLINES, historySurface } = {}) {
   const home = join(root, "home"); await mkdir(home, { mode: 0o700 });
   const snapshots = join(root, "snapshots"); await mkdir(snapshots, { mode: 0o700 });
   const trace = await registrationTrace(snapshots);
@@ -33,6 +34,7 @@ export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000
   const evaluator = { schema: "continuity-recorded-evaluator-keys-v1", keys: replay ? [{ id: "fictional-native-item", checkpoint: "B1", kind: "exact", expected: "Fictional response", availability: "available", rate: true, dependsOnSteps: [], forbidden: [] }] : [] };
   const probes = await bind("probes", questions), keys = await bind("keys", evaluator);
   component.sizing.arm = arm;
+  Object.assign(component.sizing, historySurfaceBinding(historySurface));
   if (rows) component.sizing.variants[0].requests = rows.map((row, ordinal) => {
     const original = component.sizing.variants[0].requests.find(r => r.paidRole === row.role && r.model === row.model) ?? component.sizing.variants[0].requests.find(r => r.paidRole === row.role);
     return { ...original, role: row.role, paidRole: row.role, model: row.model, ordinal, phase: row.phase ?? "whole" };
@@ -43,7 +45,7 @@ export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000
     const previousHome = process.env.HOME;
     try {
       process.env.HOME = home;
-      component.sizing = await runE2Sizing({ source: trace.source, protocol: trace.protocol, output: join(root, "faux-sizing"), summary: "faux-short", onContext: () => sizingHomes.push(process.env.HOME) });
+      component.sizing = await runE2Sizing({ source: trace.source, protocol: trace.protocol, historySurface, output: join(root, "faux-sizing"), summary: "faux-short", onContext: () => sizingHomes.push(process.env.HOME) });
     } finally { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; }
   }
   // These are deliberately metadata-only synthetic contracts for transport tests;
@@ -70,14 +72,14 @@ export async function e2NativeFixture(root, { arm = "pressure", capUnits = "1000
         }))) } });
   }
   const sizing = []; for (const [i, record] of records.entries()) sizing.push(await bind(`sizing-${i}`, record));
-  const catalog = await loadE2Catalog(), soul = await shippingSoul();
+  const catalog = await loadE2Catalog(), soul = await shippingSoul(historySurface);
   const probeCounts = trace.protocol.branches.flatMap(b => b.checkpoints).map((_, checkpoint) => ({ checkpoint, questions: replay && checkpoint === 0 ? 1 : 0, lookupRounds: trace.protocol.probeLookupRounds }));
-  estimateE2SizingSet({ protocol: trace.protocol, roles: component.roles, records, catalog, probeCounts });
-  const pilot = { schema: E2_REGISTRATION_SCHEMA, registration: {
+  estimateE2SizingSet({ protocol: trace.protocol, roles: component.roles, records, catalog, probeCounts, historySurface });
+  const pilot = { schema: E2_REGISTRATION_SCHEMA, registration: { ...historySurfaceBinding(historySurface),
     code: { path: ROOT, revision: "b".repeat(40), sha256: codeSha256 },
     build: { policy: "fresh-clean-head-agent-app-closure-v1", sourceHead: "b".repeat(40), command: ["pnpm", "--filter", "@mono-agent/app...", "run", "build"], packages: ["packages/app", "packages/turn"], outputRoots: ["packages/app/dist", "packages/turn/dist"], outputSha256: "a".repeat(64), node: process.version },
     catalog, source, protocol, probes, keys, soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, roles: component.roles,
-    sizing, probeCounts, schedule: e2PhaseSchedule(trace.protocol, records, probeCounts), toolPolicies: E2_TOOL_POLICIES,
+    sizing, probeCounts, schedule: e2PhaseSchedule(trace.protocol, records, probeCounts), toolPolicies: e2ToolPolicies(undefined, historySurface),
   }, descriptor: { schema: E2_PLAN_SCHEMA, retryPolicy: E2_RETRY_POLICY, assumptions: E2_ASSUMPTIONS, capUnits, deadlines } };
   const outputRoot = join(root, "output"); await mkdir(outputRoot, { mode: 0o700 });
   const credentialPath = join(root, "credential.json"), account = "fictional-e2-account";

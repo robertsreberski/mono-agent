@@ -61,6 +61,13 @@ describe.sequential("four replay alternatives", () => {
       { cwd: ROOT, env: { ...process.env, HOME: root, NODE_OPTIONS: "" }, maxBuffer: 1024 * 1024 });
     records.push(JSON.parse(await readFile(join(output, "sizing.json"), "utf8")));
   }, 180000);
+  it("propagates unified selection through the clean sizing child and protected soul assertions", async () => {
+    const output = join(root, "unified-protected");
+    await promisify(execFile)(process.execPath, ["scripts/continuity-e2.mjs", "size", "--source", input, "--protocol", join(input, "protocol.json"), "--output", output, "--summary", "protected-exact", "--history-surface", "unified"],
+      { cwd: ROOT, env: { ...process.env, HOME: root, NODE_OPTIONS: "" }, maxBuffer: 1024 * 1024 });
+    const record = JSON.parse(await readFile(join(output, "sizing.json"), "utf8")), soul = await sizingModels.shippingSoul("unified");
+    expect(record).toMatchObject({ historySurface: "unified", qualification: true, soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest } });
+  }, 180000);
   it("funds the count/size union within eight files", async () => {
     const catalog = await loadE2Catalog();
     expect(records.map(r => r.summary)).toEqual(E2_REPLAY_SCENARIOS);

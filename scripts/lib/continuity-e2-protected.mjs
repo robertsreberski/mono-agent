@@ -1,3 +1,4 @@
+import { e2HistorySurface } from "./continuity-e2-history.mjs";
 import { E2_PROTECTED_POLICY } from "./continuity-e2-summary-plan.mjs";
 // Key-blind fictional protected-history rehearsal. All inference is local faux.
 // Publication, cold admission, restart and summary preparation are shipping paths.
@@ -43,6 +44,7 @@ export async function rehearseE2Protected({ work, model, carrier, historySurface
     import("../../packages/turn/dist/execution/pi/compaction/compaction-driver.js"), import("../../packages/turn/dist/engine/retained-summary.js"),
     import("./continuity-e2-models.mjs"),
   ]);
+  const soul = await shippingSoul(historySurface);
   await mkdir(work, { recursive: true, mode: 0o700 });
   const historyRoot = join(work, "history"), sessionsRoot = join(work, "sessions"), id = "web:fictional-protected-sizing", sourceKey = `openai-codex:${model.id === "gpt-6.1-sol" ? "gpt-6-luna" : "gpt-6.1-sol"}`;
   // quotationBackgroundRepeats is an opt-in capacity control that sizes an
@@ -93,7 +95,7 @@ export async function rehearseE2Protected({ work, model, carrier, historySurface
       };
       const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
     } });
-    harness = createConversationHarness({ identityPath, cwd: work, historyStore: store, runtime, sessionsRoot,
+    harness = createConversationHarness({ identityPath, ...(e2HistorySurface(historySurface) === "unified" ? { defaultCore: soul.text } : {}), cwd: work, historyStore: store, runtime, sessionsRoot,
       model: { provider: model.provider, model: model.id, reference: `${model.provider}:${model.id}` }, session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true },
       toolHistory: { writer, reader, continuityEnabled: true, packEnabled: carrier === "quotation", logicalConversationId: x => x },
       runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: measuredModels, effort: "none", compaction: { enabled: false } },
@@ -108,7 +110,7 @@ export async function rehearseE2Protected({ work, model, carrier, historySurface
     const admission = raw.validator.retainedSummaryAdmission, active = await resolveRetainedSummaryAdmission(raw, access);
     need(admission?.kind === (carrier === "quotation" ? "retained_summary_admitted" : "reseed_predecessor_admitted") && active);
     await onAdmission({ raw, admission, active, turn, access });
-    const target = productionDefaults ? { ...faux.getModel(), ...model } : faux.getModel(), soul = await shippingSoul(historySurface);
+    const target = productionDefaults ? { ...faux.getModel(), ...model } : faux.getModel();
     const guarded = createRunDriver(raw, { model: target, systemPrompt: soul.text, tools: [], retainedSummaryAccess: access });
     let exact = !refusal || largeCarryFits, observerError;
     const h = { models: { completeSimple: async (_model, context, options) => {
