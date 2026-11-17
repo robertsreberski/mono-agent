@@ -40,5 +40,48 @@
       ]
     }
   },
-  "registrationDigest": "c8d8b273b361ddbc5a8ea7bc07f9c940e401126546b68004401097b614b8fcc3"
+  "registrationDigest": "c8d8b273b361ddbc5a8ea7bc07f9c940e401126546b68004401097b614b8fcc3",
+  "pilot": {
+    "schema": "fictional-base-registration",
+    "registration": {
+      "code": {
+        "path": "/fictional/repository",
+        "revision": "a9a4aff6bddb551d1b856f57a6980557c23451ec",
+        "sha256": "da104e4c4ca96cc8a63c9622407ebf02d7ce0a6470a9f4a05653a7bad4fc59c9"
+      },
+      "soul": {
+        "rawDigest": "a1050836c51d4492977078f95bc96c297c9b5c48a2f1867037c158d73e7f9270",
+        "normalizedDigest": "e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9"
+      },
+      "toolPolicies": {
+        "summary": [],
+        "replay": [
+          "ConversationHistory"
+        ],
+        "replayFinal": [],
+        "proof": [
+          "ConversationHistory"
+        ],
+        "cancelContinuation": [
+          "ConversationHistory",
+          "ProofSentinel"
+        ]
+      },
+      "roles": [
+        {
+          "role": "summary",
+          "model": "openai-codex:gpt-6.1-sol",
+          "maxInputTokens": 272000,
+          "maxOutputTokens": 128000,
+          "expectedOutputTokens": 512
+        }
+      ]
+    },
+    "descriptor": {
+      "capUnits": "999999999999"
+    }
+  },
+  "rawRegistration": "{\"schema\":\"fictional-base-registration\",\"registration\":{\"code\":{\"path\":\"/fictional/repository\",\"revision\":\"a9a4aff6bddb551d1b856f57a6980557c23451ec\",\"sha256\":\"da104e4c4ca96cc8a63c9622407ebf02d7ce0a6470a9f4a05653a7bad4fc59c9\"},\"soul\":{\"rawDigest\":\"a1050836c51d4492977078f95bc96c297c9b5c48a2f1867037c158d73e7f9270\",\"normalizedDigest\":\"e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9\"},\"toolPolicies\":{\"summary\":[],\"replay\":[\"ConversationHistory\"],\"replayFinal\":[],\"proof\":[\"ConversationHistory\"],\"cancelContinuation\":[\"ConversationHistory\",\"ProofSentinel\"]},\"roles\":[{\"role\":\"summary\",\"model\":\"openai-codex:gpt-6.1-sol\",\"maxInputTokens\":272000,\"maxOutputTokens\":128000,\"expectedOutputTokens\":512}]},\"descriptor\":{\"capUnits\":\"999999999999\"}}",
+  "rawRegistrationSha256": "3111836dc53d683a837e9b43d0be2c3e86b5ca60df4041f4a11fffbb50ed6933",
+  "canonicalPilotDigest": "badb8aa6e005c688f4347778247145308ef28ea7912f3d1dee820f4da3279488"
 }

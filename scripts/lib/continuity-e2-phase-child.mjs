@@ -34,14 +34,14 @@ export async function runE2AssignedPhase(a) {
     if (a.slot.kind === "replay") {
       const r = a.pilot.registration, { runE2Sizing } = await import("./continuity-e2-replay.mjs");
       const result = await runE2Sizing({ source: await boundJSON(r.source, true), protocol: await boundJSON(r.protocol), questions: await boundJSON(r.probes),
-        evaluator: await boundJSON(r.keys), output: base, summary: "real", replayArm: r.replayArm, paidAdapter: adapter });
+        evaluator: await boundJSON(r.keys), output: base, summary: "real", replayArm: r.replayArm, historySurface: r.historySurface, paidAdapter: adapter });
       outcome = { terminal: result.score === 0 ? "wrong" : "completed", score: result.score, refusalCode: null };
     } else {
       await mkdir(base, { recursive: true, mode: 0o700 });
       const { proofEnvironment, installProofIsolation } = await import("./continuity-e2-isolation.mjs");
       restore = installProofIsolation(await proofEnvironment(join(base, "hermetic")));
       const { runProofPhase } = await import("./continuity-e2-proofs.mjs");
-      const result = await runProofPhase({ base, arm: a.slot.arm, phase: a.slot.phase, variant: a.slot.variant, paidAdapter: adapter });
+      const result = await runProofPhase({ base, arm: a.slot.arm, phase: a.slot.phase, variant: a.slot.variant, historySurface: a.pilot.registration.historySurface, paidAdapter: adapter });
       await writeFile(join(base, `${a.slot.phase}.json`), `${JSON.stringify(result)}\n`, { flag: "wx", mode: 0o600 });
       outcome = { terminal: "completed", score: a.slot.phase === "seed" ? null : 1, refusalCode: null };
     }

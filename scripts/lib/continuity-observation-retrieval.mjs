@@ -8,9 +8,11 @@ export const HISTORY_HEADER = "ConversationHistory navigation (tool-authored gui
 const CHUNK_CHARS = 9900, SECTION_LIMIT = 10000;
 
 export function parseConversationHistoryText(text) {
+  const header = typeof text === "string" && text.startsWith("History navigation (scope: said; tool-authored guidance):\n") ? "History navigation (scope: said; tool-authored guidance):" : HISTORY_HEADER;
+  const unified = header !== HISTORY_HEADER;
   if (typeof text !== "string" || Buffer.byteLength(text) > MAX_ROW_BYTES
-    || !text.startsWith(`${HISTORY_HEADER}\n${HISTORY_NOTICE}\n`)) return undefined;
-  const prefixLength = HISTORY_HEADER.length + HISTORY_NOTICE.length + 2;
+    || !text.startsWith(`${header}\n${HISTORY_NOTICE}\n`)) return undefined;
+  const prefixLength = header.length + HISTORY_NOTICE.length + 2;
   // Only the final notice-framed body is a candidate. Navigation's embedded
   // `Exact arguments: {...}` objects are never parsed. JSON.stringify escapes
   // newlines inside evidence, so they cannot create another notice line.
@@ -46,13 +48,14 @@ export function parseConversationHistoryText(text) {
     const body = JSON.parse(json);
     // Exact formatter output, not a JSON-looking substring or concatenated,
     // duplicate-key, clipped, pretty-printed or partially reassembled payload.
-    if (!object(body) || JSON.stringify(body) !== json || body.notice !== HISTORY_NOTICE || body.untrusted !== true
+    if (!object(body) || unified && body.scope !== "said" || JSON.stringify(body) !== json || body.notice !== HISTORY_NOTICE || body.untrusted !== true
       || !["available", "unavailable", "tombstoned", "not_found"].includes(body.status)
       || !object(body.navigation) || !Array.isArray(body.navigation.nextActions) || typeof body.navigation.guidance !== "string") return undefined;
-    if (!body.navigation.nextActions.every(a => object(a) && typeof a.description === "string" && object(a.arguments))) return undefined;
+    if (!body.navigation.nextActions.every(a => object(a) && typeof a.description === "string" && object(a.arguments) && (!unified || a.arguments.scope === "said"))) return undefined;
+    if (unified && body.navigation.nextPage !== undefined && (!object(body.navigation.nextPage) || body.navigation.nextPage.scope !== "said")) return undefined;
     const actions = body.navigation.nextActions.map(a => `${a.description} Exact arguments: ${JSON.stringify(a.arguments)}`);
     const navigation = before.slice(prefixLength, marker ? marker.index : before.length);
-    if (navigation !== [body.navigation.guidance, ...(actions.length ? actions : ["No follow-up ConversationHistory call is available."])].join("\n")) return undefined;
+    if (navigation !== [body.navigation.guidance, ...(unified && body.navigation.nextPage !== undefined ? [`Next search page: ${JSON.stringify(body.navigation.nextPage)}`] : []), ...(actions.length ? actions : [unified ? "No follow-up History call is available." : "No follow-up ConversationHistory call is available."])].join("\n")) return undefined;
     return body;
   } catch { return undefined; }
 }

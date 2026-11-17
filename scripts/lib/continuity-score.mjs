@@ -244,7 +244,7 @@ function accuracyBlock(trials, repeats) {
  * it, and accuracy with versus without a call (observational, not causal).
  */
 export function toolUseBlock(trials) {
-  const offered = trials.filter((trial) => trial.boundary?.observed?.toolsOffered?.includes("ConversationHistory"));
+  const offered = trials.filter((trial) => trial.boundary?.observed?.toolsOffered?.some(name => ["ConversationHistory", "History"].includes(name)));
   if (offered.length === 0) return null;
   const used = offered.filter((trial) => (trial.boundary.observed.conversationHistory?.calls ?? 0) > 0);
   const unused = offered.filter((trial) => (trial.boundary.observed.conversationHistory?.calls ?? 0) === 0);
@@ -256,6 +256,7 @@ export function toolUseBlock(trials) {
     return [category, { n: rows.length, used: withCall.length, accuracyWithCall: acc(withCall), accuracyWithoutCall: acc(rows.filter((trial) => !withCall.includes(trial))) }];
   }));
   return {
+    ...(offered.some(trial => trial.boundary.observed.toolsOffered.includes("History")) ? { toolName: "History" } : {}),
     offered: offered.length, used: used.length, rate: round(used.length / offered.length),
     accuracyWithCall: acc(used), accuracyWithoutCall: acc(unused),
     calls: sum("calls"), search: sum("search"), get: sum("get"), success: sum("success"), unavailable: sum("unavailable"), error: sum("error"), hits: sum("hits"),
@@ -374,7 +375,8 @@ export function renderMarkdown(summary, { qualityMeasured, armLabels = {}, judge
   lines.push("");
   const toolArms = arms.filter((arm) => summary.arms[arm].toolUse);
   if (toolArms.length > 0) {
-    lines.push("| Arm | Samples offered ConversationHistory | Used | Rate | Accuracy with call | Accuracy without call | Calls (search/get) | Unavailable | Errors |");
+    const historyLabel = toolArms.some(arm => summary.arms[arm].toolUse.toolName === "History") ? "ConversationHistory / History" : "ConversationHistory";
+    lines.push(`| Arm | Samples offered ${historyLabel} | Used | Rate | Accuracy with call | Accuracy without call | Calls (search/get) | Unavailable | Errors |`);
     lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
     for (const arm of toolArms) {
       const use = summary.arms[arm].toolUse;

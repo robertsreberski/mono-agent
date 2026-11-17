@@ -1,3 +1,4 @@
+import { historyCallScope } from "./continuity-e2-history.mjs";
 import { createHash } from "node:crypto";
 import { parseConversationHistoryText } from "./continuity-observation-retrieval.mjs";
 import { MAX_ROW_BYTES, fail, object, time, jsonLines } from "./continuity-observation-input.mjs";
@@ -63,7 +64,7 @@ export function scanRows(sql, rows, expectRows = false) {
         && ["session_boundary", "context_compaction", "continuity_pack_injected", "continuity_pack_skipped"].includes(p.data.kind)) {
         if (p.data.type !== "runtime_telemetry" || !object(p.data.data)) { stats.invalidRecords++; continue; }
         event = { kind: p.data.kind, data: p.data.data };
-      } else if (p.type === "tool-call" && TOOL_NAMES.includes(p.toolName)) {
+      } else if (p.type === "tool-call" && (TOOL_NAMES.includes(p.toolName) || historyCallScope(p.toolName, p.args) === "said")) {
         if (typeof p.toolCallId !== "string" || !p.toolCallId || p.toolCallId.length > 512) { stats.invalidRecords++; continue; }
         event = { kind: "retrieval", data: p };
       }

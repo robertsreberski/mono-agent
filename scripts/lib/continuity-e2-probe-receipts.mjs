@@ -1,3 +1,4 @@
+import { historyCallScope } from "./continuity-e2-history.mjs";
 // Private, informational retrieval evidence. Never forwarded to a model or gate.
 import { writeE2ProbeReceipt, writeE2ProgressGap } from "./continuity-e2-progress.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
@@ -67,7 +68,7 @@ export function createE2ProbeReceipts({ output, slotId, registrationSha256, note
       if (!enabled || !binding) return;
       try {
         for (const part of event.message?.content ?? []) {
-          if (event.type === "assistant" && part.type === "tool_use" && (part.name === "ConversationHistory" || part.name?.endsWith("__ConversationHistory"))) {
+          if (event.type === "assistant" && part.type === "tool_use" && (part.name === "ConversationHistory" || part.name?.endsWith("__ConversationHistory") || historyCallScope(part.name, part.input) === "said")) {
             const call = { ...binding, requestOrdinal, ...(requestContext ? { requestContext } : {}), callId: bounded(String(part.id), 1024), arguments: bounded(JSON.stringify(part.input), E2_PROBE_RECEIPT_LIMITS.argumentsBytes) };
             // Bound retained call state too; the entry cap is shared by all probes.
             if (ordinal >= E2_PROBE_RECEIPT_LIMITS.entries) { publish({}); continue; }

@@ -6,17 +6,21 @@ import { rehearseE2Protected } from "./continuity-e2-protected.mjs";
 import { bindE2Checkpoint, e2PhaseWork, verifyE2NativeLineage } from "./continuity-e2-lineage.mjs";
 import { bindE2NativeCompaction } from "./continuity-e2-journals.mjs";
 import { writeE2SummaryResult } from "./continuity-e2-summary-receipts.mjs";
+import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
+import { SOL } from "./continuity-e2-protocol.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { convertResponsesMessages } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
-export async function measureE2ControllerCapacity(root) {
+export async function measureE2ControllerCapacity(root, registration) {
   const measurements = [];
+  const catalog = (registration?.catalog ?? await loadE2Catalog()).find(row => row.model === SOL);
+  if (!catalog) throw Error("E2_CATALOG_INVALID");
   // Carry fit/fallback plus a B quotation sized near the 16k pack ceiling:
   // the summary request then serializes a maximal seed and whole predecessor.
   for (const { carrier, fallback, quotationBackgroundRepeats } of [{ carrier: "carry", fallback: false }, { carrier: "carry", fallback: true }, { carrier: "quotation", fallback: false, quotationBackgroundRepeats: 2000 }]) {
     const base = join(root, `controller-${carrier}-${fallback}`); await mkdir(join(base, "e2-summary-results"), { recursive: true, mode: 0o700 });
     const planned = { index: 0, kind: "proof", arm: "pressure", variant: "ceiling", phase: "whole" }, slot = { slotId: "a".repeat(64), holds: [], lineages: {} }, state = { schedule: [planned], slots: [slot] };
     const readArtifact = path => readFile(path), readPrivate = async path => JSON.parse(await readFile(path, "utf8"));
-    const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", contextWindow: 272000, maxTokens: 128000 };
+    const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", contextWindow: catalog.contextWindow, maxTokens: catalog.maxTokens };
     state.summaryPolicies = await e2ProtectedSummaryPolicies([model]);
     await rehearseE2Protected({ work: e2PhaseWork(base, planned), model, carrier, fallback, ...(quotationBackgroundRepeats ? { quotationBackgroundRepeats } : {}),
       onPublication: async ({ summary, checkpoint }) => {

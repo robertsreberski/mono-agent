@@ -33,7 +33,7 @@ export function protectedE2Reply(context, drop = false) {
  * paid runs. onPublication/onSummary are test-only observers. completeSummary
  * optionally exercises an actual SDK response handoff in the native test fixture.
  */
-export async function rehearseE2Protected({ work, model, carrier, fallback = false, refusal = false, onPublication = async () => {}, onSummary = async () => {}, onAdmission = async () => {}, onPublicationPreparing = async () => {}, onEvent = () => {}, appendProgress, prepareInput = input => input, sourceBackgroundRepeats, quotationBackgroundRepeats, productionDefaults = false, summaryReply = protectedE2Reply, completeSummary }) {
+export async function rehearseE2Protected({ work, model, carrier, historySurface, fallback = false, refusal = false, onPublication = async () => {}, onSummary = async () => {}, onAdmission = async () => {}, onPublicationPreparing = async () => {}, onEvent = () => {}, appendProgress, prepareInput = input => input, sourceBackgroundRepeats, quotationBackgroundRepeats, productionDefaults = false, summaryReply = protectedE2Reply, completeSummary }) {
   need(["quotation", "carry"].includes(carrier));
   const [{ ToolHistoryWriter, ToolHistoryReader, createContinuityParticipant, createDurableHistoryStore, createConversationHarness },
     { JsonlSessionRepo, createRunDriver, projectContext }, { createMonoRuntime }, { fauxProvider, createModels, fauxAssistantMessage },
@@ -108,7 +108,7 @@ export async function rehearseE2Protected({ work, model, carrier, fallback = fal
     const admission = raw.validator.retainedSummaryAdmission, active = await resolveRetainedSummaryAdmission(raw, access);
     need(admission?.kind === (carrier === "quotation" ? "retained_summary_admitted" : "reseed_predecessor_admitted") && active);
     await onAdmission({ raw, admission, active, turn, access });
-    const target = productionDefaults ? { ...faux.getModel(), ...model } : faux.getModel(), soul = await shippingSoul();
+    const target = productionDefaults ? { ...faux.getModel(), ...model } : faux.getModel(), soul = await shippingSoul(historySurface);
     const guarded = createRunDriver(raw, { model: target, systemPrompt: soul.text, tools: [], retainedSummaryAccess: access });
     let exact = !refusal || largeCarryFits, observerError;
     const h = { models: { completeSimple: async (_model, context, options) => {

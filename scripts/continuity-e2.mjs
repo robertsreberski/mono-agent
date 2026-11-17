@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { e2HistorySurface, historySurfaceBinding, assertHistorySurfaceBinding } from "./lib/continuity-e2-history.mjs";
 // Offline preparation only. Paid authority is not an argument this CLI accepts.
 // Capture the fork binding before evaluating any other framework/user module.
 import { runE2SizingProcess, e2SizingErrorDiagnostic } from "./lib/continuity-e2-sizing-process.mjs";
@@ -16,7 +17,7 @@ import { guardedProtocol } from "./lib/continuity-guarded-protocols.mjs";
 import { loadE2Catalog } from "./lib/continuity-e2-pricing.mjs";
 import { E2_REPLAY_SCENARIOS } from "./lib/continuity-e2-protected.mjs";
 import { e2ReplayArm } from "./lib/continuity-e2-protocol.mjs";
-export const USAGE = "Usage: node scripts/continuity-e2.mjs size --source DIR --protocol FILE --output NEW_DIR [--summary faux-short|faux-max|protected-exact|protected-refusal] [--replay-arm continuity|baseline] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs score --answers FILE --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs proofs --output NEW_DIR [--arm switch|cancel|idle|pressure|all] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs --estimate --protocol FILE --limits FILE --sizing FILE [--sizing FILE...] [--replay-arm continuity|baseline] --output NEW_DIR\n       node scripts/continuity-e2.mjs run --summary real [--replay-arm continuity|baseline] --registration FILE --sha256 HASH --authorization FILE --credentials FILE --output EMPTY_DIR\n       node scripts/continuity-e2.mjs proofs --real --registration FILE --sha256 HASH --authorization FILE --credentials FILE --output EMPTY_DIR\n       node scripts/continuity-e2.mjs reconcile --output DIR";
+export const USAGE = "Usage: node scripts/continuity-e2.mjs size --source DIR --protocol FILE --output NEW_DIR [--summary faux-short|faux-max|protected-exact|protected-refusal] [--history-surface split|unified] [--replay-arm continuity|baseline] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs score --answers FILE --keys FILE --output NEW_DIR\n       node scripts/continuity-e2.mjs proofs --output NEW_DIR [--arm switch|cancel|idle|pressure|all] [--diagnostics NEW_FILE]\n       node scripts/continuity-e2.mjs --estimate --protocol FILE --limits FILE --sizing FILE [--sizing FILE...] [--history-surface split|unified] [--replay-arm continuity|baseline] --output NEW_DIR\n       node scripts/continuity-e2.mjs run --summary real [--history-surface split|unified] [--replay-arm continuity|baseline] --registration FILE --sha256 HASH --authorization FILE --credentials FILE --output EMPTY_DIR\n       node scripts/continuity-e2.mjs proofs --real --registration FILE --sha256 HASH --authorization FILE --credentials FILE --output EMPTY_DIR\n       node scripts/continuity-e2.mjs reconcile --output DIR";
 export function parseE2Args(argv) {
   const [selected, ...tail] = argv, command = selected === "--estimate" ? "estimate" : selected;
   const real = command === "run" || command === "proofs" && tail.includes("--real");
@@ -27,12 +28,13 @@ export function parseE2Args(argv) {
     : command === "size" ? ["source", "protocol", "output"] : command === "score" ? ["answers", "keys", "output"]
     : command === "proofs" ? ["output"] : command === "estimate" ? ["protocol", "limits", "sizing", "output"] : null;
   if (!required) fail("E2_ARGUMENTS_INVALID");
-  const result = { command, ...(real ? { real: true } : {}) }, allowed = [...required, ...(["size", "run", "estimate"].includes(command) ? ["replay-arm"] : []), ...(!real && command === "size" ? ["summary", "diagnostics"] : !real && command === "proofs" ? ["arm", "diagnostics"] : [])];
+  const result = { command, ...(real ? { real: true } : {}) }, allowed = [...required, ...(["size", "run", "proofs", "estimate"].includes(command) ? ["history-surface"] : []), ...(["size", "run", "estimate"].includes(command) ? ["replay-arm"] : []), ...(!real && command === "size" ? ["summary", "diagnostics"] : !real && command === "proofs" ? ["arm", "diagnostics"] : [])];
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i].slice(2);
     if (!rest[i].startsWith("--") || !allowed.includes(key) || !rest[i + 1] || rest[i + 1].startsWith("--") || Object.hasOwn(result, key) && !(command === "estimate" && key === "sizing")) fail("E2_ARGUMENTS_INVALID");
     if (command === "estimate" && key === "sizing") (result.sizing ??= []).push(rest[i + 1]); else result[key] = rest[i + 1];
   }
+  if (result["history-surface"] !== undefined) e2HistorySurface(result["history-surface"]);
   if (required.some(k => !result[k]) || command === "run" && result.summary !== "real"
     || command === "size" && result.summary !== undefined && !E2_REPLAY_SCENARIOS.includes(result.summary)) fail("E2_ARGUMENTS_INVALID");
   if (command === "estimate" && result.sizing.length > E2_MAX_SIZING_RECORDS) fail("E2_ARGUMENTS_INVALID");
@@ -53,7 +55,7 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
     const args = parseE2Args(argv);
     if (args.real) {
       const { runE2Paid } = await import("./lib/continuity-e2-paid-entry.mjs");
-      const report = await runE2Paid({ ...(args["replay-arm"] === undefined ? {} : { replayArm: args["replay-arm"] }), command: args.command, registrationPath: resolve(args.registration), registrationSha256: args.sha256,
+      const report = await runE2Paid({ ...historySurfaceBinding(args["history-surface"]), ...(args["replay-arm"] === undefined ? {} : { replayArm: args["replay-arm"] }), command: args.command, registrationPath: resolve(args.registration), registrationSha256: args.sha256,
         authorizationPath: resolve(args.authorization), credentialPath: resolve(args.credentials), outputRoot: resolve(args.output) });
       stdout(`${JSON.stringify(report)}\n`); return report.stop === "completed" ? 0 : 1;
     } else if (args.command === "reconcile") {
@@ -65,7 +67,8 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
       const output = privateOutput(args.output, [protocol, limits, ...sizing]);
       const registered = readJSON(limits);
       if (registered?.schema !== "continuity-e2-estimate-limits-v1" || Object.keys(registered).sort().join() !== "probeCounts,roles,schema") fail("E2_ESTIMATE_INVALID");
-      const report = estimateE2SizingSet({ protocol: readJSON(protocol), roles: registered.roles, probeCounts: registered.probeCounts, records: sizing.map(readJSON), replayArm: args["replay-arm"], catalog: await loadE2Catalog() });
+      assertHistorySurfaceBinding(registered, { historySurface: args["history-surface"] });
+      const report = estimateE2SizingSet({ protocol: readJSON(protocol), roles: registered.roles, probeCounts: registered.probeCounts, records: sizing.map(readJSON), replayArm: args["replay-arm"], historySurface: args["history-surface"], catalog: await loadE2Catalog() });
       mkdirSync(output, { mode: 0o700 });
       try { writeFileSync(join(output, "estimate.json"), `${JSON.stringify(report)}\n`, { flag: "wx", mode: 0o600 }); }
       catch (error) { rmSync(output, { recursive: true, force: true }); throw error; }
@@ -77,7 +80,7 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
         if (diagnosticPath === output) { diagnosticPath = undefined; fail("E2_DIAGNOSTICS_REFUSED"); }
       }
       const { runE2Proofs } = await import("./lib/continuity-e2-proofs.mjs");
-      const records = await runE2Proofs({ output, arm: args.arm });
+      const records = await runE2Proofs({ ...historySurfaceBinding(args["history-surface"]), output, arm: args.arm });
       stdout(`${JSON.stringify({ arms: records.length, variants: records.reduce((n, r) => n + r.report.variants.length, 0), requests: records.reduce((n, r) => n + r.sizing.variants.reduce((m, v) => m + v.requests.length, 0), 0) })}\n`);
     } else if (args.command === "size") {
       const sourceFile = inputPath(process.cwd(), join(args.source, "source.json")), protocolFile = inputPath(process.cwd(), args.protocol);
@@ -86,7 +89,7 @@ export async function main(argv, { stdout = s => process.stdout.write(s), stderr
         diagnosticPath = privateOutput(args.diagnostics, [sourceFile, protocolFile]);
         if (diagnosticPath === output) { diagnosticPath = undefined; fail("E2_DIAGNOSTICS_REFUSED"); }
       }
-      const input = { source: readJSON(sourceFile), protocol: readJSON(protocolFile), output, summary: args.summary ?? "faux-short", replayArm: e2ReplayArm(args["replay-arm"]) };
+      const input = { ...historySurfaceBinding(args["history-surface"]), source: readJSON(sourceFile), protocol: readJSON(protocolFile), output, summary: args.summary ?? "faux-short", replayArm: e2ReplayArm(args["replay-arm"]) };
       const onDiagnostic = value => { diagnostic = diagnosticRecord(value); };
       const report = input.replayArm === "baseline"
         ? await (await import("./lib/continuity-e2-replay.mjs")).runE2Sizing({ ...input, onDiagnostic })

@@ -1,3 +1,4 @@
+import { historyCallScope, historyArguments } from "./continuity-e2-history.mjs";
 // Offline/dry-run must work before a workspace build; Node >=24.15.0 strips this import-free TS source.
 import { deriveUpkeepAccounting, forwardUpkeepAccounting, mergeAgentUpkeepAccounting } from "../../packages/contracts/src/upkeep-accounting.ts";
 // Conversation-continuity benchmark runner.
@@ -171,7 +172,23 @@ export async function openHarness({ modules, work, authPath, model, effort, tool
     runtime = e2 ? e2.runtime(base, route, config) : controlledRuntime(base, route, check, pilot?.routeKind);
     // Tool-history/continuity outages are fail-open in production (warnings only);
     // the benchmark counts them so a degraded store invalidates the sample.
-    harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value, ...hostOptions,
+    let historyHostOptions = hostOptions;
+    if (config.tools?.history?.unified === true) {
+      // The standalone harness intentionally owns only said. E2 validates the
+      // shipping controller surface: compose its real all-scope extension last,
+      // using the existing request-extension seam (and its owned disposal).
+      const { createHistoryRuntimeExtension } = await import("../../packages/app/dist/request-tools/history.js");
+      const { composeRuntimeOptionExtensions } = await import("../../packages/app/dist/composition/runtime-option-extensions.js");
+      const rollover = config.runtime.session.rollover ?? "none";
+      historyHostOptions = { ...hostOptions, runtimeOptionsForRequest: composeRuntimeOptionExtensions([
+        createHistoryRuntimeExtension({ historyRoot: join(work, "history"), artifactDir: config.artifacts.dir,
+          scopeRollovers: { said: rollover, tools: rollover, runs: rollover }, policy: config.tools,
+          capabilities: { said: config.runtime.session.continuity?.enabled !== false, tools: true, runs: true },
+          onUnavailable: () => onHistoryWarning("History endpoint could not start; retained evidence is unavailable this run."),
+        }), hostOptions.runtimeOptionsForRequest,
+      ]) };
+    }
+    harness = await modules.app.createConfiguredConversationHarness({ config, cwd: work, runtime, now: () => clock.value, ...historyHostOptions,
       onToolHistoryWarning: message => onHistoryWarning(message) });
     return { harness, config, close };
   } catch (error) {
@@ -244,6 +261,7 @@ function observer() {
     noteOffered(options) {
       const offered = new Set(observed.toolsOffered);
       if (Object.keys(options?.mcpServers ?? {}).includes("mono-agent-conversation-history")) offered.add("ConversationHistory");
+      if (Object.hasOwn(options?.mcpServers ?? {}, "mono-agent-history")) offered.add("History");
       observed.toolsOffered = [...offered];
     },
     noteHistoryWarning() { observed.historyWarnings += 1; },
@@ -253,7 +271,7 @@ function observer() {
     },
     onEvent(event) {
       for (const block of Array.isArray(event?.message?.content) ? event.message.content : []) {
-        if (event.type === "assistant" && block?.type === "tool_use" && HISTORY_TOOL.test(String(block.name ?? ""))) {
+        if (event.type === "assistant" && block?.type === "tool_use" && (HISTORY_TOOL.test(String(block.name ?? "")) || historyCallScope(block.name, block.input) === "said")) {
           const input = block.input && typeof block.input === "object" ? block.input : {};
           const action = input.action ?? (input.recordId === undefined ? "search" : "get");
           historyCalls.set(block.id, action);
@@ -373,15 +391,17 @@ function liveRoute(modules, mode, refs, watch = null, lookup = null) {
     const system = [context.systemPrompt, ...(context.messages ?? []).filter((message) => message.role === "system").map((message) => textOfContent(message.content))].join("\n");
     if (system.includes(SUMMARY_MARKER)) return modules.pi.fauxAssistantMessage(OFFLINE_SUMMARY);
     watch?.noteOfflineContext(context);
+    const unified = (context.tools ?? []).some(t => t.name === "History") || watch?.observed.toolsOffered.includes("History");
+    const historyTool = unified ? "History" : "ConversationHistory", surface = unified ? "unified" : "split";
     if (lookup) {
       lookup.witness.initial(context);
       const args = lookup.reader.next(context, lookup.lastBody);
-      return args ? modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall("ConversationHistory", args, { id: `call_lookup_${++lookup.round}` })], { stopReason: "toolUse" })
+      return args ? modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall(historyTool, historyArguments(surface, args), { id: `call_lookup_${++lookup.round}` })], { stopReason: "toolUse" })
         : modules.pi.fauxAssistantMessage(OFFLINE_ANSWER);
     }
     const last = context.messages?.at(-1);
-    if (watch?.observed.toolsOffered.includes("ConversationHistory") && last?.role !== "toolResult") {
-      return modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall("ConversationHistory", { action: "search", query: "order", limit: 3 }, { id: "call_offline_history" })], { stopReason: "toolUse" });
+    if ((watch?.observed.toolsOffered.includes(historyTool)) && last?.role !== "toolResult") {
+      return modules.pi.fauxAssistantMessage([modules.pi.fauxToolCall(historyTool, historyArguments(surface, { action: "search", query: "order", limit: 3 }), { id: "call_offline_history" })], { stopReason: "toolUse" });
     }
     return modules.pi.fauxAssistantMessage(OFFLINE_ANSWER);
   };

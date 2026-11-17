@@ -1,3 +1,4 @@
+import { historySurfaceBinding, historyToolName, historyServerName, historyConfig, historyArguments, historyCallScope } from "./continuity-e2-history.mjs";
 import { E2_PROTECTED_SIZING, rehearseE2Protected } from "./continuity-e2-protected.mjs";
 import { e2SizingIdentity, assertE2SizingIdentity } from "./continuity-e2-sizing-identity.mjs";
 import { loadE2Catalog } from "./continuity-e2-pricing.mjs";
@@ -19,7 +20,7 @@ import { createE2Models, estimatedReply, loadE2Estimators, shippingSoul, sizeCon
 import { SOL, parts, protocolDigest, validateProtocol, e2ReplayArm, e2ProbeRequestCount, e2ContinuityPackMessage } from "./continuity-e2-protocol.mjs";
 
 export const PLACEHOLDER = "[recorded result unavailable for replay]";
-const HISTORY = "mono-agent-conversation-history";
+
 const PROBE_PROMPT = "Use retained conversation evidence to continue safely. Do not perform effects.";
 export async function treeReceipt(root) {
   const files = [];
@@ -190,7 +191,7 @@ function exclusions(source, branch) {
 }
 
 // Each restored question/repeat owns its own measurements and history witness.
-export function e2ProbeMeasurement() {
+export function e2ProbeMeasurement(historySurface) {
   return {
     requests: 0, firstContext: null, witness: false,
     reset() { this.requests = 0; this.firstContext = null; this.witness = false; },
@@ -202,13 +203,17 @@ export function e2ProbeMeasurement() {
           || e2ContinuityPackMessage(m, index, lastUser));
         this.firstContext = sizeContext(context, estimators);
       }
-      this.witness ||= context.messages.some(m => m.role === "toolResult" && m.toolName === "ConversationHistory" && m.isError !== true);
+      const saidCalls = new Set(context.messages.flatMap(m => Array.isArray(m.content) ? m.content : [])
+        .filter(p => p.type === "toolCall" && historyCallScope(p.name, p.arguments) === "said").map(p => p.id));
+      this.witness ||= context.messages.some(m => m.role === "toolResult" && m.isError !== true
+        && (m.toolName === "ConversationHistory" || saidCalls.has(m.toolCallId)));
     },
   };
 }
 
 /** No real routes, credential lookup overrides, or resolved-model overrides. */
-export async function runE2Sizing({ source, protocol, output, summary = "faux-short", replayArm, modules, onContext = () => {}, onDiagnostic = () => {}, paidAdapter, questions, evaluator, probeReceipts = true }) {
+export async function runE2Sizing({ source, protocol, output, summary = "faux-short", replayArm, historySurface, modules, onContext = () => {}, onDiagnostic = () => {}, paidAdapter, questions, evaluator, probeReceipts = true }) {
+  const HISTORY = historyServerName(historySurface), historyTool = historyToolName(historySurface);
   const protectedMode = summary.startsWith("protected-");
   if (protectedMode && (paidAdapter || questions || evaluator || e2ReplayArm(replayArm) === "baseline")) fail("E2_MODELS_SEAM_REFUSED");
   const real = summary === "real", baseline = e2ReplayArm(replayArm) === "baseline";
@@ -216,13 +221,13 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
   if (real) assertE2PhaseAdapter(paidAdapter);
   protocol = validateProtocol(protocol, source);
   const requestCount = e2ProbeRequestCount(protocol, replayArm);
-  if (real) await paidAdapter.assertReplay({ source, protocol, questions, evaluator, output, replayArm });
+  if (real) await paidAdapter.assertReplay({ source, protocol, questions, evaluator, output, replayArm, historySurface });
   // Attest before any estimator/product module load, not after observations.
   const sizingIdentity = !real && !baseline ? await e2SizingIdentity() : undefined;
-  const estimators = await loadE2Estimators(), soul = await shippingSoul();
+  const estimators = await loadE2Estimators(), soul = await shippingSoul(historySurface);
   modules ??= await productionModules(ROOT);
   const answers = { schema: "continuity-e2-answers-v1", answers: [] };
-  const report = { schema: real ? "continuity-e2-replay-v1" : baseline ? "continuity-e2-sizing-v1" : "continuity-e2-sizing-v3", ...(baseline ? { replayArm: "baseline", qualification: false } : sizingIdentity ? { sizingIdentity, qualification: false } : {}), sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
+  const report = { ...historySurfaceBinding(historySurface), schema: real ? "continuity-e2-replay-v1" : baseline ? "continuity-e2-sizing-v1" : "continuity-e2-sizing-v3", ...(baseline ? { replayArm: "baseline", qualification: false } : sizingIdentity ? { sizingIdentity, qualification: false } : {}), sourceDigest: digest(JSON.stringify(source)), protocolDigest: protocolDigest(protocol), summary,
     soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, usage: "estimated-not-measured", semanticQualification: false, branches: [] };
   await mkdir(output, { mode: 0o700 });
   // One recorder and entry cap per run, not per checkpoint/probe.
@@ -238,9 +243,9 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
       const dispatch = excludedDispatch(source, excluded.steps);
       const server = await startRecordedTools({ source, excludedSteps: skipped, excludedCoverage: excluded.coverage, dispatch: dispatch.dispatch });
       let opened, currentTurn, turnController, steerWaiter, pendingSteers = [], steerCount = 0, cursor = 0, binding = branch.models[0], position, probeMode = false, probeRequests = 0;
-      const probe = e2ProbeMeasurement();
+      const probe = e2ProbeMeasurement(historySurface);
       const observed = [], historyExcluded = new Set(), observedTools = new Set(), toolIndices = new Map(source.tools.map((t, i) => [t.id, i]));
-      const route = createE2Models({ pi: modules.pi, estimators, models: branch.models, limits: branch.limits, summary, soul, paidAdapter, probeLookupRounds: protocol.probeLookupRounds, replayArm, sourceTools: source.tools.map(t => t.name),
+      const route = createE2Models({ pi: modules.pi, estimators, models: branch.models, limits: branch.limits, summary, soul, paidAdapter, probeLookupRounds: protocol.probeLookupRounds, replayArm, historySurface, sourceTools: source.tools.map(t => t.name),
         sourceContext(context) {
           if (!probeMode && pendingSteers.length) {
             const users = context.messages.filter(m => m.role === "user").slice(-pendingSteers.length).map(m => typeof m.content === "string" ? m.content : m.content.filter(p => p.type === "text").map(p => p.text).join("\n")).join("\n");
@@ -263,14 +268,14 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
             const offered = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
             const final = probe.requests === requestCount;
             if (probe.requests > requestCount) fail("E2_PROBE_REQUEST_LIMIT");
-            if (final ? offered.length !== 0 : offered.length !== 1 || offered[0].name !== "ConversationHistory") fail("E2_PROBE_TOOLS_REFUSED");
+            if (final ? offered.length !== 0 : offered.length !== 1 || offered[0].name !== historyTool) fail("E2_PROBE_TOOLS_REFUSED");
           }
         },
         async sourceReply(context) {
           if (probeMode) {
             const offered = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
             const lookup = !baseline && probe.requests <= protocol.probeLookupRounds;
-            const body = lookup ? [modules.pi.fauxToolCall(offered[0].name, { action: "search", query: "retained", limit: 1 }, { id: probe.requests === 1 ? "e2-probe-history" : `e2-probe-history-${probe.requests}` })] : "Faux probe continuation; semantic correctness is not evaluated.";
+            const body = lookup ? [modules.pi.fauxToolCall(offered[0].name, historyArguments(historySurface, { action: "search", query: "retained", limit: 1 }), { id: probe.requests === 1 ? "e2-probe-history" : `e2-probe-history-${probe.requests}` })] : "Faux probe continuation; semantic correctness is not evaluated.";
             return estimatedReply(modules.pi, body, context, estimators, { stopReason: lookup ? "toolUse" : "stop" });
           }
           dispatch.assertSettled();
@@ -300,13 +305,13 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
         opened = await openHarness({ modules, work, authPath: real ? paidAdapter.credentialPath() : join(base, "absent-auth.json"), model: branch.models[0].model, effort: branch.models[0].effort,
           clock: { value: new Date("2042-03-01T09:00:00Z") }, tools: false, e2: paidAdapter,
           configPatch: { runtime: { retry: { primaryAttempts: 1 }, fallbacks: [], compaction: { enabled: true }, session: { continuity: { enabled: !baseline, ledgerEnabled: false, upkeep: { enabled: false } } } },
-            tools: { allowedTools: probeMode && !baseline ? ["ConversationHistory"] : [] }, providers: { piNative: { transport: "sse", piMaxRetries: 0 } } },
+            tools: { ...historyConfig(historySurface), allowedTools: probeMode && !baseline ? [historyTool] : [] }, providers: { piNative: { transport: "sse", piMaxRetries: 0 } } },
           onHistoryWarning: () => fail("E2_HISTORY_DEGRADED"),
           hostOptions: { runtimeOptionsForRequest: () => ({ runtimeOptions: { model: modules.host.parseMonoRuntimeModelReference(binding.model), effort: binding.effort } }) },
           route: async options => {
             if (options.piResolvedModel || options.piResolvedModels) fail("E2_MODELS_SEAM_REFUSED");
             return { piModelsDecorator: route.decorator, observers: [...(options.observers ?? []), { name: "e2.lifecycle", recordEvent: onEvent }],
-              allowedTools: probeMode && !baseline ? ["ConversationHistory"] : [], skills: [],
+              allowedTools: probeMode && !baseline ? [historyTool] : [], skills: [],
               mcpServers: probeMode ? baseline ? {} : { [HISTORY]: options.mcpServers?.[HISTORY] } : { [RECORDED_SERVER_NAME]: { type: "http", url: server.url } } };
           } });
       };
@@ -423,7 +428,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
       // Sol's large carry now fits 500K and explicitly proves coverage/no fallback.
       for (const catalog of await loadE2Catalog()) for (const carrier of ["quotation", "carry"]) for (const fallback of [false, true]) {
         const model = { provider: catalog.model.split(":")[0], id: catalog.model.split(":")[1], contextWindow: catalog.contextWindow, maxTokens: catalog.maxTokens };
-        const measured = await rehearseE2Protected({ work: join(output, "protected-controls", `${model.id}-${carrier}-${fallback}`), model, carrier, fallback, refusal: summary === "protected-refusal" });
+        const measured = await rehearseE2Protected({ work: join(output, "protected-controls", `${model.id}-${carrier}-${fallback}`), model, historySurface, carrier, fallback, refusal: summary === "protected-refusal" });
         controls.push({ model: catalog.model, carrier, fallback, admissionKind: measured.admissionKind, retainedBytes: measured.retainedBytes,
           noncommitObserved: measured.noncommitObserved, unchangedRefusalSuppressed: measured.unchangedRefusalSuppressed, growthQualified: measured.growthQualified, committed: measured.committed,
           requests: [...measured.setupRequests.map(row => ({ role: "setup-scripted", paidRole: null, model: row.model, maxOutputTokens: row.maxOutputTokens, size: sizeContext(row.context, estimators) })),
@@ -440,7 +445,7 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
       await writeFile(join(output, "answers.json"), `${JSON.stringify(answers)}\n`, { flag: "wx", mode: 0o600 });
       await writeFile(join(output, "score.json"), `${JSON.stringify(scored)}\n`, { flag: "wx", mode: 0o600 });
       report.score = scored.report.complete ? Number(scored.report.gate) : null;
-      if (baseline) await paidAdapter.assertReplay({ source, protocol, questions, evaluator, output, replayArm, report });
+      if (baseline) await paidAdapter.assertReplay({ source, protocol, questions, evaluator, output, replayArm, historySurface, report });
     }
     await writeFile(join(output, real ? "replay.json" : "sizing.json"), `${JSON.stringify(report)}\n`, { flag: "wx", mode: 0o600 });
     return report;

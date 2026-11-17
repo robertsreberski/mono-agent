@@ -46,7 +46,7 @@ function assertObserverSourceSafe(source) {
   const blocked = new Set(["fetch", "require", "createRequire", "getBuiltinModule", "eval", "Function"]);
   function visit(node) {
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
-      if (!ts.isStringLiteral(node.moduleSpecifier) || !/^(node:(fs|path|url|crypto|sqlite)|\.\/(?:lib\/)?continuity-observation-[a-z-]+\.mjs)$/.test(node.moduleSpecifier.text)) throw new Error("FORBIDDEN_OBSERVER_IMPORT");
+      if (!ts.isStringLiteral(node.moduleSpecifier) || !/^(node:(fs|path|url|crypto|sqlite)|\.\/(?:lib\/)?continuity-(?:observation-[a-z-]+|e2-history)\.mjs)$/.test(node.moduleSpecifier.text)) throw new Error("FORBIDDEN_OBSERVER_IMPORT");
     }
     if (ts.isImportEqualsDeclaration(node) || (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword)
       || (ts.isIdentifier(node) && blocked.has(node.text))
@@ -170,6 +170,9 @@ describe("read-only continuity observation", () => {
     for (const body of [historyBody(), historyBody({ items: [{ text: CANARY.repeat(900) }] }), historyBody({ status: "unavailable", error: { code: "history_unavailable" }, navigation: { guidance: "Unavailable.", nextActions: [] } })]) {
       expect(historyResponse(body)).toEqual(format(body)); expect(historyText(body)).toBe(joinText(format(body)));
       expect(parseConversationHistoryText(historyText(body))).toEqual(format(body).structuredContent);
+      const unifiedFormat = pureFunction("packages/app/src/request-tools/history-presentation.ts", "presentHistoryResult", { splitRequestScopedModelText: split });
+      const unified = unifiedFormat(format(body), { scope: "said", scopes: ["said", "tools", "runs"] });
+      expect(parseConversationHistoryText(joinText(unified))).toEqual(unified.structuredContent);
     }
   });
 
@@ -386,7 +389,7 @@ describe("read-only continuity observation", () => {
     const f = fixture(temp(), { sidecar: true, journal: true });
     expect(await main(["--manifest", f.manifest, "--output", join(temp(), "exports")])).toBe(0);
     for (const spy of forbidden) expect(spy).not.toHaveBeenCalled();
-    const toolFiles = ["continuity-observe.mjs", ...fs.readdirSync(join(ROOT, "scripts/lib")).filter(n => /^continuity-observation-.*\.mjs$/.test(n)).map(n => `lib/${n}`)];
+    const toolFiles = ["continuity-observe.mjs", "lib/continuity-e2-history.mjs", ...fs.readdirSync(join(ROOT, "scripts/lib")).filter(n => /^continuity-observation-.*\.mjs$/.test(n)).map(n => `lib/${n}`)];
     expect(toolFiles.length).toBeGreaterThan(1);
     for (const file of toolFiles) assertObserverSourceSafe(fs.readFileSync(resolve(ROOT, "scripts", file), "utf8"));
   });

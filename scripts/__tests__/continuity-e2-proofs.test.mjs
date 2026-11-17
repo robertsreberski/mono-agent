@@ -306,3 +306,17 @@ it("classifies every fixed product ContinuityGapReason", async () => {
   expect(reasons.length).toBeGreaterThan(0);
   for (const reason of reasons) expect(proofHistoryWarningClass(`Continuity is degraded (${reason}); coverage is incomplete. Canonical history remains available.`)).toBe(`continuity_${reason}`);
 });
+
+it("runs every unified proof, including seed/resume subprocesses, with scoped faux calls", async () => {
+  const root = await scratch(); processGuard();
+  const calls = [];
+  const records = await runE2Proofs({ output: join(root, "unified"), historySurface: "unified", onContext({ context }) {
+    calls.push(...context.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(p => p.type === "toolCall"));
+  } });
+  expect(records).toHaveLength(4);
+  const history = calls.filter(p => p.name === "History");
+  expect(history.length).toBeGreaterThan(0);
+  expect(history.every(p => p.arguments.scope === "said")).toBe(true);
+  expect(calls.some(p => p.name === "ConversationHistory")).toBe(false);
+  for (const record of records) { expect(record.report.historySurface).toBe("unified"); expect(record.sizing.historySurface).toBe("unified"); }
+}, 240_000);

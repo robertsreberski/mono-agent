@@ -1,3 +1,4 @@
+import { e2HistorySurface, assertHistorySurfaceBinding } from "./continuity-e2-history.mjs";
 // E2 registration policy only. No authorization creation, consumption, model calls or builds.
 import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
@@ -14,7 +15,8 @@ import { E2_REGISTRATION_SCHEMA, E2_PLAN_SCHEMA, E2_ASSUMPTIONS, E2_DEADLINE_LIM
 import { E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
 import { LOOKUP_PILOT_PROTOCOL_FILES } from "./continuity-lookup-roles.mjs";
 import { BUILD_POLICY, sourceState, verifyRealBuild } from "./memory-e2e-build.mjs";
-export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROTOCOL_FILES,
+const E2_HISTORY_SOURCE_FILES = Object.freeze(["packages/app/src/request-tools/history.ts", "packages/app/src/request-tools/history-policy.ts", "packages/app/src/request-tools/history-presentation.ts"]);
+export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROTOCOL_FILES, ...E2_HISTORY_SOURCE_FILES,
   "scripts/continuity-e2.mjs", "pnpm-lock.yaml", "package.json",
   "scripts/lib/continuity-e2-checks.mjs", "scripts/lib/continuity-e2-diagnostics.mjs", "scripts/lib/continuity-e2-estimate.mjs",
   "scripts/lib/continuity-e2-fixture.mjs", "scripts/lib/continuity-e2-isolation.mjs", "scripts/lib/continuity-e2-models.mjs",
@@ -28,7 +30,8 @@ export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROT
   "scripts/lib/continuity-e2-paid-models.mjs", "scripts/lib/continuity-e2-summary-plan.mjs",
   "scripts/lib/continuity-e2-sizing-process.mjs", "scripts/lib/continuity-e2-sizing-child.mjs",
   "scripts/lib/continuity-e2-cause.mjs", "scripts/lib/continuity-e2-retry.mjs", "scripts/lib/continuity-e2-progress.mjs", "scripts/lib/continuity-e2-probe-receipts.mjs",
-  "scripts/lib/continuity-e2-phase-child.mjs",
+  "scripts/lib/continuity-e2-phase-child.mjs", "scripts/lib/continuity-e2-history.mjs",
+  "packages/conversation/src/context/unified-soul.ts",
   "scripts/lib/continuity-e2-paid-entry.mjs",
 ])].sort());
 const need = ok => { if (!ok) throw Object.assign(Error("e2_registration_invalid"), { code: "e2_registration_invalid" }); };
@@ -121,20 +124,24 @@ export function e2PhaseSchedule(protocol, records, probeCounts, replayArm) {
     roleId: "e2-validation-phase", code: "E2", suite: "e2-validation", traceId: String(index), probeId: String(index) }));
 }
 export const E2_TOOL_POLICIES = Object.freeze({ summary: Object.freeze([]), replay: Object.freeze(["ConversationHistory"]), replayFinal: Object.freeze([]), proof: Object.freeze(["ConversationHistory"]), cancelContinuation: Object.freeze(["ConversationHistory", "ProofSentinel"]) });
-export const e2ToolPolicies = arm => e2ReplayArm(arm) === "baseline" ? { ...E2_TOOL_POLICIES, replay: [] } : E2_TOOL_POLICIES;
+export const e2ToolPolicies = (arm, historySurface) => {
+  const policies = e2HistorySurface(historySurface) === "unified"
+    ? { ...E2_TOOL_POLICIES, replay: ["History"], proof: ["History"], cancelContinuation: ["History", "ProofSentinel"] } : E2_TOOL_POLICIES;
+  return e2ReplayArm(arm) === "baseline" ? { ...policies, replay: [] } : policies;
+};
 export async function validateE2Registration(pilot, { safeRead, safeDirectory }) {
   try {
     need(fields(pilot, ["schema", "registration", "descriptor"]) && pilot.schema === E2_REGISTRATION_SCHEMA);
     const r = pilot.registration, d = pilot.descriptor;
     if (d?.schema !== E2_PLAN_SCHEMA) throw Object.assign(Error("e2_deadlines_invalid"), { code: "e2_deadlines_invalid" });
     validateE2Deadlines(d.deadlines);
-    need(fields(r, ["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "roles", "schedule", "toolPolicies", "sizing", "probeCounts", ...(Object.hasOwn(r, "replayArm") ? ["replayArm"] : [])])
+    need(fields(r, ["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "roles", "schedule", "toolPolicies", "sizing", "probeCounts", ...(Object.hasOwn(r, "replayArm") ? ["replayArm"] : []), ...(Object.hasOwn(r, "historySurface") ? ["historySurface"] : [])])
       && fields(d, ["schema", "assumptions", "capUnits", "deadlines", "retryPolicy"]) && d.schema === E2_PLAN_SCHEMA && same(d.assumptions, E2_ASSUMPTIONS) && same(d.retryPolicy, E2_RETRY_POLICY));
-    const replayArm = e2ReplayArm(r.replayArm);
+    const replayArm = e2ReplayArm(r.replayArm), historySurface = e2HistorySurface(r.historySurface);
     e2CapUnits(d.capUnits); validateE2Deadlines(d.deadlines);
     await safeDirectory(ROOT, "e2_registration_invalid"); await verifyE2Code(r.code, r.build);
-    need(same(r.catalog, await loadE2Catalog()) && same(r.soul, { rawDigest: SHIPPING_SOUL_RAW, normalizedDigest: SHIPPING_SOUL_NORMALIZED }));
-    const soul = await shippingSoul(); need(soul.rawDigest === r.soul.rawDigest && soul.normalizedDigest === r.soul.normalizedDigest);
+    need(same(r.catalog, await loadE2Catalog()));
+    const soul = await shippingSoul(historySurface); need(soul.rawDigest === r.soul.rawDigest && soul.normalizedDigest === r.soul.normalizedDigest);
     const paths = new Set();
     const json = async (binding, maxBytes = E2_INPUT_LIMITS.artifactBytes) => {
       need(fields(binding, ["path", "sha256"]) && typeof binding.path === "string" && sha(binding.sha256) && !paths.has(binding.path)); paths.add(binding.path);
@@ -143,13 +150,14 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     };
     const source = await json(r.source, E2_INPUT_LIMITS.sourceBytes); validateSource(source);
     const protocol = validateProtocol(await json(r.protocol), source), questions = await json(r.probes), evaluator = await json(r.keys);
-    const probeCounts = e2ProbeCounts(protocol, questions, evaluator, source, replayArm); need(same(r.probeCounts, probeCounts) && same(r.toolPolicies, e2ToolPolicies(replayArm)));
+    const probeCounts = e2ProbeCounts(protocol, questions, evaluator, source, replayArm); need(same(r.probeCounts, probeCounts) && same(r.toolPolicies, e2ToolPolicies(replayArm, historySurface)));
     need(Array.isArray(r.sizing) && r.sizing.length > 0 && r.sizing.length <= E2_INPUT_LIMITS.sizingFiles);
     const records = []; for (const binding of r.sizing) records.push(await json(binding));
+    for (const record of records) assertHistorySurfaceBinding(r, record);
     for (const record of records) if (isE2ReplaySizing(record)) need(record.sourceDigest === hash(JSON.stringify(source)) && same(record.soul, r.soul));
     if (records.some(isE2ReplaySizing)) need(questions.questions.length > 0);
     if (replayArm !== "baseline") requireProtectedE2Sizing(records, r);
-    const estimate = estimateE2SizingSet({ protocol, roles: r.roles, records, catalog: r.catalog, probeCounts, replayArm });
+    const estimate = estimateE2SizingSet({ protocol, roles: r.roles, records, catalog: r.catalog, probeCounts, replayArm, historySurface });
     validateE2ReplayLimits(protocol, records, replayArm);
     need(same(r.schedule, e2PhaseSchedule(protocol, records, probeCounts, replayArm)));
     const replay = r.schedule.find(p => p.kind === "replay");

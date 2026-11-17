@@ -1,3 +1,4 @@
+import { e2HistorySurface, historyToolName, historyServerName } from "./continuity-e2-history.mjs";
 import { lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
@@ -15,8 +16,11 @@ export function assertLookupCacheAssignment(state, assignment) {
     && Number.isInteger(assignment?.index) && assignment.index >= 0 && assignment.index < keys.length
     && lookupCacheKey(assignment.cacheKey) && keys[assignment.index] === assignment.cacheKey, "lookup_cache_assignment_invalid");
 }
+export const LOOKUP_TOOL_ALLOWLIST_V1 = Object.freeze({ version: "v1", tools: Object.freeze(["ConversationHistory"]) });
+export const LOOKUP_TOOL_ALLOWLIST_V2 = Object.freeze({ version: "v2", tools: Object.freeze(["ConversationHistory", "History"]) });
+export const lookupToolAllowlist = surface => e2HistorySurface(surface) === "unified" ? LOOKUP_TOOL_ALLOWLIST_V2 : LOOKUP_TOOL_ALLOWLIST_V1;
 /** Check resolved values, not the flags used to request them. Repeated at every dispatch. */
-export function assertResolvedLookupSafety({ plan, config, arm, captureUpkeepOutput, options, historyEndpoint, forwarded = false } = {}) {
+export function assertResolvedLookupSafety({ plan, config, arm, captureUpkeepOutput, options, historyEndpoint, forwarded = false, historySurface } = {}) {
   need(plan?.judge === null && config && arm, "lookup_auxiliary_callers_forbidden");
   need(config.memory == null && config.subagents?.enabled !== true
     && config.runtime?.session?.continuity?.upkeep?.enabled !== true
@@ -36,8 +40,10 @@ export function assertResolvedLookupSafety({ plan, config, arm, captureUpkeepOut
     let url; try { url = new URL(historyEndpoint); } catch {}
     need(url?.protocol === "http:" && url.hostname === "127.0.0.1" && Number(url.port) > 0 && !url.username && !url.password && !url.hash, "lookup_tools_forbidden");
   }
+  const surface = e2HistorySurface(historySurface), tool = historyToolName(surface), server = historyServerName(surface);
+  need((config.tools?.history?.unified === true) === (surface === "unified"), "lookup_tools_forbidden");
   const allowed = config.tools?.allowedTools ?? [];
-  need(allowed.every(tool => tool === "ConversationHistory") && !config.tools?.mcpConfigPath, "lookup_tools_forbidden");
+  need(allowed.every(name => lookupToolAllowlist(surface).tools.includes(name) && name === tool) && !config.tools?.mcpConfigPath, "lookup_tools_forbidden");
   if (options) {
     need(options.outputSchema == null && options.subagents == null && options.memory == null
       && options.compaction?.enabled === false, "lookup_auxiliary_callers_forbidden");
@@ -48,11 +54,11 @@ export function assertResolvedLookupSafety({ plan, config, arm, captureUpkeepOut
     for (const key of ["piRequestRetryBudgetMs", "retryBudgetMs", "retryProfile", "retry", "prepareRequest", "piResolvedModel", "piResolvedModels"])
       need(!Object.hasOwn(options, key), "lookup_retry_profile_forbidden");
     const servers = options.mcpServers ?? {};
-    need(Object.keys(servers).every(key => key === "mono-agent-conversation-history"), "lookup_tools_forbidden");
-    if (forwarded && Object.keys(servers).length) need(typeof historyEndpoint === "string" && servers["mono-agent-conversation-history"].url === historyEndpoint
-      && servers["mono-agent-conversation-history"].type === "http"
-      && Object.keys(servers["mono-agent-conversation-history"]).every(key => ["type", "url"].includes(key)), "lookup_tools_forbidden");
-    need((options.allowedTools ?? []).every(tool => tool === "ConversationHistory"), "lookup_tools_forbidden");
+    need(Object.keys(servers).every(key => key === server), "lookup_tools_forbidden");
+    if (forwarded && Object.keys(servers).length) need(typeof historyEndpoint === "string" && servers[server].url === historyEndpoint
+      && servers[server].type === "http"
+      && Object.keys(servers[server]).every(key => ["type", "url"].includes(key)), "lookup_tools_forbidden");
+    need((options.allowedTools ?? []).every(name => lookupToolAllowlist(surface).tools.includes(name) && name === tool), "lookup_tools_forbidden");
   }
 }
 // All these methods only inspect/reconcile/retire local native state; none dispatches Models.
