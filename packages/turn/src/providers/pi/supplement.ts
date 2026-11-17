@@ -4,7 +4,11 @@
 // id, name and published GPT-6.2 pricing; keep their conservative context windows.
 import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import type { MutableModels } from "@earendil-works/pi-ai";
-import type { PiBuiltinModelSnapshot } from "./catalog.js";
+// Same shape as catalog.ts's PiBuiltinModelSnapshot, declared locally because
+// catalog.ts imports this module (the turn contract graph forbids cycles).
+type PiBuiltinModelSnapshot = Omit<import("@earendil-works/pi-ai").Model<string>, "compat"> & {
+  compat?: import("@earendil-works/pi-ai/providers/compat-schema").ProviderCompat;
+};
 
 const SUPPLEMENT: PiBuiltinModelSnapshot[] = [
   {
