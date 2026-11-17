@@ -32,3 +32,10 @@ regexTarget = "match"
 regexes = [
   '''(?i)(?:piAuthFingerprint|authFingerprint|EXPECTED_AUTH_FINGERPRINT)["']?\s*[:=]\s*["']?[0-9a-f]{64}''',
 ]
+
+[[allowlists]]
+description = "SHA-256 digests keyed by CLI argument shapes (E2 parity fixtures)"
+regexTarget = "line"
+regexes = [
+  '''^\s*"cli:[^"]*"\s*:\s*"[0-9a-f]{64}",?\s*$''',
+]
