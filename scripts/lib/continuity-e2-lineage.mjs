@@ -1,7 +1,8 @@
 // Controller-owned committed-summary lineage. Never trust a child-supplied text hash.
 import { deriveE2SummaryRequest } from "./continuity-e2-summary-plan.mjs";
 import { fail } from "./continuity-observation-input.mjs";
-import { assertE2BaselineContext } from "./continuity-e2-protocol.mjs";
+import { assertE2BaselineContext, e2ContinuityPackMessage } from "./continuity-e2-protocol.mjs";
+import { e2AbArmOfSlot } from "./continuity-e2-history.mjs";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { digest } from "./continuity-recorded-schema.mjs";
@@ -18,7 +19,7 @@ export const E2_SUMMARY_SUFFIX = "\n</summary>";
 export const E2_BRANCH_PREFIX = "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
 export function e2PhaseBase(root, slot) {
   need(slot && ["proof", "replay"].includes(slot.kind));
-  if (slot.kind === "replay") return join(root, "work", "replay");
+  if (slot.kind === "replay") return join(root, "work", e2AbArmOfSlot(slot.arm) === undefined ? "replay" : slot.arm);
   need(["switch", "cancel", "idle", "pressure"].includes(slot.arm) && ["ceiling", "restart"].includes(slot.variant));
   return join(root, "work", `${slot.arm}-${slot.variant}`);
 }
@@ -289,6 +290,25 @@ export function assertE2BaselineRequest(context, options) {
       .filter(p => ["text", "input_text", "output_text"].includes(p.type)).map(p => p.text).join("\n") }))
     .filter(m => m.content.startsWith("<conversation>\n"));
   if (e2BodySummaryRepresentations({ input: serialized }).some(r => r.kind === "pack")) fail("e2_payload_forbidden");
+}
+const PACK_HEADING = "### Conversation continuity pack (historical evidence)\n";
+const contentText = m => typeof m.content === "string" ? m.content : (Array.isArray(m.content) ? m.content : [])
+  .filter(p => ["text", "input_text", "output_text"].includes(p?.type)).map(p => p.text).join("\n");
+// Pack-withheld A/B probes: remove only the injected pack message (historical
+// user role, never the current prompt); every other message is kept unchanged.
+export function withoutE2ContinuityPack(context) {
+  const messages = context.messages ?? [], lastUser = messages.findLastIndex(m => m.role === "user");
+  return { ...context, messages: messages.filter((m, i) => !e2ContinuityPackMessage(m, i, lastUser)) };
+}
+// Strict residue check for Pi contexts and native bodies: any role, any
+// position, including role-framed compaction serialization.
+export function assertE2NoContinuityPack(context, code = "e2_payload_forbidden") {
+  const messages = context.messages ?? context.input ?? [];
+  if (messages.some(m => contentText(m).startsWith(PACK_HEADING) || (Array.isArray(m.content) ? m.content : [])
+    .some(p => typeof p?.text === "string" && p.text.startsWith(PACK_HEADING)))) fail(code);
+  const serialized = messages.map(m => ({ role: m.role, content: contentText(m) })).filter(m => m.content.startsWith("<conversation>\n"));
+  let packed; try { packed = e2BodySummaryRepresentations({ input: serialized }).some(r => r.kind === "pack"); } catch { packed = true; }
+  if (packed) fail(code);
 }
 export function e2BodySummaryDigests(body) { return e2BodySummaryRepresentations(body).map(r => digest(r.text)); }
 export async function verifyE2NativeLineage(bytes, hold, state, assignment, readArtifact) {

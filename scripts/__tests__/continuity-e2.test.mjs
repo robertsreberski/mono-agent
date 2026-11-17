@@ -425,6 +425,16 @@ it("writes scoring artifacts privately and refuses outputs in the checkout", asy
   expect(await main(["score", "--answers", answers, "--keys", keys, "--output", output], io)).toBe(1); expect(err.pop()).toBe("EEXIST\n");
 });
 const E2_IMPORT_SHAPES = {
+  "scripts/lib/continuity-e2-ab.mjs": {
+    "./continuity-dataset.mjs": "{ digest as canonicalDigest }",
+    // Relocation rewrites the restored copy's sidecar path pointers and scans every SQLite table read-only.
+    "node:sqlite": "{ DatabaseSync }",
+  },
+  "scripts/lib/continuity-e2-ab-score.mjs": {
+    // Receipts are bound to the registration's canonical digest and the writer's capture caps.
+    "./continuity-dataset.mjs": "{ digest as canonicalDigest }",
+    "./continuity-e2-probe-receipts.mjs": "{ E2_PROBE_RECEIPT_LIMITS }",
+  },
   "scripts/lib/continuity-e2-summary-plan.mjs": {
     "./continuity-dataset.mjs": "{ digest }",
     "./continuity-e2-summary-receipts.mjs": "{ verifyE2SummaryResult, e2SummaryResultPath }",
@@ -554,6 +564,18 @@ const E2_PROTECTED_IMPORTS = {
   },
 };
 const E2_DYNAMIC_SHAPES = {
+  // Pack-withheld History A/B: build-bound description reads and the frozen-snapshot probe closure.
+  "scripts/lib/continuity-e2-ab.mjs": {
+    'new URL("../../packages/app/dist/request-tools/history.js", import.meta.url).href': ["{historyDescription}"],
+    'new URL("../../packages/app/dist/request-tools/history-policy.js", import.meta.url).href': ["{resolveHistoryScopes}"],
+    'new URL("../../packages/app/dist/request-tools/conversation-history.js", import.meta.url).href': [".CONVERSATION_HISTORY_DESCRIPTION"],
+    "./continuity-e2-replay.mjs": ["{treeReceipt}", "{restoreCheckpoint,treeReceipt,e2ProbeMeasurement,privateModes}"],
+    "./continuity-runner.mjs": ["{openHarness,productionModules}"],
+    "./continuity-e2-probe-receipts.mjs": ["{createE2ProbeReceipts}"],
+    "./continuity-e2-progress.mjs": ["{writeE2Progress,writeE2ProgressGap}"],
+    "./continuity-e2-runtime.mjs": ["{assertE2PhaseAdapter}"],
+    "./continuity-e2-sizing-identity.mjs": ["{e2SizingIdentity,assertE2SizingIdentity}"],
+  },
   "scripts/lib/continuity-e2-sizing-child.mjs": {
     "./continuity-e2-sizing-identity.mjs": [
         "{e2SizingIdentity,assertE2SizingIdentity}"
@@ -607,6 +629,15 @@ const E2_DYNAMIC_SHAPES = {
     "./continuity-holdout-workflow.mjs": ["{durable,directoryOnly}"]
   },
   "scripts/continuity-e2.mjs": {
+    "./lib/continuity-e2-ab.mjs": [
+      "{buildE2HistoryAbBinding}",
+      "{e2AbArmLetters,e2AbSlotArm,assertE2HistoryAbBinding}",
+      "{estimateE2HistoryAb,e2AbProbeCounts}",
+      "{runE2HistoryAbSizing,e2AbFrozenRecord,assertE2HistoryAbBinding}"
+    ],
+    "./lib/continuity-e2-ab-score.mjs": [
+      "{scoreE2HistoryAb,readE2AbReceipts,e2AbScoringInputs}"
+    ],
     "./lib/continuity-e2-paid-entry.mjs": [
       "{runE2Paid}",
       "{reconcileE2Paid}"
@@ -679,6 +710,9 @@ const E2_DYNAMIC_SHAPES = {
     ]
   },
   "scripts/lib/continuity-e2-phase-child.mjs": {
+    "./continuity-e2-ab.mjs": [
+      "{runE2HistoryAb}"
+    ],
     "./continuity-e2-replay.mjs": [
       "{runE2Sizing}"
     ],

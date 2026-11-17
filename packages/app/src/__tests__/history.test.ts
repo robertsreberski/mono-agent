@@ -71,6 +71,24 @@ it("gates directive sentences on the said scope", () => {
   expect(historyDescription(["tools", "runs"])).toBe(historyDescription(["tools", "runs"], { variant: "compact" }));
   expect(historyDescription(["runs"])).toBe(historyDescription(["runs"], { variant: "compact" }));
 });
+it.each([undefined, "compact", "directive"] as const)("offers the internal %s description variant through the server and request extension", async variant => {
+  const f = await fixture(), expected = historyDescription(HISTORY_SCOPES, variant === undefined ? undefined : { variant });
+  const list = async (server: McpServer) => {
+    const client = new Client({ name: "fictional-variant", version: "1" }); const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a); await client.connect(b); cleanup.push(() => server.close()); cleanup.push(() => client.close());
+    return (await client.listTools()).tools;
+  };
+  const direct = await list(createHistoryServer({ ...f.binding, ...(variant === undefined ? {} : { descriptionVariant: variant }) }));
+  expect(direct.map(tool => tool.description)).toEqual([expected]);
+  const extension = createHistoryRuntimeExtension({ historyRoot: join(f.root, "history"), artifactDir: f.binding.artifactDir, policy: { allowedTools: ["History"] },
+    capabilities: { said: true, tools: true, runs: true }, ...(variant === undefined ? {} : { descriptionVariant: variant }) })!;
+  const result = await extension(input()); cleanup.push(() => result.cleanup?.());
+  const client = new Client({ name: "fictional-variant-http", version: "1" });
+  await client.connect(new StreamableHTTPClientTransport(new URL((result.runtimeOptions!.mcpServers as any)[HISTORY_MCP_SERVER_NAME].url)) as never);
+  cleanup.push(() => client.close());
+  expect((await client.listTools()).tools.map(tool => tool.description)).toEqual([expected]);
+  if (variant !== "compact") expect(expected).toBe(historyDescription(HISTORY_SCOPES));
+});
 
 const allDenies = [...unifiedNames, ...HISTORY_SCOPES.flatMap(s => HISTORY_SCOPE_ALIASES[s])];
 it.each(allDenies)("late deny %s matches Pi and removes all advertising", deny => {

@@ -1,4 +1,4 @@
-import { historySurfaceBinding } from "./continuity-e2-history.mjs";
+import { historySurfaceBinding, E2_AB_REPLAY_ARM, e2AbArmOfSlot } from "./continuity-e2-history.mjs";
 // Closed E2 accounting policy. Durable admission/consume/settle remain in the shared core.
 import { join } from "node:path";
 import { digest } from "./continuity-dataset.mjs";
@@ -13,6 +13,7 @@ import { validE2FailureCause, observeE2NativeCause, captureE2NativeCause, e2Prov
 import { readE2Progress, writeE2PartialScore } from "./continuity-e2-progress.mjs";
 import { E2_RETRY_POLICY, authorizeE2Retry, effectiveE2Summaries, supersedingE2Summary, e2RetryCounts } from "./continuity-e2-retry.mjs";
 import { e2ReplayArm } from "./continuity-e2-protocol.mjs";
+import { assertE2NoContinuityPack } from "./continuity-e2-lineage.mjs";
 import { bindE2NativeCompaction } from "./continuity-e2-journals.mjs";
 import { E2_PROTECTION_REFUSALS, e2NativeCompactionSnapshot, e2RefusalCounts } from "./continuity-e2-compaction.mjs";
 const fail = (code = "e2_permit_invalid") => { throw Object.assign(Error(code), { code }); };
@@ -65,7 +66,16 @@ function requestTools(pilot, planned, p, probeRequest) {
   need(Number.isSafeInteger(rounds) && rounds >= 1 && rounds <= 4, "e2_registration_invalid");
   need(Number.isSafeInteger(probeRequest) && probeRequest >= 1 && probeRequest <= rounds + 1
     && p.paidRole === (probeRequest === 1 ? "probe" : "continuation"), "e2_request_limit");
-  return probeRequest === rounds + 1 ? tools.replayFinal : tools.replay;
+  // Pack-withheld A/B slots offer exactly their registered arm's lookup tool.
+  const ab = e2AbArmOfSlot(planned.arm);
+  need((e2ReplayArm(pilot.registration.replayArm) === E2_AB_REPLAY_ARM) === (ab !== undefined), "e2_registration_invalid");
+  return probeRequest === rounds + 1 ? tools.replayFinal : ab === undefined ? tools.replay : tools.abReplay[ab];
+}
+// The registered arm's offered History description (B compact, C directive, A ConversationHistory).
+function abDescriptionSha256(pilot, ab) {
+  const value = pilot.registration.historyAb?.arms?.find(a => a?.arm === ab)?.description?.sha256;
+  need(typeof value === "string" && /^[a-f0-9]{64}$/u.test(value), "e2_registration_invalid");
+  return value;
 }
 // Funding is shared; only the controller owns live hold counts and lifecycle admission.
 function requestFunding(pilot, planned, p, operationDigest, probeRequest) {
@@ -76,7 +86,8 @@ function requestFunding(pilot, planned, p, operationDigest, probeRequest) {
   need(budget, "e2_request_limit");
   const reserve = e2RequestPrice(catalog, { inputTokens: p.inputTokens, maxOutputTokens: role.maxOutputTokens }).reservationUnits;
   need(p.reservationUnits === reserve);
-  return { reserve: BigInt(reserve), metadata: { ...historySurfaceBinding(pilot.registration.historySurface), ...(pilot.registration.replayArm === "baseline" ? { replayArm: "baseline" } : {}), model: p.model, paidRole: p.paidRole, checkpoint: p.checkpoint, measuredInputTokens: p.inputTokens,
+  const ab = planned.kind === "replay" ? e2AbArmOfSlot(planned.arm) : undefined;
+  return { reserve: BigInt(reserve), metadata: { ...historySurfaceBinding(pilot.registration.historySurface), ...(pilot.registration.replayArm === "baseline" ? { replayArm: "baseline" } : {}), ...(ab === undefined ? {} : { replayArm: E2_AB_REPLAY_ARM, abArm: ab, abDescriptionSha256: abDescriptionSha256(pilot, ab) }), model: p.model, paidRole: p.paidRole, checkpoint: p.checkpoint, measuredInputTokens: p.inputTokens,
     ...(p.paidRole === "summary" ? { operationDigest } : {}), inputMax: catalog.contextWindow, outputMax: role.maxOutputTokens, catalog: structuredClone(catalog),
     ...(probeRequest === undefined ? {} : { probeRequest }),
     tools: [...requestTools(pilot, planned, p, probeRequest)] } };
@@ -159,7 +170,8 @@ export const e2ExecutionPolicy = Object.freeze({
   assertPayload(body, _round, contract) {
     const role = contract.e2.pilot.registration.roles.find(r => r.role === contract.e2.paidRole && r.model === contract.e2.model);
     const allowed = requestTools(contract.e2.pilot, contract.e2.planned, contract.e2, contract.e2.probeRequest);
-    this.assertBody(Buffer.from(JSON.stringify(body)), { model: contract.e2.model, tools: allowed, ...(contract.e2.probeRequest === undefined ? {} : { probeRequest: contract.e2.probeRequest }) });
+    const ab = contract.e2.planned?.kind === "replay" ? e2AbArmOfSlot(contract.e2.planned.arm) : undefined;
+    this.assertBody(Buffer.from(JSON.stringify(body)), { model: contract.e2.model, tools: allowed, ...(contract.e2.probeRequest === undefined ? {} : { probeRequest: contract.e2.probeRequest }), ...(ab === undefined ? {} : { abArm: ab, abDescriptionSha256: abDescriptionSha256(contract.e2.pilot, ab) }) });
     need(role && (contract.effort === "off" ? [undefined, "none"].includes(body.reasoning?.effort) : body.reasoning?.effort === contract.effort) && Array.isArray(body.input)
       && Object.keys(body).every(k => ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "tools", "reasoning"].includes(k)), "e2_payload_forbidden");
     // Shipping compaction deliberately disables body caching. Its authenticated
@@ -335,7 +347,8 @@ export const e2ExecutionPolicy = Object.freeze({
     need(slot && planned && slot.slotId === planned.slotId && [...protocol.policy.SLOT_TERMINALS, null].includes(slot.terminal)
       && [null, 0, 1].includes(slot.score), "e2_receipt_invalid");
     const spend = accountRun([slot]);
-    const row = { ...historySurfaceBinding(state.historySurface), ...(planned.arm === "baseline" ? { replayArm: "baseline", qualification: false } : {}), compactionRefusals: e2RefusalCounts([slot]), retries: e2RetryCounts([slot]), ...(slot.diagnostics && Object.keys(slot.diagnostics).length ? { diagnostics: slot.diagnostics } : {}), schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
+    const abArm = planned.kind === "replay" ? e2AbArmOfSlot(planned.arm) : undefined;
+    const row = { ...historySurfaceBinding(state.historySurface), ...(planned.arm === "baseline" ? { replayArm: "baseline", qualification: false } : {}), ...(abArm === undefined ? {} : { replayArm: E2_AB_REPLAY_ARM, abArm, qualification: false }), compactionRefusals: e2RefusalCounts([slot]), retries: e2RetryCounts([slot]), ...(slot.diagnostics && Object.keys(slot.diagnostics).length ? { diagnostics: slot.diagnostics } : {}), schema: protocol.schemas.slotReceipt, slotId: planned.slotId, position: index, terminal: slot.terminal,
       score: ["completed", "wrong"].includes(slot.terminal) ? slot.score : null,
       qualityMeasured: state.schema === protocol.policy.REAL_CONTROLLER && slot.holds.length > 0 && ["completed", "wrong"].includes(slot.terminal) && slot.score !== null,
       calls: { admitted: slot.holds.length, consumed: slot.holds.filter(h => h.consumed).length, settled: slot.holds.filter(h => h.settlement).length,
@@ -354,7 +367,7 @@ export const e2ExecutionPolicy = Object.freeze({
       need(count(r.position) && r.position < visited && !seen.has(r.position) && digest(r) === digest(this.slotReceipt(state, r.position, accountRun, protocol)), "e2_receipt_invalid"); seen.add(r.position);
     }
     const spend = accountRun(state.slots);
-    return { ...historySurfaceBinding(state.historySurface), ...(state.schedule.some(p => p.arm === "baseline") ? { replayArm: "baseline", qualification: false } : {}), compactionRefusals: e2RefusalCounts(state.slots), retries: e2RetryCounts(state.slots), schema: protocol.schemas.report, authorization: state.schema === protocol.policy.REAL_CONTROLLER, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-validation" : "faux-only",
+    return { ...historySurfaceBinding(state.historySurface), ...(state.schedule.some(p => p.arm === "baseline") ? { replayArm: "baseline", qualification: false } : {}), ...(state.schedule.some(p => p.kind === "replay" && e2AbArmOfSlot(p.arm)) ? { replayArm: E2_AB_REPLAY_ARM, qualification: false } : {}), compactionRefusals: e2RefusalCounts(state.slots), retries: e2RetryCounts(state.slots), schema: protocol.schemas.report, authorization: state.schema === protocol.policy.REAL_CONTROLLER, executionKind: state.schema === protocol.policy.REAL_CONTROLLER ? "authorized-validation" : "faux-only",
       qualityMeasured: receipts.some(r => r.qualityMeasured), schedule: { planned: state.schedule.length, visited, missing: visited - seen.size, remaining: state.schedule.length - visited }, stop: state.stop,
       costs: { unitsPerUSD: protocol.policy.USD_UNITS.toString(), capUnits: state.capUnits, ...Object.fromEntries(Object.entries(spend).filter(([key]) => key.endsWith("Units"))) },
       phases: [...receipts].sort((a, b) => a.position - b.position).map(({ slotId: _slotId, sha256: _sha256, ...r }) => r) };
@@ -370,6 +383,13 @@ export const e2ExecutionPolicy = Object.freeze({
     need(tools.every(t => t.type === "function" && hold.tools.includes(t.name)), "e2_tools_forbidden");
     if (hold.probeRequest !== undefined) need(tools.length === hold.tools.length, "e2_tools_forbidden");
     validateBody(body);
+    // The controller's own pack-withheld boundary, independent of the child filter.
+    if (hold.abArm !== undefined) {
+      assertE2NoContinuityPack(body);
+      // Every offered tool carries exactly the registered arm's description bytes.
+      need(typeof hold.abDescriptionSha256 === "string" && /^[a-f0-9]{64}$/u.test(hold.abDescriptionSha256)
+        && tools.every(t => typeof t.description === "string" && rawDigest(t.description) === hold.abDescriptionSha256), "e2_tools_forbidden");
+    }
     if (hold.replayArm === "baseline") {
       const kind = hold.paidRole === "summary" ? "summary"
         : hold.probeRequest !== undefined || hold.paidRole === "probe" ? "probe" : "source";

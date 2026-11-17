@@ -2785,6 +2785,123 @@ correct answer without a witness is still inconclusive. **This is a control
 measurement, never a release-gate qualification**, even if its numerical score
 meets the scorer's threshold.
 
+### E2 pack-withheld History A/B (observational)
+
+Select `--replay-arm history-ab` to compare retained-history tool surfaces from
+one **frozen, committed** E2 checkpoint. The mode never replays the source and
+makes no summary requests: each probe restores the registered snapshot (at the
+new run's own absolute root), withholds the injected continuity pack from every
+probe and continuation request, keeps the seeded and live messages, runs the
+protocol's lookup rounds and withdraws tools on the final request. A pack, or any
+unauthenticated summary claim, left in a request refuses before sizing or
+sending; the controller re-checks the serialized body independently.
+
+The frozen tree pins its own absolute work root: the sidecar's `artifact_root`
+(which the shipping writer enforces), artifact references, run summaries and
+session headers. After the receipt-verified restore, the harness rewrites exactly
+those path pointers on the copy. Every JSON and JSONL file is parsed whatever its
+raw bytes show, so a whole path string written with escapes such as `\/` or
+`\u002f` is decoded and remapped. The harness then proves that no decoded value
+in the copy still names the old root: file bytes, JSON string escapes (including
+JSON nested in strings), percent-encoding, parsed JSON strings and keys, and every
+SQLite table value and schema. Anything else that carries the old root refuses
+(`E2_AB_RELOCATION_REFUSED`). The frozen snapshot is never written.
+
+Before the first request of every probe, the shipping writer must open the
+relocated store and the reader must report healthy continuity with retained
+records. Production History is fail-open, so genuine store and infrastructure
+unavailability is latched rather than thrown. A latched degradation refuses the
+next request and voids the probe (`E2_HISTORY_DEGRADED`). The latch covers:
+
+- every History store or endpoint warning, such as writer acquisition failure
+  (`history_artifact_root_mismatch`), `sidecar_unavailable` or an endpoint that
+  could not start;
+- a lookup result with the shipping code `history_unavailable`, or a said search
+  whose reader reports `available: false`;
+- a store that no longer opens when re-checked after any lookup result.
+
+A model's own lookup mistake does not latch. A typo'd or missing record, or a bad
+query, cursor or scope, is counted by code in the phase's `history.lookupErrors`,
+and the answer is scored. Restoring at the frozen run's original root is not
+used: that directory belongs to the committed run's own evidence, and the
+authorization requires a disjoint output root.
+
+| Arm | Surface | Description |
+|---|---|---|
+| `A` | split `ConversationHistory`, default soul | shipping `ConversationHistory` text |
+| `B` | unified `History`, unified soul | `compact` |
+| `C` | unified `History`, unified soul | `directive` |
+
+The description variant is an internal harness option threaded to the shipping
+`History` server; there is no config key. Each arm's surface, soul digests,
+tool name and offered description bytes (SHA-256 and length) are recomputed
+from the bound build, pinned in the binding and asserted on every offered tool,
+by the probe route and again by the controller: each A/B hold carries its
+registered arm's description digest and the serialized body must offer exactly
+those bytes.
+
+```sh
+# Content-free binding: frozen replay record, snapshot tree, row ids, arms
+node scripts/continuity-e2.mjs ab-bind --replay /private/run/work/replay/replay.json \
+  --snapshot /private/run/work/replay/branch-0/snapshots/checkpoint-2 \
+  --branch 0 --checkpoint 2 --rows ROW_ID,ROW_ID --primary ROW_ID --output /private/ab-bind
+# Offline faux sizing of every bound arm from the frozen tree
+node scripts/continuity-e2.mjs size --replay-arm history-ab \
+  --history-ab /private/ab-bind/history-ab.json --source /private/source \
+  --protocol /private/protocol.json --output /private/ab-sizing
+node scripts/continuity-e2.mjs --estimate --replay-arm history-ab \
+  --history-ab /private/ab-bind/history-ab.json --protocol /private/protocol.json \
+  --limits /private/ab-limits.json --sizing /private/ab-sizing/sizing.json \
+  --output /private/ab-estimate
+```
+
+The binding (`continuity-e2-history-ab-v1`) holds the frozen run's `replay.json`
+path and SHA-256, the snapshot directory, its branch/checkpoint ordinals and tree
+receipt, the arm contracts, the selected row ids and a primary subset. The tree
+receipt must equal the replay record's checkpoint receipt and the snapshot bytes;
+the replay record must name the registered source and protocol digests. Selected
+rows must be registered questions with frozen keys at that checkpoint.
+
+A registration has `replayArm: "history-ab"`, the binding as `historyAb`, no
+`historySurface` or `soul`, Sol-only `probe` and `continuation` roles, and one
+replay-kind phase per arm (`history-ab-A`, `history-ab-B`, `history-ab-C`) in a
+single paid run. Rows, arms and the frozen tree are inside the registration and
+authorization digests. Sizing is row-blind and bound to the frozen tree and arms;
+it must be fresh on the registered clean code and build. The minimum cap is the
+no-cache aggregate plus the largest single reservation (`minimumCapUnits`);
+retry exposure is reported separately. Paid entry must pass
+`--replay-arm history-ab`; no surface selector applies.
+
+Each phase writes `answers.json`, an informational frozen `score.json` and its
+probe receipts. A/B receipts cover every offered scope (`History` said, tools
+and runs, and `ConversationHistory`), name the tool and scope on each call, and
+close every probe with a `settled` receipt. A unified `History` call whose scope
+fails the shipping scope check (missing or typo'd) is receipted with scope
+`invalid`. It counts as a lookup attempt (`byScope.invalid`), never as "no
+lookup". `ab-score --registration FILE
+--sha256 HASH --run DIR --keys FILE --output NEW_DIR` checks the registration
+against its SHA-256 and the keys against the registration's own binding. It
+classifies every answer with the frozen `scoreE2` on that single answer
+(`ratePass` correct, `blocking` confident wrong, `rateMiss` abstain). It then
+crosses each answer with lookups derived only from the validated receipt stream
+for that arm, row and repeat.
+
+A receipt is verified only when it matches what the registration expects: the
+registration's canonical digest, the arm's own slot, the arm, the frozen branch,
+the global checkpoint and a registered row and repeat. Probes must appear once
+each, in registered order, each closed by its `settled` receipt. Every captured
+tool name, call id and argument must be whole, and its SHA-256 and lengths are
+recomputed. Each lookup scope is re-derived from those argument bytes. Results
+and metadata are recomputed where whole and length-checked where truncated.
+
+An item whose receipts are missing or fail any check is reported as unverified,
+never as "no lookup". It reports, per
+arm, overall and for the primary subset: lookup evidence, lookup rate, correct,
+wrong without lookup, wrong after lookup, abstain and correct without lookup (a
+contamination flag). **The A/B is observational,
+`qualification: false`, never the release gate.** Omitting the mode leaves every
+existing registration, policy, schedule, estimate and CLI path unchanged.
+
 ### E2 registration, authorization and paid execution
 
 The closed guarded selector includes `e2-validation`, with independent schemas,

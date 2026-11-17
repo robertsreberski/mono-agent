@@ -13,8 +13,8 @@ export function e2AuthorizationBindings(pilot, registrationRawSha256, { outputRo
   validateE2Deadlines(pilot.descriptor.deadlines);
   const r = pilot.registration;
   return { registrationRawSha256, registrationSha256: digest(pilot), ...historySurfaceBinding(r.historySurface), ...(r.replayArm === undefined ? {} : { replayArm: r.replayArm }), code: r.code, build: r.build, catalog: r.catalog,
-    protocol: r.protocol, source: r.source, probes: r.probes, keys: r.keys, soul: r.soul, roles: r.roles, schedule: r.schedule,
-    account: { salt, commitment: accountCommitment }, tools: r.toolPolicies, deadlines: pilot.descriptor.deadlines,
+    protocol: r.protocol, source: r.source, probes: r.probes, keys: r.keys, ...(r.soul === undefined ? {} : { soul: r.soul }), roles: r.roles, schedule: r.schedule,
+    account: { salt, commitment: accountCommitment }, tools: r.toolPolicies, ...(r.historyAb === undefined ? {} : { historyAb: r.historyAb }), deadlines: pilot.descriptor.deadlines,
     capUnits: pilot.descriptor.capUnits, descriptor: pilot.descriptor, outputRoot, credentialPath };
 }
 export async function validateE2GuardedAuthorization(args, helpers) {
@@ -41,7 +41,8 @@ export async function validateE2GuardedAuthorization(args, helpers) {
   need(controllerRoot === ROOT && pilot.registration.code.path === ROOT && await realpath(controllerRoot) === controllerRoot
     && await realpath(credentialPath) === credentialPath, "e2_authorization_binding_mismatch");
   for (const path of [ROOT, authorizationPath, registrationPath, credentialPath, pilot.registration.source.path,
-    pilot.registration.protocol.path, pilot.registration.probes.path, pilot.registration.keys.path, ...pilot.registration.sizing.map(s => s.path)])
+    pilot.registration.protocol.path, pilot.registration.probes.path, pilot.registration.keys.path, ...pilot.registration.sizing.map(s => s.path),
+    ...(pilot.registration.historyAb ? [pilot.registration.historyAb.frozen.replay.path, pilot.registration.historyAb.frozen.snapshot] : [])])
     need(disjoint(outputRoot, await realpath(path)), "e2_authorization_binding_mismatch");
   await safeRead(credentialPath, "e2_unsafe_authorization_file");
   need(same(artifact.bindings, e2AuthorizationBindings(pilot, sha256(registrationBytes), { outputRoot, credentialPath, salt: artifact.salt, accountCommitment: artifact.accountCommitment })), "e2_authorization_binding_mismatch");

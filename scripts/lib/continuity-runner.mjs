@@ -136,9 +136,12 @@ export function configJson({ work, authPath, model, effort, tools, configPatch }
   }, configPatch ?? {});
 }
 
-export async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {}, hostOptions = {}, pilot, e2 }) {
+export async function openHarness({ modules, work, authPath, model, effort, tools, configPatch, route, clock, onHistoryWarning = () => {}, hostOptions = {}, pilot, e2, historyDescriptionVariant }) {
   if (pilot && e2) throw new ContinuityError("lookup_pilot_capability_invalid");
   if (pilot && Object.hasOwn(process.env, "CONTINUITY_DEBUG")) throw new ContinuityError("lookup_debug_forbidden");
+  // Offline A/B selection only; omitted keeps the shipping description default.
+  const variantRefused = () => { throw Object.assign(Error("E2_AB_BINDING_INVALID"), { code: "E2_AB_BINDING_INVALID" }); };
+  if (historyDescriptionVariant !== undefined && (pilot || !["compact", "directive"].includes(historyDescriptionVariant))) variantRefused();
   if (pilot?.routeKind === "real") {
     const { realLookupSendBinds } = await import("./continuity-lookup-real-capability.mjs");
     if (!realLookupSendBinds(pilot.send, { ...pilot, authPath, work })) throw new ContinuityError("lookup_pilot_capability_invalid");
@@ -150,6 +153,7 @@ export async function openHarness({ modules, work, authPath, model, effort, tool
   if (pilot?.routeKind === "real") json.providers.piAuthPath = authPath;
   const config = modules.config.resolveJsonMonoAgentConfig({ json, cwd: work });
   if (e2) { (await import("./continuity-e2-runtime.mjs")).assertE2PhaseAdapter(e2); e2.assertConfig(config); }
+  if (historyDescriptionVariant !== undefined && config.tools?.history?.unified !== true) variantRefused();
   const check = pilot ? (options, forwarded = false) => assertResolvedLookupSafety({ ...pilot, config, options, forwarded }) : null;
   if (check) { check(); if (Object.keys(hostOptions).length) throw new ContinuityError("lookup_auxiliary_callers_forbidden"); }
   // Existing reentrant ownership seam: establish the isolated physical lease
@@ -185,6 +189,7 @@ export async function openHarness({ modules, work, authPath, model, effort, tool
           scopeRollovers: { said: rollover, tools: rollover, runs: rollover }, policy: config.tools,
           capabilities: { said: config.runtime.session.continuity?.enabled !== false, tools: true, runs: true },
           onUnavailable: () => onHistoryWarning("History endpoint could not start; retained evidence is unavailable this run."),
+          ...(historyDescriptionVariant === undefined ? {} : { descriptionVariant: historyDescriptionVariant }),
         }), hostOptions.runtimeOptionsForRequest,
       ]) };
     }

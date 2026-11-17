@@ -533,6 +533,7 @@
   },
   "protocolFiles": [
     "package.json",
+    "packages/app/src/request-tools/conversation-history.ts",
     "packages/app/src/request-tools/history-policy.ts",
     "packages/app/src/request-tools/history-presentation.ts",
     "packages/app/src/request-tools/history.ts",
@@ -543,6 +544,8 @@
     "scripts/continuity-holdout/statistical-spec.json",
     "scripts/continuity-lookup-compare.mjs",
     "scripts/continuity-lookup-estimate.mjs",
+    "scripts/lib/continuity-e2-ab-score.mjs",
+    "scripts/lib/continuity-e2-ab.mjs",
     "scripts/lib/continuity-e2-authorization.mjs",
     "scripts/lib/continuity-e2-capacity.mjs",
     "scripts/lib/continuity-e2-cause.mjs",
