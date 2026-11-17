@@ -49,9 +49,6 @@ export interface BuildContextInput {
   readonly identity: ContextBlockInput;
   readonly userMessage: string;
   readonly core?: ContextBlockInput;
-  /** App-selected default core. Absent keeps the legacy soul; an explicit
-   * `core` still wins. Custom souls pass through unchanged. */
-  readonly defaultCore?: 'legacy' | 'unified';
   /**
    * Live runtime facts about the current turn: whether it is a deliverable push
    * conversation, an interactive console conversation, or a request-driven one,
@@ -113,7 +110,6 @@ export interface FileContextInput {
   readonly soulPath?: string;
   /** App-selected default core when `soulPath` is omitted. Absent keeps the
    * legacy soul; an explicit `soulPath` still wins. */
-  readonly defaultCore?: 'legacy' | 'unified';
   readonly session?: ContextBlockInput;
   readonly memory?: ContextBlockInput | readonly ContextBlockInput[];
   readonly history?: readonly HistoryMessage[];

@@ -10,5 +10,5 @@ export function buildToolHistoryProjection(
   void continuityEnabled;
   return renderToolHistoryProjection(prepareToolHistoryProjection(reader, logicalConversationId, currentConversationId,
     currentRunId, excludedRecordIds),
-    { conversationHistory: conversationHistoryAvailable, sessionHistory: true }, packExcludedRecordIds);
+    { said: conversationHistoryAvailable, tools: true, runs: false }, packExcludedRecordIds);
 }

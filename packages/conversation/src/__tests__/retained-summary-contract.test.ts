@@ -186,7 +186,7 @@ it.each(["reset", "delete"] as const)("suppresses a prepared %s and permits only
 it("exposes only the final successful renderer entry with exact UTF-8 location and whole-pack commitment", async () => {
   const f = await fixture(); await publish(f);
   const snapshot = f.reader.snapshotContinuity(scope), record = snapshot.records[0]!;
-  const pack = renderContinuityPack(snapshot, [], 8000, undefined, false, true), selection = pack.summarySelection!;
+  const pack = renderContinuityPack(snapshot, [], 8000, undefined, false, { said: true, tools: false, runs: false }), selection = pack.summarySelection!;
   const entry = Buffer.from(pack.text!).subarray(selection.entry.startByte, selection.entry.endByte).toString();
   expect(entry).toBe(`Generated summary evidence id=${JSON.stringify(record.recordId)} sha256=${JSON.stringify(record.sha256)}: ${JSON.stringify(record.text)}\n`);
   expect(selection).toMatchObject({ recordId: record.recordId, generationId: record.generationId, sha256: record.sha256,

@@ -69,8 +69,8 @@ it("joins finalized tool text by exact call identity, preserving state and compa
   expect(source.records).toHaveLength(1);
   expect(source.records[0]!.tool).toMatchObject({ name: "mail_send", state: "success" });
   const { buildToolHistoryProjection } = await import("./fixtures/tool-history-projection.js");
-  expect(buildToolHistoryProjection(f.reader, "fictional", "fictional", "current", new Set(), true, true)?.text).toContain("Use ConversationHistory");
-  expect(buildToolHistoryProjection(f.reader, "fictional", "fictional", "current")?.text).toContain("Use SessionHistory");
+  expect(buildToolHistoryProjection(f.reader, "fictional", "fictional", "current", new Set(), true, true)?.text).toContain('Use History (scopes "said", "tools")');
+  expect(buildToolHistoryProjection(f.reader, "fictional", "fictional", "current")?.text).toContain('Use History (scope "tools")');
   const pack = renderContinuityPack(source, []);
   expect(pack.text).toContain("DRAFT-42"); expect(pack.text).toContain("SENT delivery=MESSAGE-42");
   expect(pack.counts.tool).toBe(1);
@@ -295,18 +295,18 @@ it("never clips an effect's long first paragraph; a second-paragraph outcome is 
 });
 
 it("adds the exact pack-only guidance only when available and charges its full estimate", () => {
-  expect(PACK_RETRIEVAL_GUIDANCE).toBe("Tool evidence id = ConversationHistory recordId, not invocation_id.\nGet the record before guessing exact values or claiming absence; search if no id is shown.\nFollow search/get cursors. Pack omission may be retrievable; source redaction/truncation is irreversible here.\n");
-  expect(Buffer.byteLength(PACK_RETRIEVAL_GUIDANCE)).toBe(270);
+  expect(PACK_RETRIEVAL_GUIDANCE).toBe("Tool evidence id = History recordId (scope \"said\"), not invocation_id.\nGet the record before guessing exact values or claiming absence; search if no id is shown.\nFollow search/get cursors. Pack omission may be retrievable; source redaction/truncation is irreversible here.\n");
+  expect(Buffer.byteLength(PACK_RETRIEVAL_GUIDANCE)).toBe(273);
   const source = { records: [record(1, "Fictional retained request.")], omitted: 0, gaps: 0 };
   const legacy = renderContinuityPack(source, []);
-  const available = renderContinuityPack(source, [], 8000, undefined, false, true);
-  expect(available.tokens - legacy.tokens).toBe(90);
+  const available = renderContinuityPack(source, [], 8000, undefined, false, { said: true, tools: false, runs: false });
+  expect(available.tokens - legacy.tokens).toBe(91);
   expect(available.tokens).toBe(packTokens(available.text!));
   expect(available.text).toContain(PACK_RETRIEVAL_GUIDANCE);
   expect(legacy.text).not.toContain(PACK_RETRIEVAL_GUIDANCE);
   const tool = { ...record(2, "Fictional result.", "tool"), tool: { name: "Read", state: "success", arguments: "x".repeat(3000), invocationId: "sth1_fictional" } };
   for (const available of [false, true]) {
-    const pack = renderContinuityPack({ records: [tool], omitted: 0, gaps: 0 }, [], 8000, undefined, false, available);
+    const pack = renderContinuityPack({ records: [tool], omitted: 0, gaps: 0 }, [], 8000, undefined, false, { said: available, tools: false, runs: false });
     expect(pack.text).toContain("[arguments omitted: size]"); expect(pack.text).not.toContain("retrieve by reference");
   }
 });
@@ -316,18 +316,18 @@ it.each([false, true])("does not route to an unavailable source even with a live
   vi.spyOn(f.reader, "snapshotContinuity").mockImplementation(() => { throw new Error("Fictional outage"); });
   const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true } } as unknown as ConversationHarnessOptions;
   const supply = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Inspect", abortSignal: new AbortController().signal }, "current")!;
-  const text = String(supply([], 8000, "detached_context", () => {}, undefined, available)[0]!.content);
+  const text = String(supply([], 8000, "detached_context", () => {}, undefined, { said: available, tools: false, runs: false })[0]!.content);
   expect(text).not.toContain("ConversationHistory");
   expect(text).toContain("No historical evidence supplied");
 });
 
-it("never directs retrieval while a purge is pending, even with ConversationHistory available", async () => {
+it("never directs retrieval while a purge is pending, even with History said scope available", async () => {
   const f = await fixture(); await publish(f.writer, "Fictional retained evidence.", "old");
   const options = { toolHistory: { ...f, logicalConversationId: (id: string) => id, continuityEnabled: true } } as unknown as ConversationHarnessOptions;
   const supply = createContinuityPackSupplier(options, { conversationId: "fictional", userMessage: "Inspect", abortSignal: new AbortController().signal }, "current")!;
-  expect(String(supply([], 8000, "model_change", () => {}, undefined, true)[0]!.content)).toContain("Fictional retained evidence.");
+  expect(String(supply([], 8000, "model_change", () => {}, undefined, { said: true, tools: false, runs: false })[0]!.content)).toContain("Fictional retained evidence.");
   persistContinuityPurge(f.root, { scope: "logical", conversationId: "fictional" });
-  const text = String(supply([], 8000, "detached_context", () => {}, undefined, true)[0]!.content);
+  const text = String(supply([], 8000, "detached_context", () => {}, undefined, { said: true, tools: false, runs: false })[0]!.content);
   expect(text).toContain("coverage gap"); expect(text).not.toContain("ConversationHistory");
   expect(text).not.toContain("Fictional retained evidence.");
 });

@@ -519,7 +519,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
       return { persistence: "failed", errorCode: "history_idempotency_conflict" };
     }
     const bounded = binding.continuityEnabled === true && isNestedHistoryTool(String(call.tool_name),
-      binding.unifiedHistory === true ? { unifiedHistory: true } : undefined)
+      binding.appOwnedHistory === true ? { appOwnedHistory: true } : undefined)
       ? { ...boundedToolHistoryPayload({ omitted: NESTED_HISTORY_OMISSION }, TOOL_HISTORY_RESULT_MAX_BYTES), originalBytes: original.originalBytes, truncated: true }
       : original;
     const existing = database.prepare(`
@@ -1607,6 +1607,7 @@ function runBinding(database: DatabaseSync, conversationId: string, runId: strin
 
 function bindingOf(value: unknown): ToolHistoryRunBinding {
   const record = recordOf(value);
+  if (Object.hasOwn(record, "unifiedHistory")) throw new TypeError("ToolHistoryRunBinding.unifiedHistory was removed; use appOwnedHistory.");
   return {
     conversationId: normalizeId(record.conversationId, "conversationId"),
     logicalConversationId: normalizeId(record.logicalConversationId, "logicalConversationId"),
@@ -1614,7 +1615,7 @@ function bindingOf(value: unknown): ToolHistoryRunBinding {
     isolated: record.isolated === true,
     ...(record.continuityEnabled === true ? { continuityEnabled: true as const } : {}),
     ...(record.finalizedContinuity === true ? { finalizedContinuity: true as const } : {}),
-    ...(record.unifiedHistory === true ? { unifiedHistory: true as const } : {}),
+    ...(record.appOwnedHistory === true ? { appOwnedHistory: true as const } : {}),
   };
 }
 

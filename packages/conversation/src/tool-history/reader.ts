@@ -17,7 +17,7 @@ import { CONTINUITY_USER_VERSION, type RetainedSummaryBinding, type RetainedSumm
 import { eligibleRetainedSummary, resolveRetainedSummary, snapshotContinuity, continuitySnapshotVisible, getContinuity, latestContinuitySummary, searchContinuity } from "./continuity-reader.js";
 import { assertContinuitySchema, hasContinuitySchema, readContinuityStats } from "./continuity-storage.js";
 
-/** Read-only bounded query surface used by projection, SessionHistory, purge, and doctor. */
+/** Read-only bounded query surface used by projection, scoped History, purge, and doctor. */
 export class ToolHistoryReader {
   readonly root: string;
   readonly databasePath: string;
@@ -622,7 +622,7 @@ function appendListFilter(clauses: string[], values: (string | number)[], column
 
 function normalizeQueryTerms(query: string | undefined): string[] {
   if (query === undefined) return [];
-  if (Buffer.byteLength(query, "utf8") > 512) throw new TypeError("SessionHistory query exceeds 512 bytes.");
+  if (Buffer.byteLength(query, "utf8") > 512) throw new TypeError("History tools-scope query exceeds 512 bytes.");
   return [...new Set(query.toLowerCase().trim().split(/\s+/u).filter(Boolean))].slice(0, 16);
 }
 

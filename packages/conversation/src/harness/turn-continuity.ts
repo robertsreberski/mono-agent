@@ -184,10 +184,10 @@ function captureToolCategory(name: string): MemoryCaptureEvidence["toolOutcomes"
 
 export class UncommittedTurnCollector {
   private readonly omitNestedHistoryResults: boolean;
-  private readonly unifiedHistory: boolean;
-  constructor(continuityEnabled = false, unifiedHistory = false) {
+  private readonly appOwnedHistory: boolean;
+  constructor(continuityEnabled = false, appOwnedHistory = false) {
     this.omitNestedHistoryResults = continuityEnabled;
-    this.unifiedHistory = unifiedHistory;
+    this.appOwnedHistory = appOwnedHistory;
   }
   private readonly nativeEvents = new WeakSet<object>();
   private readonly admittedLifecycles = new WeakMap<object, { call: CapturedToolCall; release: () => void; settled: Promise<void> }>();
@@ -369,7 +369,7 @@ export class UncommittedTurnCollector {
       };
     } else {
       const nested = this.omitNestedHistoryResults && isNestedHistoryTool(event.toolName ?? call.toolName,
-        this.unifiedHistory ? { unifiedHistory: true } : undefined);
+        this.appOwnedHistory ? { appOwnedHistory: true } : undefined);
       const payload = boundedToolHistoryPayload(nested ? { omitted: NESTED_HISTORY_OMISSION } : event.content ?? null, TOOL_HISTORY_RESULT_MAX_BYTES);
       const hadInvocation = call.invocation !== undefined;
       if (call.invocation === undefined) {

@@ -29,7 +29,7 @@ async function fixture(path: "cold" | "retry", failure?: "extension" | "resolver
     toolHistory: { writer, reader: new ToolHistoryReader(root), logicalConversationId: id => id, continuityEnabled: true,
       historyToolAvailabilityForRuntime: () => {
         if (shouldFail() && failure === "resolver") throw new Error("Fictional resolver failure");
-        return { conversationHistory: false, sessionHistory: false };
+        return { said: false, tools: false, runs: false };
       } },
     runtimeOptionsForRequest: ({ request }) => {
       if (shouldFail() && failure === "extension") throw new Error("Fictional extension failure");
