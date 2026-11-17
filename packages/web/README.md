@@ -482,6 +482,17 @@ effort, has normal console tools and background-job access but cannot rename the
 conversation or insert an inactivity-resumption marker. The transcript retains a
 standalone **Scheduled wake-up** item even if the agent sends no answer.
 
+A wake-up may end silently on the same terms as a process-job completion wake.
+Its prompt offers `FinishSilently({})` and, when that tool is unavailable, an
+exact `NOTHING_TO_REPORT` reply; an empty final answer is a failure. Agents do
+not yet admit `FinishSilently` on scheduled wake-ups, so silence currently uses
+the sentinel. A host-certified silent turn, or a final reply that is exactly the sentinel, is
+stored without answer text and creates no response push, leaving only the
+**Scheduled wake-up** item. Narrated sentinels, attachments, MCP apps, restart
+proposals, reply options and reply failures stay visible, and an operator
+message steered into the running wake (pending, applied or uncertain) makes the
+reply visible. Ordinary chat turns are never silenced.
+
 The composer’s ↵ control chooses a device-local, persisted Enter preference:
 Enter sends with Shift+Enter for a newline, or Enter inserts a newline with
 Cmd/Ctrl+Enter to send. The default is newline on every device; only an explicit choice enables

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Let web console scheduled wake-ups finish silently: the wake prompt offers
+  `FinishSilently({})` with an exact `NOTHING_TO_REPORT` fallback, and a
+  sentinel-only or certified silent wake shows only its **Scheduled wake-up**
+  item and sends no response push. Steered operator messages, rich parts and
+  ordinary chat turns stay visible.
+
 - Add opt-in unified `History` selection to the offline continuity E2 harness,
   preserving split defaults and accepting registered 500K Sol summary envelopes.
 
