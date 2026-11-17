@@ -66,9 +66,13 @@ export async function toolsSection(config: MonoAgentConfig, input: ValidateMonoA
     details.push(`Allowed tools: ${allowedTools.join(", ")}.`);
     let mcpNoteAdded = false;
     for (const name of allowedTools) {
-      if (config.tools.history?.unified !== true && ["History", "mcp__mono-agent-history__History", "mcp__mono-agent-history__*"].includes(name)) {
-        status = "waiting";
-        details.push(`${name} requires tools.history.unified: true; the unified history tool will not be offered.`);
+      // History is an opt-in parent-only tool, never a generally known child
+      // tool or typo suggestion. MCP-prefixed names remain server-owned.
+      if (name === "History") {
+        if (config.tools.history?.unified !== true) {
+          status = "waiting";
+          details.push(`${name} requires tools.history.unified: true; the unified history tool will not be offered.`);
+        }
         continue;
       }
       const renamedTo = renamedToolName(name);

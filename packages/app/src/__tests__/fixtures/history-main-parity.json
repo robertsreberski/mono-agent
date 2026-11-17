@@ -384,5 +384,136 @@
       "label": "AskUser",
       "hint": "ask structured questions and wait (web, Slack, or Telegram)"
     }
-  ]
+  ],
+  "review2": {
+    "baseRevision": "a096834a2",
+    "description": "Captured from archived base app doctor/known-tools source with installed dependencies; existing legacy config resolver unchanged for these inputs.",
+    "historySuggestion": null,
+    "historyKnown": false,
+    "cases": {
+      "inline": {
+        "json": {
+          "runtime": {
+            "model": "openai-codex:gpt-5.5"
+          },
+          "context": {
+            "identityPath": "IDENTITY.md"
+          },
+          "tools": {
+            "allowedTools": [
+              "Agent",
+              "Read"
+            ]
+          },
+          "subagents": {
+            "enabled": true,
+            "inline": {
+              "allowedTools": [
+                "History"
+              ]
+            }
+          }
+        },
+        "doctor": {
+          "id": "tools",
+          "label": "Tools & MCP",
+          "status": "error",
+          "details": [
+            "Allowed tools: Agent, Read.",
+            "No adapter-derived send tools enabled.",
+            "Persistent subagents unavailable: effective tool policy must expose both Agent and AgentManage; Agent remains stateless when allowed.",
+            "Subagents: enabled, 0 profiles (general-purpose only); call-time authoring on (capped at History).",
+            "Subagents get no skill index (no context.skillsRoot is configured).",
+            "subagents.inline.allowedTools lists unknown tool \"History\"."
+          ],
+          "mcp": {
+            "id": "mcp",
+            "label": "MCP servers",
+            "status": "disabled",
+            "details": []
+          }
+        }
+      },
+      "profile": {
+        "json": {
+          "runtime": {
+            "model": "openai-codex:gpt-5.5"
+          },
+          "context": {
+            "identityPath": "IDENTITY.md"
+          },
+          "tools": {
+            "allowedTools": [
+              "Agent",
+              "Read"
+            ]
+          },
+          "subagents": {
+            "enabled": true,
+            "definitions": [
+              {
+                "name": "reader",
+                "description": "Fictional reader.",
+                "prompt": "Fictional prompt.",
+                "allowedTools": [
+                  "History"
+                ]
+              }
+            ]
+          }
+        },
+        "doctor": {
+          "id": "tools",
+          "label": "Tools & MCP",
+          "status": "error",
+          "details": [
+            "Allowed tools: Agent, Read.",
+            "No adapter-derived send tools enabled.",
+            "Persistent subagents unavailable: effective tool policy must expose both Agent and AgentManage; Agent remains stateless when allowed.",
+            "Subagents: enabled, 1 profile; call-time authoring on.",
+            "Subagents get no skill index (no context.skillsRoot is configured).",
+            "Subagent \"reader\" allows unknown tool \"History\"."
+          ],
+          "mcp": {
+            "id": "mcp",
+            "label": "MCP servers",
+            "status": "disabled",
+            "details": []
+          }
+        }
+      },
+      "externalMcp": {
+        "json": {
+          "runtime": {
+            "model": "openai-codex:gpt-5.5"
+          },
+          "context": {
+            "identityPath": "IDENTITY.md"
+          },
+          "tools": {
+            "allowedTools": [
+              "mcp__mono-agent-history__History",
+              "mcp__mono-agent-history__*"
+            ]
+          }
+        },
+        "doctor": {
+          "id": "tools",
+          "label": "Tools & MCP",
+          "status": "ok",
+          "details": [
+            "Allowed tools: mcp__mono-agent-history__History, mcp__mono-agent-history__*.",
+            "MCP tool names are provided by their servers and cannot be validated offline.",
+            "No adapter-derived send tools enabled."
+          ],
+          "mcp": {
+            "id": "mcp",
+            "label": "MCP servers",
+            "status": "disabled",
+            "details": []
+          }
+        }
+      }
+    }
+  }
 }

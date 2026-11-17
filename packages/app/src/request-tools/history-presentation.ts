@@ -33,7 +33,7 @@ export function presentHistoryResult(result: Result, presentation: HistoryPresen
     return { scope, action: input.runId === undefined ? "search" : "get", ...rest };
   };
   const text = (input: string) => input.replaceAll("Start again with {}", 'Start again with {scope:"runs"}')
-    .replaceAll("with {query}", 'with {scope:"runs",query}')
+    .replaceAll("{query}", '{scope:"runs", query}')
     .replaceAll("ConversationHistory", 'History (scope "said")')
     .replaceAll("SessionHistory", 'History (scope "tools")').replaceAll("RunHistory", 'History (scope "runs")');
   const actions: Action[] = (old?.nextActions ?? []).map(action => ({ ...action, description: text(action.description), arguments: args(action.arguments) }));

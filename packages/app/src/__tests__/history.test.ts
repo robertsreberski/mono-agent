@@ -5,13 +5,14 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ToolHistoryReader, ToolHistoryWriter, continuityGenerationId, continuityRecordId } from "@mono-agent/conversation";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import { afterEach, expect, it, vi } from "vitest";
-import { createHistoryServer, createHistoryRuntimeExtension, handleHistoryRequest, historyDescription } from "../request-tools/history.js";
+import { createHistoryServer, createHistoryRuntimeExtension, handleHistoryRequest, historyDescription, HISTORY_INPUT_SCHEMA } from "../request-tools/history.js";
 import { HISTORY_SCOPES, HISTORY_SCOPE_ALIASES, HISTORY_MCP_SERVER_NAME, historyPolicyAliases, resolveHistoryScopes, unifiedHistoryAvailability } from "../request-tools/history-policy.js";
 import { handleConversationHistoryRequest, historyToolAvailabilityForRuntime } from "../request-tools/conversation-history.js";
 import { handleSessionHistoryRequest } from "../request-tools/session-history.js";
@@ -207,6 +208,8 @@ it("uses scoped first-call guidance after a runs error", async () => {
   const result = await handleHistoryRequest((await fixture()).binding, { scope: "runs", limit: 0 });
   expect(body(result).navigation.guidance).toContain('Start again with {scope:"runs"}');
   expect(JSON.stringify(result)).not.toContain("Start again with {}");
+  expect(body(result).navigation.guidance).toContain('or provide {scope:"runs", query}');
+  expect(body(result).navigation.guidance).not.toContain("provide {query}");
   expect(body(result).navigation.nextActions[0].arguments).toEqual({ scope: "runs", action: "search" });
 });
 
@@ -257,4 +260,22 @@ it("keeps said/tools record bytes identical through multi-block scoped envelopes
     const { navigation: _old, ...oldEvidence } = body(legacy);
     expect(JSON.stringify(newEvidence)).toBe(JSON.stringify(oldEvidence));
   }
+});
+
+
+it("advertises the same tools/list entry and capabilities as SDK registerTool", async () => {
+  const f = await fixture();
+  const actual = createHistoryServer(f.binding);
+  const reference = new McpServer({ name: "fictional-sdk-reference", version: "1" });
+  reference.registerTool("History", { title: "Retrieve retained history", description: historyDescription(f.binding.scopes), inputSchema: HISTORY_INPUT_SCHEMA }, async () => ({ content: [] }));
+  const results = [];
+  for (const server of [actual, reference]) {
+    const client = new Client({ name: "fictional-schema", version: "1" });
+    const [a, b] = InMemoryTransport.createLinkedPair(); await server.connect(a); await client.connect(b);
+    cleanup.push(() => server.close()); cleanup.push(() => client.close());
+    results.push({ list: await client.listTools(), capabilities: client.getServerCapabilities() });
+  }
+  expect(results[0]).toEqual(results[1]);
+  expect(results[0]!.list.tools[0]!.inputSchema.$schema).toBe("http://json-schema.org/draft-07/schema#");
+  expect(results[0]!.capabilities?.tools?.listChanged).toBe(true);
 });

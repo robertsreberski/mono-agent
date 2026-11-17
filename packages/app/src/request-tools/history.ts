@@ -11,7 +11,7 @@ import { presentHistoryResult } from "./history-presentation.js";
 import { HISTORY_MCP_SERVER_NAME, HISTORY_TOOL_NAME, historyPolicyAliases, resolveHistoryScopes, type HistoryScope } from "./history-policy.js";
 
 // Scope is deliberately a string, not an enum: invalid scopes get guided errors.
-const INPUT = z.object({ ...SAID_INPUT.shape, ...SESSION_HISTORY_INPUT_SCHEMA.shape,
+export const HISTORY_INPUT_SCHEMA = z.object({ ...SAID_INPUT.shape, ...SESSION_HISTORY_INPUT_SCHEMA.shape,
   runId: RUN_HISTORY_INPUT_SCHEMA.shape.runId, scope: z.string().describe("Required: said, tools or runs, as permitted in the description."),
 }).strict();
 interface Binding {
@@ -45,10 +45,11 @@ export function createHistoryServer(binding: Binding): McpServer {
   const server = new McpServer({ name: HISTORY_MCP_SERVER_NAME, version: "1.0.0" });
   // Low-level dispatch owns validation, including missing scope, so there is
   // no unused registerTool callback behind an overridden SDK call handler.
-  server.server.registerCapabilities({ tools: {} });
+  server.server.registerCapabilities({ tools: { listChanged: true } });
   server.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: HISTORY_TOOL_NAME,
     title: "Retrieve retained history", description: historyDescription(owned.scopes),
-    inputSchema: { ...z.toJSONSchema(INPUT), type: "object" as const },
+    inputSchema: { ...z.toJSONSchema(HISTORY_INPUT_SCHEMA, { target: "draft-7", io: "input" }), type: "object" as const },
+    execution: { taskSupport: "forbidden" as const },
   }] }));
   server.server.setRequestHandler(CallToolRequestSchema, async request => {
     try {
@@ -64,7 +65,7 @@ export async function handleHistoryRequest(binding: Binding, raw: unknown) {
   const requested = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>).scope : undefined;
   if (!binding.scopes.includes(requested as HistoryScope)) return failure("invalid_scope", "Choose one of the permitted scopes.", binding.scopes);
   const scope = requested as HistoryScope;
-  const parsed = INPUT.safeParse(raw);
+  const parsed = HISTORY_INPUT_SCHEMA.safeParse(raw);
   if (!parsed.success) return failure("invalid_request", "Expected only supported scope-specific search/get arguments.");
   const { scope: _scope, ...input } = parsed.data;
   const presentation = { scope, scopes: binding.scopes };

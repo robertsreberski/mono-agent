@@ -104,8 +104,6 @@ const KNOWN_TOOL_NAMES: readonly string[] = [
   ...new Set<string>([
     ...BUILTIN_TOOL_NAMES,
     ...APP_TOOL_NAMES,
-    // Opt-in policy name, deliberately absent from wizard choices until the flip.
-    "History",
     ...ADAPTER_SEND_TOOL_NAMES,
     ...Object.values(LEGACY_TOOL_ALIASES),
   ]),

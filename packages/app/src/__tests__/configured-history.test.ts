@@ -1,3 +1,4 @@
+import { isKnownToolName, suggestToolName } from "../tools/known-tools.js";
 import { validateMonoAgentFolder } from "../doctor/doctor.js";
 import { toolMultiselectOptions } from "../setup/wizard/prompts.js";
 import { createHistoryRuntimeExtension } from "../request-tools/history.js";
@@ -236,4 +237,30 @@ it.each([undefined, false])("pins assembled prompt and full doctor JSON to a0968
     expect(normalize(prompt)).toBe(golden.prompt);
     expect(JSON.stringify(toolMultiselectOptions([]))).toBe(JSON.stringify(golden.wizardOptions));
   } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+
+for (const kind of ["inline", "profile"] as const) {
+  it.each([false, true])(`keeps main's ${kind} subagent History error (unified=%s)`, async unified => {
+    const golden = JSON.parse(await readFile(new URL("./fixtures/history-main-parity.json", import.meta.url), "utf8")).review2;
+    expect(golden.baseRevision).toBe("a096834a2");
+    const entry = golden.cases[kind], cwd = "/fictional-agent";
+    const config = resolveJsonMonoAgentConfig({ cwd, json: { ...entry.json, tools: { ...entry.json.tools, history: { unified } } } });
+    const result = await toolsSection(config, { cwd, configPath: `${cwd}/mono-agent.config.json`, env: {}, subprocessProbes: false });
+    // Unified's parent mapping is intentional; child diagnostics remain main's.
+    const comparable = { ...result, details: result.details.filter(detail => !detail.startsWith("Unified History policy:")) };
+    expect(JSON.stringify(comparable)).toBe(JSON.stringify(entry.doctor));
+    expect(result.status).toBe("error");
+    expect(isKnownToolName("History")).toBe(golden.historyKnown);
+    expect(suggestToolName("history")).toBe(golden.historySuggestion ?? undefined);
+  });
+}
+
+it("preserves main's flag-off doctor output for unreserved external History MCP names", async () => {
+  const entry = JSON.parse(await readFile(new URL("./fixtures/history-main-parity.json", import.meta.url), "utf8")).review2.cases.externalMcp;
+  const cwd = "/fictional-agent";
+  const config = resolveJsonMonoAgentConfig({ cwd, json: { ...entry.json, tools: { ...entry.json.tools, history: { unified: false } } } });
+  const result = await toolsSection(config, { cwd, configPath: `${cwd}/mono-agent.config.json`, env: {}, subprocessProbes: false });
+  expect(JSON.stringify(result)).toBe(JSON.stringify(entry.doctor));
+  expect(result.status).toBe("ok");
 });
