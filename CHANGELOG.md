@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Restore lookup directives in the unified `History` tool's `said` scope:
+  check `History` for exact earlier values, identifiers or quotations instead
+  of relying on summaries or memory, read hits before reformulating, finish
+  every get cursor and page before declaring evidence insufficient. The
+  previous compact wording remains available as a description variant.
+
 - Let web console scheduled wake-ups finish silently: the wake prompt offers
   `FinishSilently({})` with an exact `NOTHING_TO_REPORT` fallback, and a
   sentinel-only or certified silent wake shows only its **Scheduled wake-up**
@@ -13,10 +19,7 @@
 
 - Add the opt-in `History` tool behind `tools.history.unified` (default false),
   with required `said`, `tools` and `runs` scopes, legacy-name policy aliases,
-  and mode-aware history guidance and diagnostics. The unified `said` scope now
-  carries imperative lookup directives (check `History` for exact earlier
-  values, read hits before reformulating, finish cursors, page before claiming
-  insufficiency).
+  and mode-aware history guidance and diagnostics.
 
 - Add the internal unified-`History` conversation seams (scope-aware text
   variants, default-soul selection, app-owned name recognition). Behaviour is
