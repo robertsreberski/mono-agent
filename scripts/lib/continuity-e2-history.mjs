@@ -22,6 +22,14 @@ export function historyCallScope(name, args) {
   if (["History", "mcp__mono-agent-history__History"].includes(name) && ["said", "tools", "runs"].includes(args?.scope)) return args.scope;
   return undefined;
 }
+/**
+ * A/B lookup attribution: `historyCallScope`, or `"invalid"` for a unified
+ * History call whose scope fails the shipping scope check (missing, typo'd or
+ * not one of said/tools/runs). The failed attempt is still a lookup attempt.
+ */
+export function e2AbLookupScope(name, args) {
+  return historyCallScope(name, args) ?? (["History", "mcp__mono-agent-history__History"].includes(name) ? "invalid" : undefined);
+}
 
 // Both the lookup safety guard and paid E2 config guard consume this selector.
 export const LOOKUP_TOOL_ALLOWLIST_V1 = Object.freeze({ version: "v1", tools: Object.freeze(["ConversationHistory"]) });

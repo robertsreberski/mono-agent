@@ -10,7 +10,8 @@
   Restored snapshots are relocated to the new run's root and refused if any
   decoded value still names the old root. History store or endpoint
   unavailability refuses the probe, while a model's own lookup mistakes are
-  recorded and scored. Lookups are scored only from probe receipts bound to the
+  recorded and scored; a call with an invalid scope still counts as a lookup
+  attempt. Lookups are scored only from probe receipts bound to the
   registration, slot, arm, row and checkpoint, with every capture's hash and
   length recomputed.
 

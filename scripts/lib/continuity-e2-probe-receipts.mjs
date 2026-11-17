@@ -1,4 +1,4 @@
-import { historyCallScope } from "./continuity-e2-history.mjs";
+import { e2AbLookupScope, historyCallScope } from "./continuity-e2-history.mjs";
 // Private, informational retrieval evidence. Never forwarded to a model or gate.
 import { writeE2ProbeReceipt, writeE2ProgressGap } from "./continuity-e2-progress.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
@@ -43,9 +43,10 @@ function metadata(text) {
   if (typeof body.chunk === "string") result.chunkBytes = Buffer.byteLength(body.chunk);
   return result;
 }
-// Lookup scope of one offered History call; ConversationHistory is always said.
+// Lookup scope of one offered History call; ConversationHistory is always said,
+// and a unified History call that fails scope validation is its own `invalid` attempt.
 function lookupScope(name, input) {
-  return historyCallScope(name, input) ?? (typeof name === "string" && name.endsWith("__ConversationHistory") ? "said" : undefined);
+  return e2AbLookupScope(name, input) ?? (typeof name === "string" && name.endsWith("__ConversationHistory") ? "said" : undefined);
 }
 /**
  * `allScopes` (pack-withheld A/B only) captures every History scope and the

@@ -2875,7 +2875,10 @@ retry exposure is reported separately. Paid entry must pass
 Each phase writes `answers.json`, an informational frozen `score.json` and its
 probe receipts. A/B receipts cover every offered scope (`History` said, tools
 and runs, and `ConversationHistory`), name the tool and scope on each call, and
-close every probe with a `settled` receipt. `ab-score --registration FILE
+close every probe with a `settled` receipt. A unified `History` call whose scope
+fails the shipping scope check (missing or typo'd) is receipted with scope
+`invalid`. It counts as a lookup attempt (`byScope.invalid`), never as "no
+lookup". `ab-score --registration FILE
 --sha256 HASH --run DIR --keys FILE --output NEW_DIR` checks the registration
 against its SHA-256 and the keys against the registration's own binding. It
 classifies every answer with the frozen `scoreE2` on that single answer

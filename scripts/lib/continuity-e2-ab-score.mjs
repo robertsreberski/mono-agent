@@ -10,7 +10,7 @@ import { scoreE2 } from "./continuity-e2-score.mjs";
 import { EVALUATOR_SCHEMA, digest } from "./continuity-recorded-schema.mjs";
 import { digest as canonicalDigest } from "./continuity-dataset.mjs";
 import { assertE2HistoryAbBinding, e2AbArmLetters } from "./continuity-e2-ab.mjs";
-import { E2_AB_ARM_SURFACES, e2AbSlotArm, historyCallScope, historyServerName, historyToolName } from "./continuity-e2-history.mjs";
+import { E2_AB_ARM_SURFACES, e2AbLookupScope, e2AbSlotArm, historyServerName, historyToolName } from "./continuity-e2-history.mjs";
 import { E2_PROBE_RECEIPT_LIMITS } from "./continuity-e2-probe-receipts.mjs";
 // The receipt writer's fixed caps for the tool name and call id captures.
 const TOOL_CAPTURE_BYTES = 256, CALL_ID_CAPTURE_BYTES = 1024;
@@ -28,7 +28,8 @@ export function classifyE2AbAnswer(answer, key) {
   need(hits.length === 1 && Object.values(counts).reduce((n, v) => n + v, 0) === 1);
   return hits[0][0];
 }
-const SCOPES = Object.freeze(["said", "tools", "runs"]);
+// `invalid`: a unified History call that failed scope validation. It is a lookup attempt, never "no lookup".
+const SCOPES = Object.freeze(["said", "tools", "runs", "invalid"]);
 const RECEIPT_SCHEMA = "continuity-e2-probe-receipt-v1";
 const TRUNCATION_MARKER = "\n[probe receipt truncated]";
 const object = v => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -125,7 +126,7 @@ export function e2AbLookupEvidence(historyAb, arm, receipts, expected, lookupRou
     const key = `${id}\u0000${repeat}`, block = blocks.get(position({ rowId: id, repeat }));
     if (!stream) { result.set(key, { status: "inconsistent" }); continue; }
     if (!block) { result.set(key, { status: "missing" }); continue; }
-    const s = block.settled, calls = new Map(), scopes = { said: 0, tools: 0, runs: 0 };
+    const s = block.settled, calls = new Map(), scopes = Object.fromEntries(SCOPES.map(scope => [scope, 0]));
     let ok = s !== null && count(s.requests) && s.requests >= 1 && s.requests <= lookupRounds + 1 && count(s.calls) && count(s.responses) && s.unanswered === 0, responses = 0;
     for (const e of ok ? block.entries : []) {
       if (e.phase === "call") {
@@ -137,7 +138,7 @@ export function e2AbLookupEvidence(historyAb, arm, receipts, expected, lookupRou
           && (e.requestContext === undefined || keys(e.requestContext, ["bytes", "sha256"]) && count(e.requestContext.bytes) && sha(e.requestContext.sha256));
         // The scope is re-derived from the integrity-checked argument bytes.
         if (ok) { try { input = JSON.parse(e.arguments.text); } catch { ok = false; } }
-        ok &&= object(input) && (historyCallScope(e.tool.text, input) ?? (e.tool.text.endsWith("ConversationHistory") ? "said" : undefined)) === e.scope;
+        ok &&= object(input) && (e2AbLookupScope(e.tool.text, input) ?? (e.tool.text.endsWith("ConversationHistory") ? "said" : undefined)) === e.scope;
         if (!ok) break;
         calls.set(e.callId.sha256, { fields: callFields(e), answered: false }); scopes[e.scope]++;
       } else {

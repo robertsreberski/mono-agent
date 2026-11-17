@@ -297,6 +297,14 @@ it("records a model's typo'd or missing lookup and finishes the probe, but refus
   const missing = await runE2HistoryAb({ source: f.trace.source, protocol: f.trace.protocol, historyAb: f.binding, frozen: f.frozen, arm: "B", output: join(root, "missing"), modules: mistaken(`chr1_${"f".repeat(43)}`) });
   expect(missing.history).toEqual({ warnings: 0, codes: {}, lookupErrors: { record_unavailable: 6 } });
   expect(missing.probes.map(p => p.requests)).toEqual([4, 4]);
+  // A typo'd unified scope: the shipping server answers invalid_scope, the probe finishes and every attempt is receipted as invalid.
+  const scoped = { ...modules, pi: { ...modules.pi, fauxToolCall: (name, args, options) => modules.pi.fauxToolCall(name, { ...args, scope: "sayd" }, options) } };
+  const typoScope = await runE2HistoryAb({ source: f.trace.source, protocol: f.trace.protocol, historyAb: f.binding, frozen: f.frozen, arm: "C", output: join(root, "typo-scope"), modules: scoped });
+  expect(typoScope.history).toEqual({ warnings: 0, codes: {}, lookupErrors: { invalid_scope: 6 } });
+  const scopeReceipts = readE2AbReceipts(join(root, "typo-scope", "probe-receipts")).map(r => r.value);
+  expect(scopeReceipts.filter(v => v.phase === "call").map(v => v.scope)).toEqual(Array(6).fill("invalid"));
+  expect(scopeReceipts.filter(v => v.phase === "response").map(v => v.isError)).toEqual(Array(6).fill(true));
+  expect(scopeReceipts.filter(v => v.phase === "settled").map(v => [v.calls, v.responses, v.unanswered])).toEqual([[3, 3, 0], [3, 3, 0]]);
   // The model saw its own mistakes as tool errors; nothing was hidden.
   expect(results.length).toBeGreaterThan(0);
   expect(results.every(r => JSON.stringify(r.content).includes("invalid_record"))).toBe(true);
@@ -566,7 +574,9 @@ async function abReceipts(root, arm, items, { allScopes = true, name = `receipts
     for (const scope of scopes) {
       const callId = `fictional-call-${++n}`;
       receipts.observeRequest({ messages: [{ role: "user", content: "Fictional request" }] });
-      receipts.observe({ type: "assistant", message: { content: [{ type: "tool_use", id: callId, name: AB_TOOL[arm], input: { ...(arm === "A" ? {} : { scope }), action: "search", query: "Fictional", limit: 1 } }] } });
+      // "invalid" is a typo'd scope and "unscoped" omits it: both fail the shipping scope check.
+      const argument = arm === "A" || scope === "unscoped" ? {} : { scope: scope === "invalid" ? "sayd" : scope };
+      receipts.observe({ type: "assistant", message: { content: [{ type: "tool_use", id: callId, name: AB_TOOL[arm], input: { ...argument, action: "search", query: "Fictional", limit: 1 } }] } });
       receipts.observe({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: callId, content: [{ type: "text", text: '{"action":"search","status":"available","count":1,"items":[]}' }] }] } });
     }
     receipts.observeRequest({ messages: [{ role: "user", content: "Fictional final request" }] });
@@ -619,7 +629,7 @@ it("scores each answer with the frozen scorer and crosses it with receipt-derive
   expect(unsettled.overall).toMatchObject({ answers: 5, lookups: 0, lookupRate: null, lookupEvidence: { verified: 0, missing: 5 }, correctWithoutLookup: 0, correctLookupUnverified: 2, wrongWithoutLookup: 0, wrongLookupUnverified: 2 });
   expect(readE2AbReceipts(join(root, "absent"))).toEqual([]);
   // Omitted, the legacy receipt stream stays said-only and unsettled, byte for byte.
-  const legacy = await abReceipts(root, "B", [{ id: exact, repeat: 1, scopes: ["said", "tools", "runs"] }], { allScopes: false, name: "legacy" });
+  const legacy = await abReceipts(root, "B", [{ id: exact, repeat: 1, scopes: ["said", "tools", "runs", "invalid", "unscoped"] }], { allScopes: false, name: "legacy" });
   expect(legacy.map(r => [r.value.phase, Object.hasOwn(r.value, "scope"), Object.hasOwn(r.value, "tool")])).toEqual([["call", false, false], ["response", false, false]]);
   for (const bad of [{ ...arms, D: arms.A }, { A: arms.A, B: arms.B }, { ...arms, A: { ...arms.A, receipts: undefined } },
     { ...arms, B: { ...arms.B, answers: { ...arms.B.answers, answers: [...arms.B.answers.answers, answer(exact, 1, "x")] } } }])
@@ -678,6 +688,34 @@ it("refuses forged or foreign receipts: provenance comes from the registration a
   expect(abEvidence("B", repeated)).toEqual(Array(6).fill("inconsistent"));
   const unclosed = stream.filter((r, i) => i !== 2).map((r, i) => ({ ...r, ordinal: i + 1 }));
   expect(abEvidence("B", unclosed)).toEqual(Array(6).fill("inconsistent"));
+});
+
+it("records a unified History call that fails scope validation as a lookup attempt, never as no lookup", async () => {
+  const root = await scratch(), [exact, referent, control] = AB_ROWS;
+  const answer = (id, repeat, text) => ({ id, repeat, text, witness: true, excludedSteps: [], excludedCoverage: [] });
+  // Typo'd and missing scopes on C; a valid lookup alongside an invalid attempt; one probe with no call at all.
+  const receipts = await abReceipts(root, "C", [{ id: exact, repeat: 1, scopes: ["invalid"] }, { id: exact, repeat: 2, scopes: ["unscoped", "said"] },
+    { id: referent, repeat: 1, scopes: ["invalid", "invalid"] }, { id: referent, repeat: 2 }, { id: control, repeat: 1, scopes: ["runs"] }, { id: control, repeat: 2 }]);
+  const calls = receipts.map(r => r.value).filter(v => v.phase === "call");
+  expect(calls.map(v => v.scope)).toEqual(["invalid", "invalid", "said", "invalid", "invalid", "runs"]);
+  expect(calls.every(v => v.registrationSha256 === digest(AB_PILOT) && v.slotId === abSlot("C") && v.arm === "C" && v.checkpoint === 2)).toBe(true);
+  const evidence = [...e2AbLookupEvidence(AB_BINDING, "C", receipts, abExpected("C"), 3).values()];
+  expect(evidence.map(e => e.status)).toEqual(Array(6).fill("verified"));
+  expect(evidence.map(e => e.scopes.invalid)).toEqual([1, 1, 2, 0, 0, 0]);
+  const none = { answers: { schema: "continuity-e2-answers-v1", answers: [] }, receipts: [] };
+  const answers = { schema: "continuity-e2-answers-v1", answers: [answer(exact, 1, "Fictional other"), answer(exact, 2, "Fictional response"), answer(referent, 1, "Fictional other"),
+    answer(referent, 2, "Fictional other"), answer(control, 1, "Fictional response"), answer(control, 2, "Fictional response")] };
+  const c = scoreE2HistoryAb({ pilot: AB_PILOT, evaluator: abKeys(), arms: { A: none, B: none, C: { answers, receipts } } }).arms[2];
+  // A failed attempt is a lookup: wrong after an invalid attempt is "wrong after lookup", never "wrong without lookup".
+  expect(c.items.find(i => i.id === exact && i.repeat === 1)).toMatchObject({ outcome: "wrong", lookup: true, scopes: { said: 0, tools: 0, runs: 0, invalid: 1 } });
+  expect(c.overall).toMatchObject({ answers: 6, lookups: 4, lookupEvidence: { verified: 6 }, wrongAfterLookup: 2, wrongWithoutLookup: 1, correctWithoutLookup: 1, byScope: { said: 1, tools: 0, runs: 1, invalid: 3 } });
+  // The recorded status is re-derived from the integrity-checked arguments: it cannot be relabelled either way.
+  const relabel = (from, to) => { const copy = structuredClone(receipts); for (const r of copy) if (r.value.phase !== "settled" && r.value.scope === from) { r.value.scope = to; break; } return copy; };
+  expect(e2AbLookupEvidence(AB_BINDING, "C", relabel("invalid", "said"), abExpected("C"), 3).get(`${exact}\u0000${1}`).status).toBe("inconsistent");
+  expect(e2AbLookupEvidence(AB_BINDING, "C", relabel("runs", "invalid"), abExpected("C"), 3).get(`${control}\u0000${1}`).status).toBe("inconsistent");
+  // The split arm has no scope to fail: ConversationHistory is always said.
+  const split = await abReceipts(root, "A", [{ id: exact, repeat: 1, scopes: ["invalid"] }], { name: "split-invalid" });
+  expect(split.map(r => r.value).filter(v => v.phase === "call").map(v => v.scope)).toEqual(["said"]);
 });
 
 it("keeps every legacy digest, policy, schedule, estimate, receipt and CLI path byte-identical to base when the mode is omitted", async () => {
