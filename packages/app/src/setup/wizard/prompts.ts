@@ -116,7 +116,6 @@ const BUILTIN_TOOL_HINTS: Readonly<Record<string, string>> = {
 };
 
 const APP_TOOL_HINTS: Readonly<Record<string, string>> = {
-  History: "read said/tools/runs history (requires tools.history.unified; legacy names remain scope policy aliases)",
   RunHistory: "inspect safe evidence from prior runs in this conversation",
   SessionHistory: "search bounded tool calls and results retained for this session",
   ConversationHistory: "retrieve retained conversation text and portable summaries (default on; respects tool policy)",

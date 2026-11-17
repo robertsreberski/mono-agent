@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ToolHistoryReader, toolHistoryLogicalConversationId, type UnifiedHistoryAvailability, type ToolPolicyInput } from "@mono-agent/conversation";
 import * as z from "zod/v4";
 import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
@@ -19,6 +19,7 @@ interface Binding {
   readonly artifactDir: string;
   readonly conversationId: string;
   readonly logicalConversationId: string;
+  readonly toolsLogicalConversationId?: string;
   readonly runId: string;
   readonly rollover?: "none" | "daily";
   readonly scopes: readonly HistoryScope[];
@@ -26,7 +27,7 @@ interface Binding {
 interface Options {
   readonly historyRoot: string;
   readonly artifactDir: string;
-  readonly rollover?: "none" | "daily";
+  readonly scopeRollovers?: Readonly<Partial<Record<HistoryScope, "none" | "daily">>>;
   readonly policy: Pick<ToolPolicyInput, "allowedTools" | "disallowedTools">;
   readonly capabilities: UnifiedHistoryAvailability;
   readonly onUnavailable?: (error: unknown) => void;
@@ -42,13 +43,21 @@ export function createHistoryServer(binding: Binding): McpServer {
   // Own the authorization snapshot before SDK dispatch/awaits.
   const owned = { ...binding, scopes: Object.freeze([...binding.scopes]) };
   const server = new McpServer({ name: HISTORY_MCP_SERVER_NAME, version: "1.0.0" });
-  server.registerTool(HISTORY_TOOL_NAME, { title: "Retrieve retained history", description: historyDescription(owned.scopes), inputSchema: INPUT },
-    async input => await handleHistoryRequest(owned, input));
-  // Validate at our boundary rather than the SDK's, including missing scope.
-  // The advertised schema remains strict and scope remains required.
-  server.server.setRequestHandler(CallToolRequestSchema, async request => request.params.name === HISTORY_TOOL_NAME
-    ? await handleHistoryRequest(owned, request.params.arguments)
-    : failure("invalid_request", "Unknown history tool."));
+  // Low-level dispatch owns validation, including missing scope, so there is
+  // no unused registerTool callback behind an overridden SDK call handler.
+  server.server.registerCapabilities({ tools: {} });
+  server.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: HISTORY_TOOL_NAME,
+    title: "Retrieve retained history", description: historyDescription(owned.scopes),
+    inputSchema: { ...z.toJSONSchema(INPUT), type: "object" as const },
+  }] }));
+  server.server.setRequestHandler(CallToolRequestSchema, async request => {
+    try {
+      return request.params.name === HISTORY_TOOL_NAME ? await handleHistoryRequest(owned, request.params.arguments)
+        : failure("invalid_request", "Unknown history tool.");
+    } catch {
+      return failure("history_unavailable", "Retained history is unavailable.");
+    }
+  });
   return server;
 }
 export async function handleHistoryRequest(binding: Binding, raw: unknown) {
@@ -65,7 +74,7 @@ export async function handleHistoryRequest(binding: Binding, raw: unknown) {
   }
   if (scope === "tools") {
     const valid = SESSION_HISTORY_INPUT_SCHEMA.safeParse(input);
-    return valid.success ? presentHistoryResult(handleSessionHistoryRequest({ ...binding, unifiedHistory: true }, valid.data), presentation) : failure("invalid_request", "Unsupported tools arguments.");
+    return valid.success ? presentHistoryResult(handleSessionHistoryRequest({ ...binding, logicalConversationId: binding.toolsLogicalConversationId ?? binding.logicalConversationId, unifiedHistory: true }, valid.data), presentation) : failure("invalid_request", "Unsupported tools arguments.");
   }
   const { action, ...rest } = input;
   if (Object.keys(rest).some(key => !["query", "limit", "cursor", "runId"].includes(key))) return failure("invalid_request", "Unsupported runs arguments.");
@@ -76,11 +85,13 @@ export function createHistoryRuntimeExtension(options: Options): RuntimeOptionsE
   const scopes = resolveHistoryScopes(options.policy, options.capabilities);
   if (scopes.length === 0) return undefined;
   const reader = new ToolHistoryReader(options.historyRoot);
+  const scopeRollovers = Object.freeze({ ...options.scopeRollovers });
   return createRequestScopedMcpRuntimeExtension({ serverName: HISTORY_MCP_SERVER_NAME, startingMessage: "History is starting",
     policyAliases: Object.freeze({ History: historyPolicyAliases(scopes) }),
     createServer: ({ request, runId }) => createHistoryServer({ reader, artifactDir: options.artifactDir, scopes,
-      conversationId: request.conversationId, logicalConversationId: toolHistoryLogicalConversationId(request.conversationId, options.rollover), runId,
-      ...(options.rollover === undefined ? {} : { rollover: options.rollover }) }),
+      conversationId: request.conversationId, logicalConversationId: toolHistoryLogicalConversationId(request.conversationId, scopeRollovers.said),
+      toolsLogicalConversationId: toolHistoryLogicalConversationId(request.conversationId, scopeRollovers.tools), runId,
+      ...(scopeRollovers.runs === undefined ? {} : { rollover: scopeRollovers.runs }) }),
     ...(options.onUnavailable === undefined ? {} : { onUnavailable: options.onUnavailable }),
   });
 }

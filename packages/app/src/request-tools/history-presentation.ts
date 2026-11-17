@@ -18,7 +18,7 @@ interface Navigation {
 }
 interface Result {
   readonly structuredContent: Record<string, unknown>;
-  readonly content: readonly { readonly type: string; readonly text?: string }[];
+  readonly content: readonly { readonly type: "text"; readonly text: string }[];
   readonly isError?: boolean;
 }
 
@@ -32,7 +32,9 @@ export function presentHistoryResult(result: Result, presentation: HistoryPresen
     const { action: _action, ...rest } = input;
     return { scope, action: input.runId === undefined ? "search" : "get", ...rest };
   };
-  const text = (input: string) => input.replaceAll("ConversationHistory", 'History (scope "said")')
+  const text = (input: string) => input.replaceAll("Start again with {}", 'Start again with {scope:"runs"}')
+    .replaceAll("with {query}", 'with {scope:"runs",query}')
+    .replaceAll("ConversationHistory", 'History (scope "said")')
     .replaceAll("SessionHistory", 'History (scope "tools")').replaceAll("RunHistory", 'History (scope "runs")');
   const actions: Action[] = (old?.nextActions ?? []).map(action => ({ ...action, description: text(action.description), arguments: args(action.arguments) }));
   if (scope === "runs" && scopes.includes("tools")) {
@@ -41,9 +43,17 @@ export function presentHistoryResult(result: Result, presentation: HistoryPresen
   const navigation = { guidance: text(old?.guidance ?? String((body.error as { message?: string } | undefined)?.message ?? "Read-only historical evidence.")),
     ...(old?.nextPage === undefined ? {} : { nextPage: args(old.nextPage) }), nextActions: actions };
   const structuredContent = { ...body, scope, navigation };
-  const header = [`History navigation (scope: ${scope}; tool-authored guidance):`, ...(body.notice === undefined ? [] : [String(body.notice)]), navigation.guidance,
+  const header = [`History navigation (scope: ${scope}; tool-authored guidance):`,
+    ...(scope === "said" && body.notice !== undefined ? [String(body.notice)] : []), navigation.guidance,
     ...(navigation.nextPage === undefined ? [] : [`Next search page: ${JSON.stringify(navigation.nextPage)}`]),
-    ...actions.map(action => `${action.description} Exact arguments: ${JSON.stringify(action.arguments)}`),
+    ...actions.map((action, index) => `${scope === "said" ? "" : `${index + 1}. `}${action.description} Exact arguments: ${JSON.stringify(action.arguments)}`),
     ...(actions.length === 0 ? ["No follow-up History call is available."] : [])].join("\n");
-  return { ...result, content: [...splitRequestScopedModelText(header), ...splitRequestScopedModelText(`${String(body.notice ?? "")}\n${JSON.stringify(structuredContent)}`)], structuredContent };
+  // Runs already renders separately bounded evidence sections. Preserve those
+  // bytes AND block boundaries rather than serializing the entire overview.
+  if (scope === "runs") return { ...result, content: [{ type: "text" as const, text: header }, ...result.content.slice(1)], structuredContent };
+  // Match each legacy renderer: said splits navigation, tools has one header;
+  // both split the notice + JSON envelope with the same 10,000-char algorithm.
+  // Scoped metadata changes envelope offsets, never retained record chunks.
+  return { ...result, content: [...(scope === "said" ? splitRequestScopedModelText(header) : [{ type: "text" as const, text: header }]),
+    ...splitRequestScopedModelText(`${String(body.notice ?? "")}\n${JSON.stringify(structuredContent)}`)], structuredContent };
 }

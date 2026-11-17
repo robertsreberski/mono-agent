@@ -1,3 +1,5 @@
+import * as presentation from "../request-tools/history-presentation.js";
+import { handleRunHistoryRequest } from "../request-tools/run-history.js";
 import { requestScopedNestedResult } from "../mcp/request-scoped-mcp.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -8,7 +10,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ToolHistoryReader, ToolHistoryWriter, continuityGenerationId, continuityRecordId } from "@mono-agent/conversation";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createHistoryServer, createHistoryRuntimeExtension, handleHistoryRequest, historyDescription } from "../request-tools/history.js";
 import { HISTORY_SCOPES, HISTORY_SCOPE_ALIASES, HISTORY_MCP_SERVER_NAME, historyPolicyAliases, resolveHistoryScopes, unifiedHistoryAvailability } from "../request-tools/history-policy.js";
 import { handleConversationHistoryRequest, historyToolAvailabilityForRuntime } from "../request-tools/conversation-history.js";
@@ -183,4 +185,76 @@ it("does not infer unified ownership from an external History server name in leg
 it.each(["History", "mcp__mono-agent-history__History", "mcp__fictional-external__History"])("omits only owned nested history in unified readers: %s", tool => {
   expect(requestScopedNestedResult(tool, [], "Fictional evidence", undefined, false)).toBe("Fictional evidence");
   expect(requestScopedNestedResult(tool, [], "Fictional evidence", undefined, true) === "Fictional evidence").toBe(tool === "mcp__fictional-external__History");
+});
+
+
+it("returns an isError tool result, not a JSON-RPC error, if a handler throws", async () => {
+  const f = await fixture();
+  const server = createHistoryServer(f.binding);
+  const client = new Client({ name: "fictional-error", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair(); await server.connect(a); await client.connect(b);
+  cleanup.push(() => server.close()); cleanup.push(() => client.close());
+  const spy = vi.spyOn(presentation, "presentHistoryResult").mockImplementationOnce(() => { throw new Error("Fictional internal failure must not leak."); });
+  try {
+    const result = await client.callTool({ name: "History", arguments: { scope: "tools" } });
+    expect(result.isError).toBe(true);
+    expect(body(result).error).toEqual({ code: "history_unavailable", message: "Retained history is unavailable." });
+    expect(JSON.stringify(result)).not.toContain("must not leak");
+  } finally { spy.mockRestore(); }
+});
+
+it("uses scoped first-call guidance after a runs error", async () => {
+  const result = await handleHistoryRequest((await fixture()).binding, { scope: "runs", limit: 0 });
+  expect(body(result).navigation.guidance).toContain('Start again with {scope:"runs"}');
+  expect(JSON.stringify(result)).not.toContain("Start again with {}");
+  expect(body(result).navigation.nextActions[0].arguments).toEqual({ scope: "runs", action: "search" });
+});
+
+it("preserves runs evidence blocks byte-for-byte in list, search, overview and timeline", async () => {
+  const f = await fixture();
+  const recorder = createJsonlRunRecorder({ artifactDir: f.binding.artifactDir, conversationId, runId: "old-chunked", userInput: "Fictional cobalt evidence." });
+  recorder.onEvent({ type: "assistant", message: { content: [{ type: "text", text: "Fictional exact evidence " + "λ\\\"".repeat(3000) }] } });
+  await recorder.finish({ text: "Fictional completed result." });
+  const overview = await handleRunHistoryRequest(f.binding, { runId: "old-chunked" });
+  for (const input of [{}, { query: "cobalt" }, { runId: "old-chunked" }, { runId: "old-chunked", cursor: body(overview).nextCursor }]) {
+    const legacy = await handleRunHistoryRequest(f.binding, input);
+    const unified = await handleHistoryRequest(f.binding, { scope: "runs", ...input });
+    expect(unified.content.slice(1)).toEqual(legacy.content.slice(1));
+    const { navigation: _old, ...oldEvidence } = body(legacy);
+    const { navigation: _new, scope: _scope, ...newEvidence } = body(unified);
+    expect(newEvidence).toEqual(oldEvidence);
+  }
+});
+
+it("keeps said/tools record bytes identical through multi-block scoped envelopes", async () => {
+  const f = await fixture(), writer = await ToolHistoryWriter.open({ root: join(f.root, "history"), continuityEnabled: true, persistenceCeilingMs: 5000 });
+  const evidence = Array.from({ length: 4 }, () => '"'.repeat(3000));
+  const text = JSON.stringify(evidence), generationId = continuityGenerationId();
+  const recordId = continuityRecordId(conversationId, "scoped-chunking");
+  const prior = { conversationId, logicalConversationId: conversationId, runId: "old-chunked", isolated: false };
+  let toolRecordId: string | undefined;
+  try {
+    await writer.prepareContinuity({ generationId, conversationId, logicalConversationId: conversationId, beforeDigest: null, afterDigest: "c".repeat(64), records: [{ recordId, runId: "old-chunked", sequence: 0, kind: "assistant", provenance: "assistant", text }] });
+    await writer.commitContinuity({ generationId, conversationId, canonicalDigest: "c".repeat(64) });
+    await writer.persist(prior, { phase: "invocation", toolCallId: "read", toolName: "Read", arguments: {} });
+    toolRecordId = (await writer.persist(prior, { phase: "result", toolCallId: "read", state: "success", content: evidence })).recordId;
+    await writer.finishRun(prior, "completed");
+  } finally { await writer.close(); }
+  expect(toolRecordId).toBeDefined();
+  for (const scope of ["said", "tools"] as const) {
+    const args = { action: "get" as const, recordId: scope === "said" ? recordId : toolRecordId!, chunkBytes: 8192 };
+    const legacy = scope === "said" ? handleConversationHistoryRequest(f.binding, args) : handleSessionHistoryRequest(f.binding, args);
+    const unified = await handleHistoryRequest(f.binding, { scope, ...args });
+    const decode = (result: typeof unified) => {
+      const envelope = result.content.slice(1).map(block => block.text.replace(/^\[continued section \d+ of \d+\]\n/u, "")).join("");
+      return JSON.parse(envelope.slice(envelope.indexOf("\n") + 1));
+    };
+    const scopedBody = decode(unified);
+    expect(unified.content.length, `${scope}: ${JSON.stringify(scopedBody).length} envelope chars`).toBeGreaterThan(2);
+    expect(unified.content.every(block => block.text.length <= 10000)).toBe(true);
+    expect(scope === "said" ? scopedBody.chunk : scopedBody.record.chunk).toBe(scope === "said" ? body(legacy).chunk : body(legacy).record.chunk);
+    const { scope: _scope, navigation: _new, ...newEvidence } = scopedBody;
+    const { navigation: _old, ...oldEvidence } = body(legacy);
+    expect(JSON.stringify(newEvidence)).toBe(JSON.stringify(oldEvidence));
+  }
 });

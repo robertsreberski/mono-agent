@@ -41,7 +41,6 @@ export const CHILD_ONLY_TOOL_NAMES: readonly string[] = ["AskParent"];
 
 /** App-owned tools injected by the configured host and governed by tool policy. */
 export const APP_TOOL_NAMES = [
-  "History",
   "RunHistory",
   "SessionHistory",
   "ConversationHistory",
@@ -105,6 +104,8 @@ const KNOWN_TOOL_NAMES: readonly string[] = [
   ...new Set<string>([
     ...BUILTIN_TOOL_NAMES,
     ...APP_TOOL_NAMES,
+    // Opt-in policy name, deliberately absent from wizard choices until the flip.
+    "History",
     ...ADAPTER_SEND_TOOL_NAMES,
     ...Object.values(LEGACY_TOOL_ALIASES),
   ]),

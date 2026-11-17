@@ -1,3 +1,6 @@
+import { validateMonoAgentFolder } from "../doctor/doctor.js";
+import { toolMultiselectOptions } from "../setup/wizard/prompts.js";
+import { createHistoryRuntimeExtension } from "../request-tools/history.js";
 import { buildSubagentsOptions } from "../composition/configured-subagents.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -8,10 +11,25 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createToolPolicy, ToolHistoryWriter, continuityGenerationId, continuityRecordId } from "@mono-agent/conversation";
 import { expect, it } from "vitest";
-import { createConfiguredConversationHarness } from "../composition/configured-agent.js";
+import { createConfiguredAgentResponderForApp, createConfiguredConversationHarness } from "../composition/configured-agent.js";
 import { historyToolAvailabilityForRuntime } from "../request-tools/conversation-history.js";
 import { toolsSection } from "../doctor/tools.js";
 import { sessionToolHistorySection } from "../doctor/doctor-session-history.js";
+
+// Model the controller-owned endpoint injection without widening the standalone
+// harness API. Actual controller/TUI registration is exercised separately.
+async function controllerHarness(options: Parameters<typeof createConfiguredConversationHarness>[0]) {
+  const config = options.config;
+  const responder = await createConfiguredAgentResponderForApp(options, { historyExtension: createHistoryRuntimeExtension({
+    historyRoot: join(config.artifacts.dir, "..", "history"), artifactDir: config.artifacts.dir, policy: config.tools,
+    capabilities: { said: config.runtime.session.continuity?.enabled !== false, tools: true, runs: true },
+  }) ?? null });
+  return { run: async (request: Parameters<Awaited<ReturnType<typeof createConfiguredConversationHarness>>["run"]>[0]) => {
+    const { userMessage, ...rest } = request;
+    const response = await responder.respond({ ...rest, text: userMessage }, { append: async () => {} });
+    return { ...response, failure: (response as { failure?: unknown }).failure };
+  }, dispose: async () => await (responder as { dispose?: () => Promise<void> }).dispose?.() };
+}
 
 const noScopes = { said: false, tools: false, runs: false };
 const denies = ["SessionHistory", "session_history", "mcp__mono-agent-session-history__SessionHistory", "mcp__mono-agent-session-history__*", "*"];
@@ -37,7 +55,7 @@ it.each(["healthy", "continuity-off", "config-deny", "runs-only", "override", "d
       let calls = 0, forwarded = "";
       const hidden = mode === "override" || mode === "disabled" || denies.includes(mode);
       const expected = hidden ? noScopes : { said: mode !== "continuity-off" && mode !== "runs-only", tools: mode !== "config-deny" && mode !== "runs-only", runs: true };
-      const harness = await createConfiguredConversationHarness({ cwd, config, env: {},
+      const harness = await controllerHarness({ cwd, config, env: {},
         runtimeOptionsForRequest: ({ request }) => request.userMessage === "seed" ? {} : mode === "override" ? { toolPolicyOverride: createToolPolicy({ allowedTools: ["Read"] }) }
           : denies.includes(mode) ? { runtimeOptions: { disallowedTools: [mode] } } : {},
         runtime: { async run(prompt, options) {
@@ -131,7 +149,7 @@ it.each(["openai-api", "acp"])("keeps request policy boundaries on %s turns", as
       runtimeOptionsForRequest: ({ request }) => request.userMessage === "override" ? { toolPolicyOverride: createToolPolicy({ allowedTools: ["Read"] }) } : {},
       runtime: { async run(_prompt, options) {
         calls++;
-        expect(historyToolAvailabilityForRuntime(options, true).history).toEqual(calls === 1 ? { said: true, tools: true, runs: true } : noScopes);
+        expect(historyToolAvailabilityForRuntime(options, true).history).toEqual(calls === 1 ? { said: true, tools: false, runs: false } : noScopes);
         expect(Object.keys(options.mcpServers ?? {})).toEqual(calls === 1 ? ["mono-agent-history"] : []);
         return { text: "Fictional answer." };
       } },
@@ -156,4 +174,66 @@ it("does not change subagent child tools, MCP servers or system prompt", async (
   expect(JSON.stringify(definitions[0])).toBe(JSON.stringify(definitions[1]));
   expect(JSON.stringify(captured[0])).toBe(JSON.stringify(captured[1]));
   expect(captured[1]).toMatchObject({ allowedTools: ["Read"], mcpServers: {} });
+});
+
+
+it.each([
+  { allow: ["History"], continuity: true, offered: true },
+  { allow: ["History"], continuity: false, offered: false },
+  { allow: ["RunHistory"], continuity: true, offered: false },
+  { allow: ["SessionHistory"], continuity: true, offered: false },
+])("standalone unified exposure matches split composition: %j", async ({ allow, continuity, offered }) => {
+  const cwd = await mkdtemp(join(tmpdir(), "standalone-history-review-"));
+  try {
+    await writeFile(join(cwd, "IDENTITY.md"), "Fictional fixture.");
+    const config = resolveJsonMonoAgentConfig({ cwd, json: { runtime: { model: "openai-codex:gpt-5.5", session: { continuity: { enabled: continuity } } }, context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: allow, history: { unified: true } } } });
+    let called = false;
+    const harness = await createConfiguredConversationHarness({ cwd, config, env: {}, runtime: { async run(_prompt, options) {
+      called = true;
+      expect(historyToolAvailabilityForRuntime(options, true).history).toEqual({ said: offered, tools: false, runs: false });
+      const spec = (options.mcpServers as Record<string, { url: string }>)?.["mono-agent-history"];
+      expect(spec !== undefined).toBe(offered);
+      if (spec) {
+        const client = new Client({ name: "fictional-standalone", version: "1" });
+        try { await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+          expect((await client.listTools()).tools[0]!.description).not.toMatch(/scope tools:|scope runs:/u);
+          expect((await client.callTool({ name: "History", arguments: { scope: "runs" } })).structuredContent).toMatchObject({ error: { code: "invalid_scope", permittedScopes: ["said"] } });
+        } finally { await client.close(); }
+      }
+      return { text: "Fictional answer." };
+    } } });
+    try { expect((await harness.run({ conversationId: "web:fiction", userMessage: "Fictional request.", abortSignal: new AbortController().signal })).failure).toBeUndefined(); expect(called).toBe(true); }
+    finally { await harness.dispose?.(); }
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+it.each([false, true])("doctor gates History while leaving other unknown-tool diagnostics intact (unified=%s)", async unified => {
+  const config = resolveJsonMonoAgentConfig({ cwd: "/fictional-agent", json: { runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" }, tools: { history: { unified }, allowedTools: ["History", "FictionalUnknownTool"] } } });
+  const result = await toolsSection(config, { cwd: "/fictional-agent", configPath: "/fictional-agent/mono-agent.config.json", env: {}, subprocessProbes: false });
+  expect(result.details.some(detail => detail.includes("History requires tools.history.unified: true"))).toBe(!unified);
+  expect(result.details.some(detail => detail.includes("Unknown tool name") && detail.includes("FictionalUnknownTool"))).toBe(true);
+});
+
+
+it.each([undefined, false])("pins assembled prompt and full doctor JSON to a096834a2 (unified=%s)", async unified => {
+  const golden = JSON.parse(await readFile(new URL("./fixtures/history-main-parity.json", import.meta.url), "utf8"));
+  expect(golden.baseRevision).toBe("a096834a2");
+  const cwd = await mkdtemp(join(tmpdir(), "history-base-parity-"));
+  try {
+    await writeFile(join(cwd, "IDENTITY.md"), "Fictional identity.");
+    const json = { runtime: { model: "openai-codex:gpt-5.5", session: { mode: "per-message" as const } }, context: { identityPath: "IDENTITY.md" },
+      tools: { allowedTools: ["Read", "ConversationHistory", "FictionalUnknownTool"], disallowedTools: [], ...(unified === undefined ? {} : { history: { unified } }) }, providers: { piAuthPath: join(cwd, "fictional-auth.json") } };
+    await writeFile(join(cwd, "mono-agent.config.json"), JSON.stringify(json));
+    const config = resolveJsonMonoAgentConfig({ cwd, json });
+    const doctor = await validateMonoAgentFolder({ cwd, configPath: join(cwd, "mono-agent.config.json"), env: {}, drivers: [], liveness: false, subprocessProbes: false, allowFilesystemWrites: false, verifiedRuntimeProvenanceDetail: "Fictional runtime build." });
+    const normalize = (value: unknown) => JSON.parse(JSON.stringify(value).replaceAll(cwd, "<fixture>"));
+    expect(JSON.stringify(normalize(doctor))).toBe(JSON.stringify(golden.fullDoctor));
+    expect(JSON.stringify(normalize(await toolsSection(config, { cwd, configPath: join(cwd, "mono-agent.config.json"), env: {}, subprocessProbes: false })))).toBe(JSON.stringify(golden.doctor));
+    let prompt = "";
+    const harness = await createConfiguredConversationHarness({ cwd, config, env: {}, runtime: { async run(value) { prompt = value; return { text: "Fictional answer." }; } } });
+    try { expect((await harness.run({ conversationId: "web:fiction", userMessage: "Fictional request.", abortSignal: new AbortController().signal })).failure).toBeUndefined(); }
+    finally { await harness.dispose?.(); }
+    expect(normalize(prompt)).toBe(golden.prompt);
+    expect(JSON.stringify(toolMultiselectOptions([]))).toBe(JSON.stringify(golden.wizardOptions));
+  } finally { await rm(cwd, { recursive: true, force: true }); }
 });

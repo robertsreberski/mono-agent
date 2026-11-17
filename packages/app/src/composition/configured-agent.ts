@@ -281,8 +281,10 @@ async function createConfiguredConversationHarnessInternal(
     });
   const unifiedHistoryTool = !unifiedHistory || internalHooks.historyExtension === null ? undefined
     : internalHooks.historyExtension ?? createHistoryRuntimeExtension({ historyRoot: artifactDerivedRoots.history, artifactDir: config.artifacts.dir,
-      rollover: internalHooks.sessionRollover ?? config.runtime.session.rollover ?? "none", policy: config.tools,
-      capabilities: { said: config.runtime.session.continuity?.enabled !== false, tools: true, runs: true },
+      scopeRollovers: { said: internalHooks.sessionRollover ?? config.runtime.session.rollover ?? "none" }, policy: config.tools,
+      // Standalone split composition offers only ConversationHistory. The app
+      // controller owns lifecycle/artifact reader exposure in either mode.
+      capabilities: { said: config.runtime.session.continuity?.enabled !== false, tools: false, runs: false },
       onUnavailable: () => options.onToolHistoryWarning?.("History endpoint could not start; retained evidence is unavailable this run."),
     });
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([

@@ -317,7 +317,8 @@ export async function buildResponder(
     }) : undefined;
   const historyExtension = coreConfig.tools.history?.unified !== true ? undefined : createHistoryRuntimeExtension({
     historyRoot: resolve(coreConfig.artifacts.dir, "..", "history"), artifactDir: coreConfig.artifacts.dir, policy: coreConfig.tools,
-    rollover: sessionRollover ?? coreConfig.runtime.session.rollover ?? "none",
+    scopeRollovers: { said: sessionRollover ?? coreConfig.runtime.session.rollover ?? "none",
+      tools: coreConfig.runtime.session.rollover ?? "none", runs: coreConfig.runtime.session.rollover ?? "none" },
     capabilities: { said: coreConfig.runtime.session.continuity?.enabled !== false && historyToolSupport.conversationHistory,
       tools: historyToolSupport.sessionHistory, runs: historyToolSupport.runHistory },
     onUnavailable: () => controller.logger?.warn?.("History endpoint could not start; retained evidence is unavailable this run."),
