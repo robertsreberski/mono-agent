@@ -1,3 +1,4 @@
+import { historySurfaceBinding, historyToolName, historyServerName, historyConfig, historyArguments, assertHistorySurfaceBinding } from "./continuity-e2-history.mjs";
 // Live-path proofs: faux by default, or bound paid phase actor under one controller.
 // Production owns context, sessions, packs, compaction and effect containment.
 import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
@@ -27,7 +28,7 @@ const PROBES = Object.freeze([
   { prompt: "What is the recovered fictional value and next action?", required: [FACT, NEXT_ACTION] },
   { prompt: "Confirm the pending next action without disclosing protected information.", required: [NEXT_ACTION] },
 ]);
-const HISTORY = "mono-agent-conversation-history", CONVERSATION = "web:fictional-proof-owner", OTHER = "web:fictional-proof-foreign";
+const CONVERSATION = "web:fictional-proof-owner", OTHER = "web:fictional-proof-foreign";
 const LIMITS = Object.freeze({ sourceRequests: 64, probeRequests: 32, summaryRequests: 8, summaryRequestsPerCompaction: 2, compactions: 4, timeoutMs: 120_000 });
 const textOf = message => typeof message?.content === "string" ? message.content : (message?.content ?? []).filter(p => p.type === "text").map(p => p.text).join("\n");
 const offered = (context, pi) => context.tools ?? pi.getCurrentTools(context.messages);
@@ -72,8 +73,8 @@ export function proofHistoryWarningClass(message) {
 }
 
 /** Internal fixture phases use only existing, owner-only roots created by runE2Proofs. */
-export async function runProofPhase({ base, arm, phase = "whole", variant = "ceiling", fault, summary, onContext = () => {}, paidAdapter }) {
-  if (paidAdapter) { assertE2PhaseAdapter(paidAdapter); paidAdapter.assertProof({ base, arm, phase, variant }); if (fault !== undefined || summary !== undefined) fail("E2_ARGUMENTS_INVALID"); }
+export async function runProofPhase({ base, arm, phase = "whole", variant = "ceiling", fault, summary, historySurface, onContext = () => {}, paidAdapter }) {
+  if (paidAdapter) { assertE2PhaseAdapter(paidAdapter); paidAdapter.assertProof({ base, arm, phase, variant, historySurface }); if (fault !== undefined || summary !== undefined) fail("E2_ARGUMENTS_INVALID"); }
   if (fault !== undefined && !FAULTS.includes(fault)) fail("E2_ARGUMENTS_INVALID");
   if (summary !== undefined && !OFFLINE_SUMMARIES.includes(summary)) fail("E2_ARGUMENTS_INVALID");
   const earlyEvidence = ["legacy-evidence", "early-evidence"].includes(fault);
@@ -84,13 +85,15 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   const pressureArm = E2_PROOF_PRESSURE_ARMS.find(row => row.restart === (variant === "restart"));
   const seedReceipt = resumed ? JSON.parse(await readFile(join(base, "seed.json"), "utf8")) : null;
   if (resumed) {
+    assertHistorySurfaceBinding({ historySurface }, seedReceipt);
     requireProof(seedReceipt.pid !== process.pid && seedReceipt.sentinel.completed && !seedReceipt.sentinel.repeated, "E2_PROOF_RESTART_MISSING");
     if (fault !== "legacy-evidence") requireProof(seedReceipt.absenceEstablished === true, "E2_PROOF_INITIAL_PRESENT");
     if (arm === "cancel") requireProof(seedReceipt.forwarded === true, "E2_PROOF_CANCEL_NOT_FORWARDED");
   }
   await mkdir(work, { recursive: true, mode: 0o700 });
   await writeFile(join(work, "IDENTITY.md"), "Fictional isolated continuity proof. Never disclose protected canaries or another conversation. Never repeat a completed sentinel.\n", { mode: 0o600 });
-  const modules = await productionModules(ROOT), estimators = await loadE2Estimators(), soul = await shippingSoul();
+  const modules = await productionModules(ROOT), estimators = await loadE2Estimators(), soul = await shippingSoul(historySurface);
+  const historyTool = historyToolName(historySurface), HISTORY = historyServerName(historySurface);
   const tools = await startProofTools(base), requests = [], boundaries = [], sessions = [];
   const historyWarnings = [];
   let opened, historyDegraded = false, mode = "setup-scripted", binding = { model: arm === "switch" || arm === "pressure" && variant === "restart" ? LUNA : SOL, effort: "high" };
@@ -98,7 +101,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   let setup = [], setupCursor = 0, requestSignal, controller, forwarded = false, witness, firstRequestSeen = false, firstPack = false, safe = true, readerRound = 0, readText = "", answer = "", sentinelOffered = false;
   const seen = new Set();
   let probeOrdinal = 0, checkingProjection = false, absenceEstablished = false;
-  const route = createE2Models({ pi: modules.pi, estimators, soul, paidAdapter, ...(paidAdapter ? { summary: "real" } : {}), models: [LUNA, SOL].map(model => ({ model })), limits: LIMITS, ...(summary === undefined ? {} : { summary }),
+  const route = createE2Models({ pi: modules.pi, estimators, soul, paidAdapter, historySurface, ...(paidAdapter ? { summary: "real" } : {}), models: [LUNA, SOL].map(model => ({ model })), limits: LIMITS, ...(summary === undefined ? {} : { summary }),
     ...(paidAdapter ? { onRequest(model, context, options = {}, method) {
       requestSignal = options.signal;
       requests.push({ ordinal: requests.length, model: `${model.provider}:${model.id}`, role: method === "completeSimple" ? "summary" : mode === "cancel-forwarded" ? "setup-scripted" : mode,
@@ -108,11 +111,11 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
       onContext({ arm, phase, role: mode, context });
       if (checkingProjection) absenceEstablished = !visible(context).includes(FACT);
       if (["continuation", "probe", "cancel-forwarded"].includes(mode)) {
-        const names = offered(context, modules.pi).map(t => t.name).sort(), allowed = mode === "continuation" && arm === "cancel" ? ["ConversationHistory", SENTINEL].sort() : ["ConversationHistory"];
+        const names = offered(context, modules.pi).map(t => t.name).sort(), allowed = mode === "continuation" && arm === "cancel" ? [historyTool, SENTINEL].sort() : [historyTool];
         requireProof(JSON.stringify(names) === JSON.stringify(allowed), "E2_PROBE_TOOLS_REFUSED");
         if (mode === "continuation") {
           if (!firstRequestSeen) { firstRequestSeen = true; firstPack = context.messages.some(m => textOf(m).includes("### Conversation continuity pack")); witness.initial(context); sentinelOffered = names.includes(SENTINEL); }
-          for (const m of context.messages.filter(m => m.role === "toolResult" && m.toolName === "ConversationHistory")) if (!seen.has(m.toolCallId)) { seen.add(m.toolCallId); witness.delivered({ content: m.content }); }
+          for (const m of context.messages.filter(m => m.role === "toolResult" && m.toolName === historyTool)) if (!seen.has(m.toolCallId)) { seen.add(m.toolCallId); witness.delivered({ content: m.content }); }
         }
         safe &&= !visible(context).includes(CANARY) && !visible(context).includes(FOREIGN);
       }
@@ -138,15 +141,15 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
       }
       else if (fault === "repeat" && arm === "cancel") body = readerRound++ === 0 ? [modules.pi.fauxToolCall(SENTINEL, {}, { id: "proof-repeat" })] : "Fictional repeated effect refused.";
       else {
-        const last = context.messages.filter(m => m.role === "toolResult" && m.toolName === "ConversationHistory").at(-1), result = last && historyBody({ content: last.content });
-        if (!readerRound++) body = [modules.pi.fauxToolCall("ConversationHistory", { action: "search", query: "proof-evidence", limit: 10 }, { id: "proof-search" })];
+        const last = context.messages.filter(m => m.role === "toolResult" && m.toolName === historyTool).at(-1), result = last && historyBody({ content: last.content });
+        if (!readerRound++) body = [modules.pi.fauxToolCall(historyTool, historyArguments(historySurface, { action: "search", query: "proof-evidence", limit: 10 }), { id: "proof-search" })];
         else if (result?.action === "search") {
           const record = result.items?.find(row => row.kind === "tool" && row.toolName === "ProofRead") ?? result.items?.find(row => row.kind === "tool");
           requireProof(record?.recordId, "E2_PROOF_RECOVERY_FAILED");
-          body = [modules.pi.fauxToolCall("ConversationHistory", { action: "get", recordId: record.recordId, chunkBytes: 8192 }, { id: `proof-get-${readerRound}` })];
+          body = [modules.pi.fauxToolCall(historyTool, historyArguments(historySurface, { action: "get", recordId: record.recordId, chunkBytes: 8192 }), { id: `proof-get-${readerRound}` })];
         } else if (result?.action === "get") {
           readText += result.chunk ?? "";
-          if (result.nextCursor) body = [modules.pi.fauxToolCall("ConversationHistory", { action: "get", cursor: result.nextCursor }, { id: `proof-get-${readerRound}` })];
+          if (result.nextCursor) body = [modules.pi.fauxToolCall(historyTool, historyArguments(historySurface, { action: "get", cursor: result.nextCursor }), { id: `proof-get-${readerRound}` })];
           else { requireProof(readText.includes(FACT) && readText.includes(NEXT_ACTION), "E2_PROOF_RECOVERY_FAILED"); body = `${FACT}; next: ${NEXT_ACTION}.`; }
         } else fail("E2_PROOF_RECOVERY_FAILED");
       }
@@ -184,7 +187,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   try {
     opened = await openHarness({ modules, work, authPath: paidAdapter ? paidAdapter.credentialPath() : join(base, "absent-auth.json"), model: binding.model, effort: binding.effort, tools: false,
       clock: { get value() { return new Date(); } }, e2: paidAdapter,
-      configPatch: { tools: { allowedTools: ["ConversationHistory"] }, runtime: { retry: { primaryAttempts: 1 }, fallbacks: [], compaction: { enabled: true }, session: { rollover: "none", idleTimeoutMs: arm === "idle" ? 1200 : 3_600_000,
+      configPatch: { tools: { ...historyConfig(historySurface), allowedTools: [historyTool] }, runtime: { retry: { primaryAttempts: 1 }, fallbacks: [], compaction: { enabled: true }, session: { rollover: "none", idleTimeoutMs: arm === "idle" ? 1200 : 3_600_000,
         continuity: { enabled: true, packEnabled: fault !== "pack", ledgerEnabled: false, upkeep: { enabled: false } } } }, providers: { piNative: { transport: "sse", piMaxRetries: 0 } } },
       onHistoryWarning: message => { historyDegraded = true; if (historyWarnings.length < 32) historyWarnings.push({ mode, kind: proofHistoryWarningClass(message) }); },
       hostOptions: { onSessionEvent: e => { sessions.push({ conversationId: e.conversationId, kind: e.kind, reason: e.reason ?? null, at: performance.now() }); }, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: modules.host.parseMonoRuntimeModelReference(binding.model), effort: binding.effort } }) },
@@ -192,7 +195,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
         if (options.piResolvedModel || options.piResolvedModels) fail("E2_MODELS_SEAM_REFUSED");
         const reading = ["continuation", "probe", "cancel-forwarded"].includes(mode), cancelTool = arm === "cancel" && mode === "continuation";
         return { piModelsDecorator: paidAdapter ? route.decorator : decorator, observers: [...(options.observers ?? []), { name: "e2.proof.lifecycle", recordEvent: event }], skills: [],
-          allowedTools: reading ? ["ConversationHistory", ...(cancelTool ? [SENTINEL] : [])] : ["ProofRead", SENTINEL],
+          allowedTools: reading ? [historyTool, ...(cancelTool ? [SENTINEL] : [])] : ["ProofRead", SENTINEL],
           mcpServers: reading ? { [HISTORY]: options.mcpServers?.[HISTORY], ...(cancelTool ? { [PROOF_SERVER]: { type: "http", url: tools.sentinelUrl } } : {}) } : { [PROOF_SERVER]: { type: "http", url: tools.url } } };
       } });
     if (!resumed) {
@@ -234,7 +237,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
         }
       }
       if (arm === "cancel") { mode = "cancel-forwarded"; await run("Continue without repeating the completed fictional sentinel."); }
-      if (phase === "seed") return { pid: process.pid, forwarded, sentinel: await tools.receipt(), absenceEstablished, requests, compactions: route.report().compactions };
+      if (phase === "seed") return { ...historySurfaceBinding(historySurface), pid: process.pid, forwarded, sentinel: await tools.receipt(), absenceEstablished, requests, compactions: route.report().compactions };
     }
     let idle;
     if (arm === "idle") {
@@ -270,7 +273,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
       boundary, pack, idle, forwarded: seedReceipt?.forwarded, restarted: resumed && seedReceipt.pid !== process.pid, sentinelOffered, // A restart variant counts both processes, so a post-restart compaction cannot hide.
       compactions: resumed && arm === "pressure" ? [...seedReceipt.compactions, ...route.report().compactions] : route.report().compactions });
     if (arm === "cancel") requireProof(sentinelOffered && receipt.attempts === 0, "E2_PROOF_SENTINEL_REPEATED");
-    return { pid: process.pid, assertions, requests, compactions: route.report().compactions, boundary, pack, ...(idle ? { idle } : {}), sentinelOffered,
+    return { ...historySurfaceBinding(historySurface), pid: process.pid, assertions, requests, compactions: route.report().compactions, boundary, pack, ...(idle ? { idle } : {}), sentinelOffered,
       preparation: { evidenceAfterCompaction: !earlyEvidence, coldProjection: arm === "switch" ? "probe-model-change" : fault === "legacy-evidence" ? "none" : "scripted-round-trip", absenceBeforeArmBoundary: arm === "switch" ? null : resumed ? seedReceipt.absenceEstablished : absenceEstablished,
         // Derived from what actually ran, including the offline regression faults.
         order: [...(earlyEvidence ? ["record-evidence"] : []), ...(needsPressure ? ["shipping-ceiling-compaction"] : []), ...(earlyEvidence ? [] : ["record-evidence"]),
@@ -280,10 +283,10 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   } finally { try { await opened?.close(); } finally { await tools.close(); } }
 }
 
-export async function runE2Proofs({ output, arm = "all", real = false, onContext, fault, summary, registrationPath, registrationSha256, authorizationPath, credentialPath }) {
+export async function runE2Proofs({ historySurface, output, arm = "all", real = false, onContext, fault, summary, registrationPath, registrationSha256, authorizationPath, credentialPath }) {
   if (real) {
     if (arm !== "all" || onContext !== undefined || fault !== undefined || summary !== undefined) fail("E2_ARGUMENTS_INVALID");
-    return (await import("./continuity-e2-paid-entry.mjs")).runE2Paid({ command: "proofs", registrationPath, registrationSha256, authorizationPath, credentialPath, outputRoot: output });
+    return (await import("./continuity-e2-paid-entry.mjs")).runE2Paid({ ...historySurfaceBinding(historySurface), command: "proofs", registrationPath, registrationSha256, authorizationPath, credentialPath, outputRoot: output });
   }
   if (fault !== undefined && !FAULTS.includes(fault)) fail("E2_ARGUMENTS_INVALID");
   if (summary !== undefined && !OFFLINE_SUMMARIES.includes(summary)) fail("E2_ARGUMENTS_INVALID");
@@ -301,19 +304,19 @@ export async function runE2Proofs({ output, arm = "all", real = false, onContext
         try {
           let result;
           if (name === "cancel" || name === "pressure" && variant === "restart") {
-            await writeFile(join(base, "fixture.json"), JSON.stringify({ arm: name, variant, ...(fault ? { fault } : {}), ...(summary === undefined ? {} : { summary }) }), { flag: "wx", mode: 0o600 });
+            await writeFile(join(base, "fixture.json"), JSON.stringify({ ...historySurfaceBinding(historySurface), arm: name, variant, ...(fault ? { fault } : {}), ...(summary === undefined ? {} : { summary }) }), { flag: "wx", mode: 0o600 });
             const seed = await fixtureChild(base, "seed"), resume = await fixtureChild(base, "resume");
             requireProof(seed.pid !== resume.pid && seed.sentinel.completed && !seed.sentinel.repeated, "E2_PROOF_RESTART_MISSING");
             if (name === "cancel") requireProof(seed.forwarded && resume.sentinelOffered, "E2_PROOF_CANCEL_NOT_FORWARDED");
             if (name === "pressure") requireProof(resume.boundary && resume.pack, "E2_PROOF_PACK_MISSING");
             result = { ...resume, assertions: { ...resume.assertions, ...(name === "pressure" ? { newProcess: true, coldModelChange: true, firstSolPack: true } : {}) }, compactions: [...seed.compactions, ...resume.compactions], requests: [...seed.requests, ...resume.requests], newProcess: true, forwarded: seed.forwarded };
-          } else result = await runProofPhase({ base, arm: name, variant, onContext, fault, summary });
+          } else result = await runProofPhase({ base, arm: name, variant, onContext, fault, summary, historySurface });
           const { pid, requests, ...contentFree } = result;
           records.push({ variant, ...contentFree, requests: requests.map((r, ordinal) => ({ ...r, ordinal })) });
         } finally { envRestore(); }
       }
-      const report = { schema: "continuity-e2-proof-v1", arm: name, mode: "faux", semanticQualification: false, variants: records.map(({ requests, ...r }) => r) };
-      const sizing = { schema: "continuity-e2-proof-sizing-v1", arm: name, mode: "faux", usage: "estimated-not-measured", semanticQualification: false,
+      const report = { ...historySurfaceBinding(historySurface), schema: "continuity-e2-proof-v1", arm: name, mode: "faux", semanticQualification: false, variants: records.map(({ requests, ...r }) => r) };
+      const sizing = { ...historySurfaceBinding(historySurface), schema: "continuity-e2-proof-sizing-v1", arm: name, mode: "faux", usage: "estimated-not-measured", semanticQualification: false,
         roles: { "setup-scripted": "not-paid", summary: "paid-later-D", continuation: "paid-later-D", probe: "paid-later-D" }, variants: records.map(({ variant, requests }) => ({ variant, requests })) };
       await writeFile(join(output, `${name}.json`), `${JSON.stringify(report)}\n`, { flag: "wx", mode: 0o600 });
       await writeFile(join(output, `${name}-sizing.json`), `${JSON.stringify(sizing)}\n`, { flag: "wx", mode: 0o600 });

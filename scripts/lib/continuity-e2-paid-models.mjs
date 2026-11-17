@@ -1,3 +1,4 @@
+import { e2HistorySurface, historyToolName, historyServerName, assertHistorySurfaceBinding, lookupToolAllowlist } from "./continuity-e2-history.mjs";
 // One phase actor: real paid requests use the shared guard and its sole send.
 // Scripted setup is handled separately by createE2Models and never reaches here.
 import { readdir, writeFile } from "node:fs/promises";
@@ -25,6 +26,7 @@ export async function createE2PaidModels(a, safety) {
   const protocolBytes = await artifacts().readArtifact(a.pilot.registration.protocol.path, "e2_registration_invalid");
   need(digest(protocolBytes) === a.pilot.registration.protocol.sha256, "e2_registration_invalid");
   const protocol = JSON.parse(protocolBytes), baseline = e2ReplayArm(a.pilot.registration.replayArm) === "baseline";
+  const historySurface = e2HistorySurface(a.pilot.registration.historySurface), historyTool = historyToolName(historySurface);
   let send, native, config, position, active = false, probeRequests = 0, stopped = null, lifecycle = null, barrier = Promise.resolve();
   let failureCause = null, currentCall = null;
   registerE2CauseObserver(safety, value => {
@@ -103,7 +105,7 @@ export async function createE2PaidModels(a, safety) {
         && value.runtime?.session?.continuity?.ledgerEnabled !== true && value.runtime?.outputSchema == null && value.outputSchema == null,
         "e2_auxiliary_callers_forbidden");
       const workspaces = a.slot.kind === "replay" ? [0, 1].map(branch => e2PhaseWork(a.outputRoot, a.slot, branch)) : [e2PhaseWork(a.outputRoot, a.slot)];
-      need(workspaces.includes(value.runtime.workspace) && (value.tools?.allowedTools ?? []).every(name => ["ConversationHistory", "ProofSentinel"].includes(name))
+      need(workspaces.includes(value.runtime.workspace) && (value.tools?.allowedTools ?? []).every(name => (name === "ProofSentinel" || name === historyTool && lookupToolAllowlist(historySurface).tools.includes(name)))
         && !value.tools?.mcpConfigPath, "e2_preparation_invalid");
       need((value.runtime.fallbacks ?? []).length === 0 && (value.runtime.retry?.primaryAttempts ?? 1) === 1
         && value.providers?.piNative?.transport === "sse" && value.providers.piNative.piMaxRetries === 0
@@ -113,6 +115,7 @@ export async function createE2PaidModels(a, safety) {
         need(!Object.hasOwn(part, key), "e2_retry_profile_forbidden");
       if (baseline) need(a.slot.kind === "replay" && a.slot.arm === "baseline" && value.runtime.session.continuity.enabled === false
         && value.runtime.compaction?.enabled === true && (value.tools?.allowedTools ?? []).length === 0, "e2_preparation_invalid");
+      need((value.tools?.history?.unified === true) === (historySurface === "unified"), "e2_preparation_invalid");
       config = value;
     },
     assertCurrentConfig() { if (send) { need(config, "e2_auxiliary_callers_forbidden"); actor.assertConfig(config); } },
@@ -131,6 +134,8 @@ export async function createE2PaidModels(a, safety) {
             "e2_native_identity_forbidden");
           need(change && Object.keys(change).every(name => ["piModelsDecorator", "mcpServers", "observers", "allowedTools", "skills"].includes(name))
             && isE2PaidDecorator(change.piModelsDecorator) && change.skills?.length === 0, "e2_unguarded_dispatch");
+          need((change.allowedTools ?? []).every(name => [historyTool, "ProofRead", "ProofSentinel"].includes(name)), "e2_preparation_invalid");
+          need(!Object.hasOwn(change.mcpServers ?? {}, historyServerName(historySurface === "unified" ? "split" : "unified")), "e2_preparation_invalid");
           if (baseline) need(change.allowedTools?.length === 0 && !Object.hasOwn(change.mcpServers ?? {}, "mono-agent-conversation-history"), "e2_preparation_invalid");
           // The conversation harness owns this recorder. With its preparation
           // callback present, native compaction_end awaits it before resuming an
@@ -277,7 +282,7 @@ export async function createE2PaidModels(a, safety) {
     async flush() { await barrier; need(!active && !lifecycle, "e2_compaction_invalid"); if (stopped) fail(stopped); },
     async stop(code) { await stop(code); },
     async assertReplay(values) {
-      assertE2ReplayBinding(a.pilot.registration, { replayArm: values.replayArm, qualification: baseline ? false : undefined });
+      assertE2ReplayBinding(a.pilot.registration, { historySurface: values.historySurface, replayArm: values.replayArm, qualification: baseline ? false : undefined });
       if (values.report) assertE2ReplayBinding(a.pilot.registration, values.report);
       need(a.slot.kind === "replay" && values.output === e2PhaseBase(a.outputRoot, a.slot), "e2_preparation_invalid");
       for (const [key, binding] of [["source", a.pilot.registration.source], ["protocol", a.pilot.registration.protocol], ["questions", a.pilot.registration.probes], ["evaluator", a.pilot.registration.keys]]) {
@@ -285,7 +290,8 @@ export async function createE2PaidModels(a, safety) {
         need(digest(bytes) === binding.sha256 && canonicalDigest(JSON.parse(bytes)) === canonicalDigest(values[key]), "e2_registration_invalid");
       }
     },
-    assertProof({ base, arm, phase, variant }) {
+    assertProof({ base, arm, phase, variant, historySurface }) {
+      assertHistorySurfaceBinding(a.pilot.registration, { historySurface });
       need(a.slot.kind === "proof" && base === e2PhaseBase(a.outputRoot, a.slot) && arm === a.slot.arm && phase === a.slot.phase && variant === a.slot.variant, "e2_preparation_invalid");
     },
     failureCause: () => failureCause && structuredClone(failureCause),

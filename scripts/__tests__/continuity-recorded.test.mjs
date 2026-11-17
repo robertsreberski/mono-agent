@@ -185,7 +185,7 @@ it("measures result representation/clipping instead of claiming built-in byte eq
 
 it("limits imports to offline helpers, the inert listener and the scanned pure redaction closure", () => {
   const files = ["scripts/continuity-import-recorded.mjs", "scripts/continuity-observe.mjs", ...readdirSync(join(ROOT, "scripts/lib")).filter(n => /^continuity-(recorded|observation)-.*\.mjs$/.test(n)).map(n => `scripts/lib/${n}`)];
-  files.push("packages/observability/dist/redaction.js");
+  files.push("packages/observability/dist/redaction.js", "scripts/lib/continuity-e2-history.mjs");
   const pureFiles = new Set(["packages/observability/dist/redaction.js", "packages/observability/dist/guards.js"]);
   const builtin = new Set(["node:fs", "node:path", "node:url", "node:crypto", "node:sqlite"]);
   const imports = new Set(files.filter(p => p.startsWith("scripts/lib/")).flatMap(p => [`./${p.slice("scripts/lib/".length)}`, `./lib/${p.slice("scripts/lib/".length)}`]));

@@ -45,6 +45,7 @@ export const LOOKUP_PILOT_PROTOCOL_FILES = Object.freeze([
   "scripts/lib/continuity-e2-fixture.mjs",
   "scripts/lib/continuity-e2-guarded-protocol.mjs",
   "scripts/lib/continuity-e2-isolation.mjs",
+  "scripts/lib/continuity-e2-history.mjs",
   "scripts/lib/continuity-e2-models.mjs",
   "scripts/lib/continuity-e2-lineage.mjs", "scripts/lib/continuity-e2-compaction.mjs",
   "scripts/lib/continuity-e2-journals.mjs", "scripts/lib/continuity-e2-protected.mjs",

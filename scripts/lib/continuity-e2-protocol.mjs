@@ -1,3 +1,4 @@
+import { e2HistorySurface, assertHistorySurfaceBinding } from "./continuity-e2-history.mjs";
 // Explicit registration, never inference from private prose or source size.
 import { fail, keys, object } from "./continuity-observation-input.mjs";
 import { digest, validateSource } from "./continuity-recorded-schema.mjs";
@@ -18,6 +19,7 @@ export function e2ProbeRequestCount(protocol, arm) {
   return e2ReplayArm(arm) === "baseline" ? 1 : protocol.probeLookupRounds + 1;
 }
 export function assertE2ReplayBinding(registration, report) {
+  assertHistorySurfaceBinding(registration, report);
   if (e2ReplayArm(registration.replayArm) !== e2ReplayArm(report.replayArm)
     || report.replayArm === "baseline" && report.qualification !== false) fail("e2_authorization_binding_mismatch");
 }
@@ -30,13 +32,16 @@ export function e2ContinuityPackMessage(message, index, lastUser) {
   return message.role === "user" && index !== lastUser
     && text.startsWith("### Conversation continuity pack (historical evidence)\n");
 }
-export function assertE2BaselineContext(context, { kind = "probe", sourceTools } = {}) {
+export function assertE2BaselineContext(context, { kind = "probe", sourceTools, historySurface } = {}) {
   const messages = context.messages ?? context.input ?? [];
   const tools = [...(context.tools ?? []), ...messages.flatMap(m => m.toolsAdded ?? [])];
   if (kind !== "source" && tools.length) fail("E2_PROBE_TOOLS_REFUSED");
-  const history = name => ["ConversationHistory", "mono-agent-conversation-history"].includes(name);
+  const unified = e2HistorySurface(historySurface) === "unified";
+  const servers = unified ? ["mono-agent-conversation-history", "mono-agent-history"] : ["mono-agent-conversation-history"];
+  const history = name => ["ConversationHistory", "mono-agent-conversation-history",
+    ...(unified ? ["SessionHistory", "RunHistory", "History", "mcp__mono-agent-history__History", "mono-agent-history"] : [])].includes(name);
   if (tools.some(t => history(t.name) || history(t.serverName))
-    || Object.hasOwn(context.mcpServers ?? {}, "mono-agent-conversation-history")
+    || servers.some(name => Object.hasOwn(context.mcpServers ?? {}, name))
     || messages.some(m => history(m.toolName) || m.type === "function_call" && history(m.name)
       || Array.isArray(m.content) && m.content.some(p => p.type === "toolCall" && history(p.name)))) fail("E2_PROBE_TOOLS_REFUSED");
   if (kind === "source" && sourceTools) {

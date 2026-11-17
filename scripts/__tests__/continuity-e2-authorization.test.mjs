@@ -10,7 +10,7 @@ import { digest } from "../lib/continuity-dataset.mjs";
 import { digest as hash } from "../lib/continuity-recorded-schema.mjs";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { E2_REGISTRATION_SCHEMA, E2_PLAN_SCHEMA, E2_ASSUMPTIONS, E2_AUTHORIZATION_SCHEMA } from "../lib/continuity-e2-policy.mjs";
-import { E2_TOOL_POLICIES, e2CodeDigest, e2ProbeCounts, e2PhaseSchedule, validateE2ReplayLimits } from "../lib/continuity-e2-registration.mjs";
+import { e2ToolPolicies, E2_TOOL_POLICIES, e2CodeDigest, e2ProbeCounts, e2PhaseSchedule, validateE2ReplayLimits } from "../lib/continuity-e2-registration.mjs";
 import { e2AuthorizationBindings } from "../lib/continuity-e2-authorization.mjs";
 import { loadE2Catalog } from "../lib/continuity-e2-pricing.mjs";
 import { shippingSoul } from "../lib/continuity-e2-models.mjs";
@@ -268,4 +268,27 @@ it("binds the full new descriptor including retry policy without changing the ou
   f.artifact.bindings.descriptor.retryPolicy = { ...E2_RETRY_POLICY, maxPerRun: 7 };
   await save(f.args.authorizationPath, f.artifact);
   await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_authorization_binding_mismatch" });
+});
+
+it("validates a fictional registration with only the Sol summary envelope raised to 500K", async () => {
+  const roles = f.pilot.registration.roles;
+  const summary = roles.find(r => r.role === "summary" && r.model === "openai-codex:gpt-6.1-sol");
+  const others = structuredClone(roles.filter(r => r !== summary));
+  summary.maxInputTokens = 500000; await f.persist();
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).resolves.toBeDefined();
+  expect(roles.filter(r => r !== summary)).toEqual(others);
+});
+it.each(["split", "unified"])("binds a %s registration through authorization and rejects mixed sizing", async historySurface => {
+  const r = f.pilot.registration;
+  r.historySurface = historySurface;
+  const soul = await shippingSoul(historySurface);
+  r.soul = { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest };
+  r.toolPolicies = e2ToolPolicies(r.replayArm, historySurface);
+  const binding = r.sizing[0], sizing = JSON.parse(await readFile(binding.path));
+  if (historySurface === "unified") sizing.historySurface = historySurface;
+  let raw = JSON.stringify(sizing); await writeFile(binding.path, raw); binding.sha256 = hash(raw); await f.persist();
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).resolves.toBeDefined();
+  sizing.historySurface = historySurface === "unified" ? "split" : "unified";
+  raw = JSON.stringify(sizing); await writeFile(binding.path, raw); binding.sha256 = hash(raw); await f.persist();
+  await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
 });

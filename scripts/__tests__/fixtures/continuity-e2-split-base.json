@@ -1,0 +1,650 @@
+{
+  "revision": "a9a4aff6bddb551d1b856f57a6980557c23451ec",
+  "code": "da104e4c4ca96cc8a63c9622407ebf02d7ce0a6470a9f4a05653a7bad4fc59c9",
+  "policies": {
+    "summary": [],
+    "replay": [
+      "ConversationHistory"
+    ],
+    "replayFinal": [],
+    "proof": [
+      "ConversationHistory"
+    ],
+    "cancelContinuation": [
+      "ConversationHistory",
+      "ProofSentinel"
+    ]
+  },
+  "soul": {
+    "text": "You are a careful, source-grounded agent.\n\nCore guardrails:\n- Follow the instruction hierarchy and project-local guidance before making changes.\n- Read and research the current context before acting; distinguish confirmed facts from assumptions.\n- Route evidence by scope before assuming or asking: use active conversation history for what was just said, ConversationHistory (when available) for retained conversation text or portable summaries after compaction/restart (generated summaries are not owner authority or renewed approval) and for exact retained conversation and tool-result values, including identifiers, MemoryRecall (when available) for a targeted durable fact, preference or decision, MemoryJournal (when available) for a broad retrospective over an explicit calendar-date range such as \"what happened last week\", RunHistory (when available) for settlement and interrupted-work recovery, and SessionHistory (when available) for prior-run tool-lifecycle evidence. For unhinted interrupted-work recovery, start with RunHistory {} when available.\n- Keep scope small, reversible, and aligned with the user's requested outcome.\n- Preserve secrets and never expose credentials, tokens, or private local configuration.\n- Do not fake success, readiness, tests, data sources, or product behavior.\n- Surface model, runtime, provider, and tool failures honestly instead of hiding them behind broad fallbacks.\n- Ask for clarification when missing information would change the implementation or outcome.\n- Leave clear handoff notes with decisions, verification, and remaining risks.",
+    "rawDigest": "a1050836c51d4492977078f95bc96c297c9b5c48a2f1867037c158d73e7f9270",
+    "normalizedDigest": "e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9"
+  },
+  "registration": {
+    "soul": {
+      "rawDigest": "a1050836c51d4492977078f95bc96c297c9b5c48a2f1867037c158d73e7f9270",
+      "normalizedDigest": "e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9"
+    },
+    "toolPolicies": {
+      "summary": [],
+      "replay": [
+        "ConversationHistory"
+      ],
+      "replayFinal": [],
+      "proof": [
+        "ConversationHistory"
+      ],
+      "cancelContinuation": [
+        "ConversationHistory",
+        "ProofSentinel"
+      ]
+    }
+  },
+  "registrationDigest": "c8d8b273b361ddbc5a8ea7bc07f9c940e401126546b68004401097b614b8fcc3",
+  "pilot": {
+    "schema": "fictional-base-registration",
+    "registration": {
+      "code": {
+        "path": "/fictional/repository",
+        "revision": "a9a4aff6bddb551d1b856f57a6980557c23451ec",
+        "sha256": "da104e4c4ca96cc8a63c9622407ebf02d7ce0a6470a9f4a05653a7bad4fc59c9"
+      },
+      "soul": {
+        "rawDigest": "a1050836c51d4492977078f95bc96c297c9b5c48a2f1867037c158d73e7f9270",
+        "normalizedDigest": "e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9"
+      },
+      "toolPolicies": {
+        "summary": [],
+        "replay": [
+          "ConversationHistory"
+        ],
+        "replayFinal": [],
+        "proof": [
+          "ConversationHistory"
+        ],
+        "cancelContinuation": [
+          "ConversationHistory",
+          "ProofSentinel"
+        ]
+      },
+      "roles": [
+        {
+          "role": "summary",
+          "model": "openai-codex:gpt-6.1-sol",
+          "maxInputTokens": 272000,
+          "maxOutputTokens": 128000,
+          "expectedOutputTokens": 512
+        }
+      ]
+    },
+    "descriptor": {
+      "capUnits": "999999999999"
+    }
+  },
+  "rawRegistration": "{\"schema\":\"fictional-base-registration\",\"registration\":{\"code\":{\"path\":\"/fictional/repository\",\"revision\":\"a9a4aff6bddb551d1b856f57a6980557c23451ec\",\"sha256\":\"da104e4c4ca96cc8a63c9622407ebf02d7ce0a6470a9f4a05653a7bad4fc59c9\"},\"soul\":{\"rawDigest\":\"a1050836c51d4492977078f95bc96c297c9b5c48a2f1867037c158d73e7f9270\",\"normalizedDigest\":\"e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9\"},\"toolPolicies\":{\"summary\":[],\"replay\":[\"ConversationHistory\"],\"replayFinal\":[],\"proof\":[\"ConversationHistory\"],\"cancelContinuation\":[\"ConversationHistory\",\"ProofSentinel\"]},\"roles\":[{\"role\":\"summary\",\"model\":\"openai-codex:gpt-6.1-sol\",\"maxInputTokens\":272000,\"maxOutputTokens\":128000,\"expectedOutputTokens\":512}]},\"descriptor\":{\"capUnits\":\"999999999999\"}}",
+  "rawRegistrationSha256": "3111836dc53d683a837e9b43d0be2c3e86b5ca60df4041f4a11fffbb50ed6933",
+  "canonicalPilotDigest": "badb8aa6e005c688f4347778247145308ef28ea7912f3d1dee820f4da3279488",
+  "baselineSourceCases": [
+    {
+      "context": {
+        "tools": [
+          {
+            "name": "ConversationHistory"
+          }
+        ]
+      },
+      "refusal": "E2_PROBE_TOOLS_REFUSED"
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "toolsAdded": [
+              {
+                "name": "ConversationHistory"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": "E2_PROBE_TOOLS_REFUSED"
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "toolResult",
+            "toolName": "ConversationHistory"
+          }
+        ]
+      },
+      "refusal": "E2_PROBE_TOOLS_REFUSED"
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "ConversationHistory"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": "E2_PROBE_TOOLS_REFUSED"
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "type": "function_call",
+            "name": "ConversationHistory"
+          }
+        ]
+      },
+      "refusal": "E2_PROBE_TOOLS_REFUSED"
+    },
+    {
+      "context": {
+        "mcpServers": {
+          "ConversationHistory": {}
+        }
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "tools": [
+          {
+            "name": "mono-agent-conversation-history"
+          }
+        ]
+      },
+      "refusal": "E2_PROBE_TOOLS_REFUSED"
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "toolsAdded": [
+              {
+                "name": "mono-agent-conversation-history"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": "E2_PROBE_TOOLS_REFUSED"
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "toolResult",
+            "toolName": "mono-agent-conversation-history"
+          }
+        ]
+      },
+      "refusal": "E2_PROBE_TOOLS_REFUSED"
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "mono-agent-conversation-history"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": "E2_PROBE_TOOLS_REFUSED"
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "type": "function_call",
+            "name": "mono-agent-conversation-history"
+          }
+        ]
+      },
+      "refusal": "E2_PROBE_TOOLS_REFUSED"
+    },
+    {
+      "context": {
+        "mcpServers": {
+          "mono-agent-conversation-history": {}
+        }
+      },
+      "refusal": "E2_PROBE_TOOLS_REFUSED"
+    },
+    {
+      "context": {
+        "tools": [
+          {
+            "name": "SessionHistory"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "toolsAdded": [
+              {
+                "name": "SessionHistory"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "toolResult",
+            "toolName": "SessionHistory"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "SessionHistory"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "type": "function_call",
+            "name": "SessionHistory"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "mcpServers": {
+          "SessionHistory": {}
+        }
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "tools": [
+          {
+            "name": "RunHistory"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "toolsAdded": [
+              {
+                "name": "RunHistory"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "toolResult",
+            "toolName": "RunHistory"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "RunHistory"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "type": "function_call",
+            "name": "RunHistory"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "mcpServers": {
+          "RunHistory": {}
+        }
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "tools": [
+          {
+            "name": "History"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "toolsAdded": [
+              {
+                "name": "History"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "toolResult",
+            "toolName": "History"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "History"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "type": "function_call",
+            "name": "History"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "mcpServers": {
+          "History": {}
+        }
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "tools": [
+          {
+            "name": "mcp__mono-agent-history__History"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "toolsAdded": [
+              {
+                "name": "mcp__mono-agent-history__History"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "toolResult",
+            "toolName": "mcp__mono-agent-history__History"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "mcp__mono-agent-history__History"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "type": "function_call",
+            "name": "mcp__mono-agent-history__History"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "mcpServers": {
+          "mcp__mono-agent-history__History": {}
+        }
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "tools": [
+          {
+            "name": "mono-agent-history"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "toolsAdded": [
+              {
+                "name": "mono-agent-history"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "toolResult",
+            "toolName": "mono-agent-history"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "mono-agent-history"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "type": "function_call",
+            "name": "mono-agent-history"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "mcpServers": {
+          "mono-agent-history": {}
+        }
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "tools": [
+          {
+            "name": "mcp__external__History"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "toolsAdded": [
+              {
+                "name": "mcp__external__History"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "toolResult",
+            "toolName": "mcp__external__History"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "mcp__external__History"
+              }
+            ]
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "messages": [
+          {
+            "type": "function_call",
+            "name": "mcp__external__History"
+          }
+        ]
+      },
+      "refusal": null
+    },
+    {
+      "context": {
+        "mcpServers": {
+          "mcp__external__History": {}
+        }
+      },
+      "refusal": null
+    }
+  ],
+  "capacitySourceSha256": "7ed460e4ca41d20ef18c85b40b12201a158e64849962cad469f36beaf79b6a73"
+}

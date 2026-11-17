@@ -1,3 +1,4 @@
+import { historySurfaceBinding } from "./continuity-e2-history.mjs";
 // Artifact/account policy only; opaque handles and consumption stay in the guarded core.
 import { env } from "node:process";
 import { realpath } from "node:fs/promises";
@@ -11,7 +12,7 @@ export function e2AuthorizationBindings(pilot, registrationRawSha256, { outputRo
   if (pilot?.descriptor?.schema !== E2_PLAN_SCHEMA) throw Object.assign(Error("e2_deadlines_invalid"), { code: "e2_deadlines_invalid" });
   validateE2Deadlines(pilot.descriptor.deadlines);
   const r = pilot.registration;
-  return { registrationRawSha256, registrationSha256: digest(pilot), ...(r.replayArm === undefined ? {} : { replayArm: r.replayArm }), code: r.code, build: r.build, catalog: r.catalog,
+  return { registrationRawSha256, registrationSha256: digest(pilot), ...historySurfaceBinding(r.historySurface), ...(r.replayArm === undefined ? {} : { replayArm: r.replayArm }), code: r.code, build: r.build, catalog: r.catalog,
     protocol: r.protocol, source: r.source, probes: r.probes, keys: r.keys, soul: r.soul, roles: r.roles, schedule: r.schedule,
     account: { salt, commitment: accountCommitment }, tools: r.toolPolicies, deadlines: pilot.descriptor.deadlines,
     capUnits: pilot.descriptor.capUnits, descriptor: pilot.descriptor, outputRoot, credentialPath };

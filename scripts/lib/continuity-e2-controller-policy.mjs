@@ -1,3 +1,4 @@
+import { historySurfaceBinding } from "./continuity-e2-history.mjs";
 // Controller preparation policy; all journal, lease, IPC and consumption mechanics are shared.
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -35,7 +36,7 @@ export async function attachE2ProtectedControllerPolicy(pilot, models) {
 }
 export function e2ControllerSummaryState(pilot) {
   const binding = summaryPolicies.get(digest(pilot)); need(binding, "e2_summary_receipt_invalid");
-  return { summaryPolicies: structuredClone(binding) };
+  return { ...historySurfaceBinding(pilot.registration.historySurface), summaryPolicies: structuredClone(binding) };
 }
 async function prepareSummaryPolicies(pilot) {
   const key = digest(pilot);

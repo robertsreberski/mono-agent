@@ -126,3 +126,17 @@ it("parses the response body rather than inline tool-authored navigation argumen
   expect(row.response.text).toBe(text);
   expect(JSON.parse(row.metadata.text)).toMatchObject({ status: "parsed", action: "search", records: [{ recordId: "fictional-record" }] });
 });
+
+it("captures unified said receipts but never misattributes tools/runs lookups", async () => {
+  const { output, recorder: receipts } = await fixture();
+  receipts.begin({ checkpoint: 0, repeat: 1 }); receipts.observeRequest({ messages: [] });
+  for (const scope of ["said", "tools", "runs"]) {
+    receipts.observe({ type: "assistant", message: { content: [{ type: "tool_use", name: "History", id: `fictional-${scope}`, input: { scope, action: "search" } }] } });
+    receipts.observe({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: `fictional-${scope}`, content: [{ type: "text", text: "Fictional result." }] }] } });
+  }
+  await receipts.flush();
+  const files = (await readdir(join(output, "probe-receipts"))).filter(n => /^\d+\.json$/.test(n));
+  expect(files).toHaveLength(2);
+  const rows = await Promise.all(files.map(n => readFile(join(output, "probe-receipts", n), "utf8").then(JSON.parse)));
+  expect(rows.every(r => JSON.parse(r.arguments.text).scope === "said")).toBe(true);
+});

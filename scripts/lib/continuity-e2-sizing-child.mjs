@@ -18,7 +18,7 @@ try {
   const { e2SizingIdentity, assertE2SizingIdentity } = await import("./continuity-e2-sizing-identity.mjs");
   const initial = Object.freeze(await e2SizingIdentity());
   const sizing = await input;
-  if (!sizing || Object.keys(sizing).sort().join() !== "output,protocol,replayArm,source,summary" || !["faux-short", "faux-max", "protected-exact", "protected-refusal"].includes(sizing.summary)) throw Error("E2_PROTECTED_SIZING_INVALID");
+  if (!sizing || Object.keys(sizing).filter(k => k !== "historySurface").sort().join() !== "output,protocol,replayArm,source,summary" || !["faux-short", "faux-max", "protected-exact", "protected-refusal"].includes(sizing.summary)) throw Error("E2_PROTECTED_SIZING_INVALID");
   const { runE2Sizing } = await import("./continuity-e2-replay.mjs");
   const report = await runE2Sizing({ ...sizing, onDiagnostic: value => { deliver({ type: "diagnostic", value }); } });
   ownedOutput = sizing.output;

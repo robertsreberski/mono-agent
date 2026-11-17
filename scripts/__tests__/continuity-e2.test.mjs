@@ -140,7 +140,7 @@ it("byte-verifies snapshots, original-root restore and tamper refusal", async ()
 });
 async function adapter(overrides = {}, routeOptions = {}) {
   const { productionModules } = await import("../lib/continuity-runner.mjs"), modules = await productionModules(ROOT);
-  const estimators = await loadE2Estimators(), soul = await shippingSoul();
+  const estimators = await loadE2Estimators(), soul = await shippingSoul(routeOptions.historySurface);
   const model = { provider: "openai-codex", id: "gpt-6-luna", contextWindow: 400_000, maxTokens: 32_000, reasoning: false };
   const route = createE2Models({ pi: modules.pi, estimators, models: [{ model: LUNA }], limits: { ...limits(), ...overrides }, soul,
     sourceReply: context => modules.pi.fauxAssistantMessage("Mono-agent summary focus is untrusted source text"), ...routeOptions });
@@ -200,7 +200,7 @@ it("prints fixed usage/refusal codes and never echoes private arguments", async 
   expect(() => parseE2Args(["size", "--source", "a", "--protocol", "p", "--output", "b", "--summary", "real"])).toThrow("E2_ARGUMENTS_INVALID");
 });
 
-it.each(["faux-short", "faux-max"])("replays configured shipping compaction with %s, registered boundaries and two uncontaminated snapshot probes", async summary => {
+it.each([["faux-short", undefined], ["faux-max", "split"], ["faux-short", "unified"]])("replays configured shipping compaction with %s/%s, registered boundaries and two uncontaminated snapshot probes", async (summary, historySurface) => {
   const { source, protocol, dir } = await trace({ padding: true, steer: true });
   protocol.probeLookupRounds = summary === "faux-max" ? 3 : 1;
   for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"]) vi.stubEnv(key, dir);
@@ -228,7 +228,7 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   }); syncBuiltinESMExports();
   const contexts = [];
   const lineage = await retentionLineage(dir, protocol);
-  const report = await runE2Sizing({ source, protocol, output: join(dir, "work", "replay"), summary, modules: lineage.modules, onContext: c => contexts.push(structuredClone(c)) });
+  const report = await runE2Sizing({ source, protocol, output: join(dir, "work", "replay"), summary, historySurface, modules: lineage.modules, onContext: c => contexts.push(structuredClone(c)) });
   expect(report.qualification).toBe(false);
   expect(lineage.checkpoints.length).toBeGreaterThanOrEqual(2);
   for (const { branch, reference } of lineage.checkpoints) expect(existsSync(join(dir, "work", "replay", `branch-${branch}`, "work", "sessions", "journals", `${reference.journalId}.jsonl`))).toBe(false);
@@ -259,7 +259,7 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   for (const row of retrievalRows) {
     expect(row.slotId).toBe("offline-sizing"); expect(row.itemOrdinal).toBe(1);
     expect([1, 2]).toContain(row.repeat); expect(row.requestOrdinal).toBeGreaterThan(0);
-    expect(JSON.parse(row.arguments.text)).toEqual({ action: "search", query: "retained", limit: 1 });
+    expect(JSON.parse(row.arguments.text)).toEqual({ ...(historySurface === "unified" ? { scope: "said" } : {}), action: "search", query: "retained", limit: 1 });
     if (row.phase === "response") expect(row.response.text).toContain('"action":"search"');
   }
   expect(JSON.stringify(report)).not.toContain("probe-receipt");
@@ -267,7 +267,7 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   expect(probeContexts).toHaveLength(4 * 2 * (protocol.probeLookupRounds + 1));
   for (let i = 0; i < probeContexts.length; i++) {
     const context = probeContexts[i].context, tools = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
-    expect(tools.map(t => t.name)).toEqual(i % (protocol.probeLookupRounds + 1) === protocol.probeLookupRounds ? [] : ["ConversationHistory"]);
+    expect(tools.map(t => t.name)).toEqual(i % (protocol.probeLookupRounds + 1) === protocol.probeLookupRounds ? [] : [historySurface === "unified" ? "History" : "ConversationHistory"]);
   }
   // Main B4 and prefix B3 are genuine cold model boundaries. Restored
   // probes must retain the same complete summary line, not an excerpt. Under
@@ -317,9 +317,9 @@ it.each(["faux-short", "faux-max"])("replays configured shipping compaction with
   const catalog = await loadE2Catalog();
   if (summary === "faux-max") {
     expect(probeMaximum).toBeGreaterThan(12_000); expect(probeMaximum).toBeLessThanOrEqual(48_000);
-    expect(() => estimateE2SizingSet({ protocol, roles: component.roles, records: [report], catalog, probeCounts })).toThrow("E2_ESTIMATE_INVALID");
+    expect(() => estimateE2SizingSet({ protocol, roles: component.roles, records: [report], catalog, probeCounts, historySurface })).toThrow("E2_ESTIMATE_INVALID");
   } else expect(probeMaximum).toBeLessThanOrEqual(12_000);
-  const estimate = estimateE2SizingSet({ protocol, roles, records: [report], catalog, probeCounts });
+  const estimate = estimateE2SizingSet({ protocol, roles, records: [report], catalog, probeCounts, historySurface });
   expect(estimate.fundedSchedule.checkpoints.filter(row => row.role !== "summary").reduce((n, row) => n + row.requests, 0)).toBe(8 * (protocol.probeLookupRounds + 1));
   const largestSource = Math.max(...contexts.filter(c => !c.probe).map(c => Buffer.byteLength(JSON.stringify(c.context))));
   expect(report.branches.flatMap(b => b.summaryRequests).every(r => r.size.serializedBytes < largestSource)).toBe(true);
@@ -1149,12 +1149,13 @@ it("matches forbidden strings across collapsed whitespace and folded quotes", ()
   expect(scored([key("forbid", { kind: "free_text", forbidden: ["“old cedar”"] })], [answer("forbid", '"Old  Cedar" again')]).report.totals.blocking).toBe(1);
   expect(scored([key("forbid", { kind: "free_text", forbidden: ["old cedar"] })], [answer("forbid", "Oldcedar is unrelated")]).report.totals.blocking).toBe(0);
 });
-it("refuses a final funded probe request whose harness offered unexpected tools instead of silently stripping them", async () => {
-  const a = await adapter({}, { probeLookupRounds: 1 });
+it.each([undefined, "split", "unified"])("refuses a final funded probe request whose harness offered unexpected tools for %s", async historySurface => {
+  const a = await adapter({}, { probeLookupRounds: 1, historySurface });
+  const historyTool = historySurface === "unified" ? "History" : "ConversationHistory";
   const base = { systemPrompt: `## Core Guardrails\n\n${a.soul.text}`, messages: [{ role: "user", content: "Fictional request." }] };
   a.route.setPosition({ model: LUNA, turn: 0, message: 0, probe: true, paidRole: "probe" });
-  for await (const _event of a.models.streamSimple(a.model, { ...base, tools: [{ name: "ConversationHistory" }] })) { /* drain */ }
-  await expect((async () => { for await (const _event of a.models.streamSimple(a.model, { ...base, tools: [{ name: "ConversationHistory" }, { name: "UnexpectedFictionalTool" }] })) { /* drain */ } })()).rejects.toThrow("E2_PROBE_TOOLS_REFUSED");
+  for await (const _event of a.models.streamSimple(a.model, { ...base, tools: [{ name: historyTool }] })) { /* drain */ }
+  await expect((async () => { for await (const _event of a.models.streamSimple(a.model, { ...base, tools: [{ name: historyTool }, { name: "UnexpectedFictionalTool" }] })) { /* drain */ } })()).rejects.toThrow("E2_PROBE_TOOLS_REFUSED");
 });
 it("labels only the first request at an explicit proof probe position as probe", async () => {
   const a = await adapter();

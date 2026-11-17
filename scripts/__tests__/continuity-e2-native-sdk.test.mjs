@@ -41,7 +41,8 @@ function toolEvents(name, args, count) {
     .map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
 }
 function proofReply(body, count) {
-  const name = codexWireTools(body).find(t => t.name?.endsWith("ConversationHistory"))?.name;
+  const name = codexWireTools(body).find(t => (t.name?.endsWith("ConversationHistory") || t.name === "History"))?.name;
+  const args = input => name === "History" ? { scope: "said", ...input } : input;
   if (!name) return events("Fictional compacted context; retrieve archival evidence before answering.");
   const output = body.input.filter(i => i.type === "function_call_output").at(-1)?.output;
   // Parse the actual notice-framed response, independent of JSON key order.
@@ -50,10 +51,10 @@ function proofReply(body, count) {
   if (history?.action === "search") {
     const row = history.items?.find(i => i.kind === "tool" && i.toolName === "ProofRead") ?? history.items?.find(i => i.kind === "tool");
     if (!row?.recordId) throw Error("fictional_backend_missing_history_record");
-    return toolEvents(name, { action: "get", recordId: row.recordId, chunkBytes: 8192 }, count);
+    return toolEvents(name, args({ action: "get", recordId: row.recordId, chunkBytes: 8192 }), count);
   }
-  if (history?.action === "get") return history.nextCursor ? toolEvents(name, { action: "get", cursor: history.nextCursor }, count) : events(`${FACT}; next: ${NEXT_ACTION}.`);
-  return toolEvents(name, { action: "search", query: "proof-evidence", limit: 10 }, count);
+  if (history?.action === "get") return history.nextCursor ? toolEvents(name, args({ action: "get", cursor: history.nextCursor }), count) : events(`${FACT}; next: ${NEXT_ACTION}.`);
+  return toolEvents(name, args({ action: "search", query: "proof-evidence", limit: 10 }), count);
 }
 
 it.each([false, true])("fictional backend reads search navigation without assuming adjacent action/status keys (ranked=%s)", ranked => {
@@ -70,10 +71,10 @@ it.each([false, true])("fictional backend reads search navigation without assumi
   expect(JSON.parse(call.arguments)).toEqual(action.arguments);
 });
 
-async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, deadlines, expectedControllerError, retryOnce = false, failOdd = false, failAfter = 0 } = {}) {
+async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, historySurface, deadlines, expectedControllerError, retryOnce = false, failOdd = false, failAfter = 0 } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-native-sdk-"))); roots.push(root);
   const originalHome = process.env.HOME;
-  const fixture = await e2NativeFixture(root, { rows, arm, replay, probeLookupRounds, ...(deadlines ? { deadlines } : {}), ...(capUnits ? { capUnits } : {}) });
+  const fixture = await e2NativeFixture(root, { rows, arm, replay, probeLookupRounds, historySurface, ...(deadlines ? { deadlines } : {}), ...(capUnits ? { capUnits } : {}) });
   expect(process.env.HOME).toBe(originalHome);
   if (replay) { expect(fixture.sizingHomes.length).toBeGreaterThan(0); expect(new Set(fixture.sizingHomes)).toEqual(new Set([fixture.home])); }
   const received = [], wireIdentities = [], receivedBytes = []; let listenerError;
@@ -367,7 +368,10 @@ it("refuses independently consumed authority at a different output root through 
 
 it("allows a cold phase start beyond ten seconds without bypassing guarded SDK admission", async () => {
   const started = performance.now();
-  const result = await run({ production: true, scenario: "proof", arm: "switch", rows: productionRows, phaseStartupDelayMs: 11_000 });
+  const result = await run({ production: true, scenario: "proof", arm: "switch", rows: productionRows, phaseStartupDelayMs: 11_000,
+    // This case deliberately spends 11s before setup. Budget the full cold
+    // production proof as well; do not shorten or bypass its real watchdog.
+    deadlines: { requestDeadlineMs: 30_000, phaseDeadlineMs: 60_000, childWatchdogMs: 60_000, runDeadlineMs: 120_000 } });
   expect(performance.now() - started).toBeGreaterThanOrEqual(11_000);
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
   expect(result.received.length).toBeGreaterThanOrEqual(4);
@@ -639,4 +643,13 @@ it("does not retain deliberate cancellation as a cause or mask a later genuine g
   expect(JSON.parse(await readFile(join(e2PhaseWork(join(result.root, "output"), state.schedule[0]), "cancel-cause.json")))).toBeNull();
   expect(state.slots[0].holds[0].nativeCause).toBeUndefined();
   expect(result.report.phases[0].diagnostics.nativeCause).toMatchObject({ round: 2, causeClass: "guard_refused", ownerCanceled: false });
+}, E2_NATIVE_TEST_TIMEOUT_MS);
+
+it("carries unified registration through the real phase child and guarded SDK tool checks", async () => {
+  const result = await run({ production: true, scenario: "proof", arm: "switch", rows: productionRows, historySurface: "unified" });
+  expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
+  expect(result.report.historySurface).toBe("unified");
+  const historyOffers = result.received.flatMap(body => codexWireTools(body)).filter(t => ["ConversationHistory", "History"].includes(t.name));
+  expect(historyOffers.length).toBeGreaterThan(0);
+  expect(historyOffers.every(t => t.name === "History")).toBe(true);
 }, E2_NATIVE_TEST_TIMEOUT_MS);

@@ -12,7 +12,7 @@ import { e2SizingIdentity, assertE2SizingIdentity } from "../lib/continuity-e2-s
 import { productionModules } from "../lib/continuity-runner.mjs";
 import { ROOT } from "../lib/continuity-observation-input.mjs";
 import { runE2Sizing } from "../lib/continuity-e2-replay.mjs";
-import { E2_REPLAY_SCENARIOS, E2_PROTECTED_SIZING, E2_PROTECTED_TEXT, protectedE2Reply } from "../lib/continuity-e2-protected.mjs";
+import { E2_REPLAY_SCENARIOS, E2_PROTECTED_SIZING, E2_PROTECTED_TEXT, protectedE2Reply, rehearseE2Protected } from "../lib/continuity-e2-protected.mjs";
 import { normalizeE2Sizing, requireProtectedE2Sizing, estimateE2SizingSet, E2_MAX_SIZING_RECORDS } from "../lib/continuity-e2-sizing.mjs";
 import { e2PhaseSchedule } from "../lib/continuity-e2-registration.mjs";
 import { loadE2Catalog } from "../lib/continuity-e2-pricing.mjs";
@@ -60,6 +60,13 @@ describe.sequential("four replay alternatives", () => {
     await promisify(execFile)(process.execPath, ["scripts/continuity-e2.mjs", "size", "--source", input, "--protocol", join(input, "protocol.json"), "--output", output, "--summary", summary],
       { cwd: ROOT, env: { ...process.env, HOME: root, NODE_OPTIONS: "" }, maxBuffer: 1024 * 1024 });
     records.push(JSON.parse(await readFile(join(output, "sizing.json"), "utf8")));
+  }, 180000);
+  it("propagates unified selection through the clean sizing child and protected soul assertions", async () => {
+    const output = join(root, "unified-protected");
+    await promisify(execFile)(process.execPath, ["scripts/continuity-e2.mjs", "size", "--source", input, "--protocol", join(input, "protocol.json"), "--output", output, "--summary", "protected-exact", "--history-surface", "unified"],
+      { cwd: ROOT, env: { ...process.env, HOME: root, NODE_OPTIONS: "" }, maxBuffer: 1024 * 1024 });
+    const record = JSON.parse(await readFile(join(output, "sizing.json"), "utf8")), soul = await sizingModels.shippingSoul("unified");
+    expect(record).toMatchObject({ historySurface: "unified", qualification: true, soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest } });
   }, 180000);
   it("funds the count/size union within eight files", async () => {
     const catalog = await loadE2Catalog();
@@ -263,3 +270,18 @@ describe.sequential("delivers real-source-scale reports over the sizing child IP
     expect(record.qualification).toBe(true);
   }, 180000);
 });
+
+it.each([undefined, "split", "unified"])("measures the actual selected setup soul in protected rehearsal for %s", async historySurface => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "fictional-protected-soul-"))); roots.push(root);
+  const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", contextWindow: 500000, maxTokens: 128000 };
+  const result = await rehearseE2Protected({ work: join(root, "work"), model, carrier: "quotation", historySurface });
+  const soul = await sizingModels.shippingSoul(historySurface);
+  expect(result.setupRequests.length).toBeGreaterThan(0);
+  for (const { context } of result.setupRequests) {
+    sizingModels.assertEffectiveSoul(context, soul);
+    const prompt = [context.systemPrompt, ...context.messages.filter(m => m.role === "system").map(m => m.content)].filter(v => typeof v === "string").join("\n");
+    expect(prompt).toContain(soul.text);
+    if (historySurface === "unified") expect(prompt).not.toContain("ConversationHistory (when available)");
+    else expect(prompt).toContain("ConversationHistory (when available)");
+  }
+}, 30_000);

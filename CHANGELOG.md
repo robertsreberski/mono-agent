@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add opt-in unified `History` selection to the offline continuity E2 harness,
+  preserving split defaults and accepting registered 500K Sol summary envelopes.
+
 - Add the opt-in `History` tool behind `tools.history.unified` (default false),
   with required `said`, `tools` and `runs` scopes, legacy-name policy aliases,
   and mode-aware history guidance and diagnostics.
