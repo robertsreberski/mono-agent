@@ -340,7 +340,7 @@ describe("cancelled run recovery contract", () => {
         timeline.push(...page.timeline);
         expect(page.page.hasMore).toBe(page.nextCursor !== undefined);
         if (page.nextCursor !== undefined) {
-          expect(page.navigation.nextActions[0]?.arguments).toEqual({ scope: "runs", action: "get", runId: cancelledRunId, cursor: page.nextCursor });
+          expect(page.navigation.nextActions[0]?.arguments).toEqual({ scope: "runs", action: "get", cursor: page.nextCursor });
         }
         cursor = page.nextCursor;
       }

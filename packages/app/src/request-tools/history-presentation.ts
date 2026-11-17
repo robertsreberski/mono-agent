@@ -30,7 +30,7 @@ export function presentHistoryResult(result: Result, presentation: HistoryPresen
   const args = (input: Readonly<Record<string, unknown>>) => {
     if (scope !== "runs") return { scope, ...input };
     const { action: _action, ...rest } = input;
-    return { scope, action: input.runId === undefined ? "search" : "get", ...rest };
+    return { scope, action: input.action === "inspect" || input.runId !== undefined ? "get" : "search", ...rest };
   };
   const actions: Action[] = (old?.nextActions ?? []).map(action => ({ ...action, description: action.description, arguments: args(action.arguments) }));
   if (scope === "runs" && scopes.includes("tools")) {

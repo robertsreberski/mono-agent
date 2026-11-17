@@ -861,7 +861,7 @@ describe("RunHistory MCP tool", () => {
       expect(JSON.stringify(result.content)).toContain("Seeking Alpha");
       // And the follow-up on offer is the timeline, not the overview just given.
       expect(body.navigation.nextActions[0]?.arguments).toMatchObject({
-        runId: "only-match-run",
+        scope: "runs", action: "get",
         cursor: expect.any(String),
       });
       expect(body.navigation).not.toHaveProperty("relatedTools");
@@ -953,7 +953,7 @@ describe("RunHistory MCP tool", () => {
       }>(overview);
       expect(overviewBody).not.toHaveProperty("timeline");
       const firstTimelineArguments = overviewBody.navigation.nextActions[0]?.arguments;
-      expect(firstTimelineArguments).toMatchObject({ runId: "matching-run-6" });
+      expect(firstTimelineArguments).toMatchObject({ scope: "runs", action: "get", cursor: expect.any(String) });
       const timelinePage = await scopedCall(history.client, "runs", {
         name: HISTORY_TOOL_NAME,
         arguments: firstTimelineArguments ?? {},
@@ -969,7 +969,7 @@ describe("RunHistory MCP tool", () => {
       expect(timelineBody.page).toMatchObject({ count: 10, hasMore: true });
       expect(timelineBody.navigation.nextActions[0]).toMatchObject({
         kind: "next_page",
-        arguments: expect.objectContaining({ runId: "matching-run-6" }),
+        arguments: expect.objectContaining({ scope: "runs", action: "get", cursor: expect.any(String) }),
       });
     } finally {
       await history.close();

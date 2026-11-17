@@ -102,10 +102,16 @@ export async function handleRunsHistoryRequest(binding: RunHistoryBinding, input
   }
 
   if (inferredAction === "inspect") {
-    if (runId === undefined || input.query !== undefined || input.limit !== undefined) {
-      return safeToolError("inspect", "invalid_request", "Inspect requires runId, with an optional cursor.");
+    const decoded = input.cursor === undefined ? undefined : decodeCursor(input.cursor);
+    if (input.cursor !== undefined && (decoded?.kind !== "timeline" || (runId !== undefined && decoded.runId !== runId))) {
+      return safeToolError("inspect", "invalid_cursor", "The continuation cursor is unavailable or expired.");
     }
-    return await inspectPriorRun(binding, runId, input.cursor);
+    const targetRunId = runId ?? decoded?.runId;
+    if (targetRunId === undefined || input.query !== undefined || input.limit !== undefined) {
+      return safeToolError("inspect", "invalid_request", "Get requires runId or a timeline cursor.");
+    }
+    // A cursor identifies, never authorizes: inspectPriorRun still calls loadInspectableRun.
+    return await inspectPriorRun(binding, targetRunId, input.cursor);
   }
   if (runId !== undefined) {
     return safeToolError(inferredAction, "invalid_request", `${inferredAction} does not accept a runId.`);
@@ -719,7 +725,7 @@ function inspectionOverviewNavigation(
     nextActions: nextCursor === undefined ? [] : [{
       kind: "inspect",
       description: "Load the first bounded timeline page for this run.",
-      arguments: { runId: run.runId, cursor: nextCursor },
+      arguments: { action: "inspect", cursor: nextCursor },
     }],
     ...(interrupted ? {
       relatedTools: [{
@@ -741,7 +747,7 @@ function timelinePageNavigation(runId: string, nextCursor: string | undefined): 
     nextActions.push({
       kind: "next_page",
       description: "Continue with the next bounded timeline page.",
-      arguments: { runId, cursor: nextCursor },
+      arguments: { action: "inspect", cursor: nextCursor },
     });
   }
   nextActions.push({
