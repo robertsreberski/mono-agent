@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an opt-in, observational `--replay-arm history-ab` mode to the offline
+  continuity E2 harness: probe-only runs from a frozen committed snapshot with
+  the continuity pack withheld, comparing split `ConversationHistory` against
+  unified `History` with compact or directive descriptions in one registration.
+  It never replays the source, makes no summary requests and is never the gate.
+
 - Restore lookup directives in the unified `History` tool's `said` scope:
   check `History` for exact earlier values, identifiers or quotations instead
   of relying on summaries or memory, read hits before reformulating, finish

@@ -23,6 +23,8 @@ interface Binding {
   readonly runId: string;
   readonly rollover?: "none" | "daily";
   readonly scopes: readonly HistoryScope[];
+  /** @internal Offline harness selection; omitted keeps the shipping default. */
+  readonly descriptionVariant?: HistoryDescriptionVariant;
 }
 interface Options {
   readonly historyRoot: string;
@@ -31,6 +33,8 @@ interface Options {
   readonly policy: Pick<ToolPolicyInput, "allowedTools" | "disallowedTools">;
   readonly capabilities: UnifiedHistoryAvailability;
   readonly onUnavailable?: (error: unknown) => void;
+  /** @internal Offline harness selection only; there is no config key. */
+  readonly descriptionVariant?: HistoryDescriptionVariant;
 }
 export type HistoryDescriptionVariant = "compact" | "directive";
 export function historyDescription(scopes: readonly HistoryScope[], options?: { readonly variant?: HistoryDescriptionVariant }): string {
@@ -51,7 +55,7 @@ export function createHistoryServer(binding: Binding): McpServer {
   // no unused registerTool callback behind an overridden SDK call handler.
   server.server.registerCapabilities({ tools: { listChanged: true } });
   server.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: HISTORY_TOOL_NAME,
-    title: "Retrieve retained history", description: historyDescription(owned.scopes),
+    title: "Retrieve retained history", description: historyDescription(owned.scopes, owned.descriptionVariant === undefined ? undefined : { variant: owned.descriptionVariant }),
     inputSchema: { ...z.toJSONSchema(HISTORY_INPUT_SCHEMA, { target: "draft-7", io: "input" }), type: "object" as const },
     execution: { taskSupport: "forbidden" as const },
   }] }));
@@ -96,7 +100,8 @@ export function createHistoryRuntimeExtension(options: Options): RuntimeOptionsE
     createServer: ({ request, runId }) => createHistoryServer({ reader, artifactDir: options.artifactDir, scopes,
       conversationId: request.conversationId, logicalConversationId: toolHistoryLogicalConversationId(request.conversationId, scopeRollovers.said),
       toolsLogicalConversationId: toolHistoryLogicalConversationId(request.conversationId, scopeRollovers.tools), runId,
-      ...(scopeRollovers.runs === undefined ? {} : { rollover: scopeRollovers.runs }) }),
+      ...(scopeRollovers.runs === undefined ? {} : { rollover: scopeRollovers.runs }),
+      ...(options.descriptionVariant === undefined ? {} : { descriptionVariant: options.descriptionVariant }) }),
     ...(options.onUnavailable === undefined ? {} : { onUnavailable: options.onUnavailable }),
   });
 }

@@ -1,4 +1,4 @@
-import { e2HistorySurface, historyToolName, historyServerName, assertHistorySurfaceBinding, lookupToolAllowlist } from "./continuity-e2-history.mjs";
+import { e2HistorySurface, historyToolName, historyServerName, assertHistorySurfaceBinding, lookupToolAllowlist, E2_AB_REPLAY_ARM, e2AbArmOfSlot, e2SlotHistorySurface } from "./continuity-e2-history.mjs";
 // One phase actor: real paid requests use the shared guard and its sole send.
 // Scripted setup is handled separately by createE2Models and never reaches here.
 import { readdir, writeFile } from "node:fs/promises";
@@ -26,7 +26,10 @@ export async function createE2PaidModels(a, safety) {
   const protocolBytes = await artifacts().readArtifact(a.pilot.registration.protocol.path, "e2_registration_invalid");
   need(digest(protocolBytes) === a.pilot.registration.protocol.sha256, "e2_registration_invalid");
   const protocol = JSON.parse(protocolBytes), baseline = e2ReplayArm(a.pilot.registration.replayArm) === "baseline";
-  const historySurface = e2HistorySurface(a.pilot.registration.historySurface), historyTool = historyToolName(historySurface);
+  // A/B slots take their arm's surface; every other slot keeps the registration's.
+  const abArm = a.slot.kind === "replay" ? e2AbArmOfSlot(a.slot.arm) : undefined;
+  need((e2ReplayArm(a.pilot.registration.replayArm) === E2_AB_REPLAY_ARM) === (abArm !== undefined), "e2_registration_invalid");
+  const historySurface = e2HistorySurface(e2SlotHistorySurface(a.pilot.registration, a.slot)), historyTool = historyToolName(historySurface);
   let send, native, config, position, active = false, probeRequests = 0, stopped = null, lifecycle = null, barrier = Promise.resolve();
   let failureCause = null, currentCall = null;
   registerE2CauseObserver(safety, value => {
@@ -282,10 +285,20 @@ export async function createE2PaidModels(a, safety) {
     async flush() { await barrier; need(!active && !lifecycle, "e2_compaction_invalid"); if (stopped) fail(stopped); },
     async stop(code) { await stop(code); },
     async assertReplay(values) {
+      need(abArm === undefined, "e2_preparation_invalid");
       assertE2ReplayBinding(a.pilot.registration, { historySurface: values.historySurface, replayArm: values.replayArm, qualification: baseline ? false : undefined });
       if (values.report) assertE2ReplayBinding(a.pilot.registration, values.report);
       need(a.slot.kind === "replay" && values.output === e2PhaseBase(a.outputRoot, a.slot), "e2_preparation_invalid");
       for (const [key, binding] of [["source", a.pilot.registration.source], ["protocol", a.pilot.registration.protocol], ["questions", a.pilot.registration.probes], ["evaluator", a.pilot.registration.keys]]) {
+        const bytes = await artifacts().readArtifact(binding.path, "e2_registration_invalid", key === "source" ? 128 * 1024 * 1024 : 4 * 1024 * 1024);
+        need(digest(bytes) === binding.sha256 && canonicalDigest(JSON.parse(bytes)) === canonicalDigest(values[key]), "e2_registration_invalid");
+      }
+    },
+    async assertHistoryAb(values) {
+      const r = a.pilot.registration;
+      need(abArm !== undefined && values.arm === abArm && values.output === e2PhaseBase(a.outputRoot, a.slot)
+        && canonicalDigest(values.historyAb) === canonicalDigest(r.historyAb), "e2_preparation_invalid");
+      for (const [key, binding] of [["source", r.source], ["protocol", r.protocol], ["questions", r.probes], ["evaluator", r.keys], ["frozen", r.historyAb.frozen.replay]]) {
         const bytes = await artifacts().readArtifact(binding.path, "e2_registration_invalid", key === "source" ? 128 * 1024 * 1024 : 4 * 1024 * 1024);
         need(digest(bytes) === binding.sha256 && canonicalDigest(JSON.parse(bytes)) === canonicalDigest(values[key]), "e2_registration_invalid");
       }

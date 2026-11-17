@@ -1,7 +1,7 @@
-import { e2HistorySurface, historyToolName } from "./continuity-e2-history.mjs";
+import { e2HistorySurface, historyToolName, E2_AB_ARM_SURFACES, e2AbArm } from "./continuity-e2-history.mjs";
 import { E2_REPLAY_SCENARIOS, protectedE2Reply } from "./continuity-e2-protected.mjs";
 import { isE2ProtectionRefusal } from "./continuity-e2-compaction.mjs";
-import { assertE2BaselineRequest } from "./continuity-e2-lineage.mjs";
+import { assertE2BaselineRequest, withoutE2ContinuityPack, assertE2NoContinuityPack, e2BodySummaryRepresentations } from "./continuity-e2-lineage.mjs";
 // The only inference boundary in C1 is Pi's in-process faux provider.
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -63,8 +63,19 @@ export function estimatedReply(pi, text, context, estimators, extra = {}) {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
 }
 
+// A/B probes have no paid summaries and no committed lineage in their own run:
+// any native/branch/pack summary claim would be unauthenticated. Refuse early,
+// with the same detector the controller applies to the serialized body.
+export function assertE2AbNoSummaryClaims(context) {
+  const messages = context.messages ?? [], text = m => typeof m.content === "string" ? [m.content] : (Array.isArray(m.content) ? m.content : []).filter(p => p?.type === "text").map(p => p.text);
+  if (messages.some(m => ["compactionSummary", "branchSummary"].includes(m.role))) fail("E2_AB_SUMMARY_CLAIM");
+  const input = messages.flatMap(m => m.role === "toolResult" ? [{ type: "function_call_output", output: text(m).join("\n") }]
+    : ["user", "assistant"].includes(m.role) ? [{ role: m.role, content: text(m).map(t => ({ type: m.role === "user" ? "input_text" : "output_text", text: t })) }] : []);
+  let claims; try { claims = e2BodySummaryRepresentations({ input, ...(typeof context.systemPrompt === "string" ? { instructions: context.systemPrompt } : {}) }); } catch { fail("E2_AB_SUMMARY_CLAIM"); }
+  if (claims.length) fail("E2_AB_SUMMARY_CLAIM");
+}
 /** A lifecycle receipt is established by runtime events, not prompt contents. */
-export function createE2Models({ pi, estimators, models, limits, summary = "faux-short", sourceReply, sourceContext = () => {}, soul, paidAdapter, probeLookupRounds, replayArm, historySurface, sourceTools, onRequest = () => {} }) {
+export function createE2Models({ pi, estimators, models, limits, summary = "faux-short", sourceReply, sourceContext = () => {}, soul, paidAdapter, probeLookupRounds, replayArm, historySurface, sourceTools, onRequest = () => {}, abArm, abDescriptionSha256 }) {
   if (probeLookupRounds !== undefined) assertE2ProbeLookupRounds(probeLookupRounds);
   if (summary === "real") assertE2PhaseAdapter(paidAdapter);
   else if (paidAdapter !== undefined) fail("E2_SUMMARY_ROUTE_INVALID");
@@ -74,9 +85,13 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
   if (unified && (soul?.rawDigest !== UNIFIED_SOUL_RAW || soul?.normalizedDigest !== UNIFIED_SOUL_NORMALIZED)
     || !unified && soul?.rawDigest === UNIFIED_SOUL_RAW) fail("E2_SOUL_MISMATCH");
   if (baseline && protectedMode) fail("E2_SUMMARY_ROUTE_INVALID");
+  // Pack-withheld A/B: probe-only, arm-bound surface, pinned description bytes.
+  const ab = e2ReplayArm(replayArm) === "history-ab";
+  if (ab !== (abArm !== undefined) || ab && (e2AbArm(abArm) && E2_AB_ARM_SURFACES[abArm].historySurface !== e2HistorySurface(historySurface)
+    || !/^[a-f0-9]{64}$/u.test(abDescriptionSha256 ?? "") || probeLookupRounds === undefined || protectedMode) || !ab && abDescriptionSha256 !== undefined) fail("E2_AB_BINDING_INVALID");
   let protectedRefused = false;
   const registered = new Set(models.map(m => m.model)), faux = new Map(), lifecycle = new Map();
-  const report = { sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], ...(summary === "real" || protectedMode ? { compactionRefusals: [] } : {}), requestSizing: [] };
+  const report = { sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], ...(summary === "real" || protectedMode ? { compactionRefusals: [] } : {}), requestSizing: [], ...(ab ? { withheldPacks: 0 } : {}) };
   let position = null, sticky = null, positionRequests = 0;
   const refuse = code => { sticky ??= code; fail(sticky); };
   const check = () => { if (sticky) fail(sticky); };
@@ -131,6 +146,17 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
             try { assertE2BaselineRequest(context, { kind: position.probe ? "probe" : "source", sourceTools, historySurface }); } catch (error) { refuse(error.code); }
             if (position.probe && positionRequests >= 1) refuse("E2_PROBE_REQUEST_LIMIT");
           }
+          if (ab) {
+            if (!position.probe) refuse("E2_SOURCE_REQUEST_LIMIT");
+            // Withhold the injected pack from every probe and continuation request,
+            // then prove none remains anywhere before sizing, guarding or sending.
+            const before = context.messages.length;
+            context = withoutE2ContinuityPack(context); report.withheldPacks += before - context.messages.length;
+            try { assertE2NoContinuityPack(context, "E2_AB_PACK_PRESENT"); assertE2AbNoSummaryClaims(context); } catch (error) { refuse(error.code); }
+            const offered = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
+            if (offered.length !== 1 || offered[0].name !== historyToolName(historySurface)) refuse("E2_PROBE_TOOLS_REFUSED");
+            if (typeof offered[0].description !== "string" || digest(offered[0].description) !== abDescriptionSha256) refuse("E2_AB_DESCRIPTION_MISMATCH");
+          }
           if (!baseline && position.probe && probeLookupRounds !== undefined) {
             if (positionRequests >= probeLookupRounds + 1) refuse("E2_PROBE_REQUEST_LIMIT");
             // Build the model request, not the harness/tool executor. Prior tool
@@ -148,7 +174,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           if (position.probe) {
             if (++report.probeRequests > limits.probeRequests) refuse("E2_PROBE_REQUEST_LIMIT");
           } else if (++report.sourceRequests > limits.sourceRequests) refuse("E2_SOURCE_REQUEST_LIMIT");
-          try { assertEffectiveSoul(context, soul); sourceContext(context); } catch (error) { refuse(error?.code === "E2_SOUL_MISMATCH" || ["E2_PROBE_REQUEST_LIMIT", "E2_PROBE_TOOLS_REFUSED", "E2_STEER_NOT_DELIVERED"].includes(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); }
+          try { assertEffectiveSoul(context, soul); sourceContext(context); } catch (error) { refuse(error?.code === "E2_SOUL_MISMATCH" || ["E2_PROBE_REQUEST_LIMIT", "E2_PROBE_TOOLS_REFUSED", "E2_STEER_NOT_DELIVERED", ...(ab ? ["E2_AB_PACK_PRESENT"] : [])].includes(error?.code) ? error.code : "E2_SOURCE_REPLY_REFUSED"); }
           const paidRole = position.probe ? (positionRequests++ === 0 ? "probe" : "continuation") : position.paidRole ?? null;
           report.requestSizing.push({ turn: position.turn, message: position.message, role: paidRole ?? "setup-scripted", paidRole,
             model: keyOf(model), maxOutputTokens: options?.maxTokens ?? model.maxTokens, size: sizeContext(context, estimators) });
@@ -157,7 +183,7 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
           return bound.collection.streamSimple(bound.model, context, options);
         };
         if (method === "completeSimple") return async (model, context, options = {}) => {
-          check(); validateModel(model, original);
+          check(); if (ab) refuse("E2_PROBE_SUMMARY_FORBIDDEN"); validateModel(model, original);
           if (baseline) { try { assertE2BaselineRequest(context, { kind: "summary", historySurface }); } catch (error) { refuse(error.code); } }
           onRequest(model, context, options, "completeSimple");
           const receipt = [...lifecycle.values()][0];

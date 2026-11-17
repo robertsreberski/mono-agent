@@ -2785,6 +2785,70 @@ correct answer without a witness is still inconclusive. **This is a control
 measurement, never a release-gate qualification**, even if its numerical score
 meets the scorer's threshold.
 
+### E2 pack-withheld History A/B (observational)
+
+Select `--replay-arm history-ab` to compare retained-history tool surfaces from
+one **frozen, committed** E2 checkpoint. The mode never replays the source and
+makes no summary requests: each probe restores the registered snapshot (at the
+new run's own absolute root), withholds the injected continuity pack from every
+probe and continuation request, keeps the seeded and live messages, runs the
+protocol's lookup rounds and withdraws tools on the final request. A pack, or any
+unauthenticated summary claim, left in a request refuses before sizing or
+sending; the controller re-checks the serialized body independently.
+
+| Arm | Surface | Description |
+|---|---|---|
+| `A` | split `ConversationHistory`, default soul | shipping `ConversationHistory` text |
+| `B` | unified `History`, unified soul | `compact` |
+| `C` | unified `History`, unified soul | `directive` |
+
+The description variant is an internal harness option threaded to the shipping
+`History` server; there is no config key. Each arm's surface, soul digests,
+tool name and offered description bytes (SHA-256 and length) are recomputed
+from the bound build, pinned in the binding and asserted on every offered tool.
+
+```sh
+# Content-free binding: frozen replay record, snapshot tree, row ids, arms
+node scripts/continuity-e2.mjs ab-bind --replay /private/run/work/replay/replay.json \
+  --snapshot /private/run/work/replay/branch-0/snapshots/checkpoint-2 \
+  --branch 0 --checkpoint 2 --rows ROW_ID,ROW_ID --primary ROW_ID --output /private/ab-bind
+# Offline faux sizing of every bound arm from the frozen tree
+node scripts/continuity-e2.mjs size --replay-arm history-ab \
+  --history-ab /private/ab-bind/history-ab.json --source /private/source \
+  --protocol /private/protocol.json --output /private/ab-sizing
+node scripts/continuity-e2.mjs --estimate --replay-arm history-ab \
+  --history-ab /private/ab-bind/history-ab.json --protocol /private/protocol.json \
+  --limits /private/ab-limits.json --sizing /private/ab-sizing/sizing.json \
+  --output /private/ab-estimate
+```
+
+The binding (`continuity-e2-history-ab-v1`) holds the frozen run's `replay.json`
+path and SHA-256, the snapshot directory, its branch/checkpoint ordinals and tree
+receipt, the arm contracts, the selected row ids and a primary subset. The tree
+receipt must equal the replay record's checkpoint receipt and the snapshot bytes;
+the replay record must name the registered source and protocol digests. Selected
+rows must be registered questions with frozen keys at that checkpoint.
+
+A registration has `replayArm: "history-ab"`, the binding as `historyAb`, no
+`historySurface` or `soul`, Sol-only `probe` and `continuation` roles, and one
+replay-kind phase per arm (`history-ab-A`, `history-ab-B`, `history-ab-C`) in a
+single paid run. Rows, arms and the frozen tree are inside the registration and
+authorization digests. Sizing is row-blind and bound to the frozen tree and arms;
+it must be fresh on the registered clean code and build. The minimum cap is the
+no-cache aggregate plus the largest single reservation (`minimumCapUnits`);
+retry exposure is reported separately. Paid entry must pass
+`--replay-arm history-ab`; no surface selector applies.
+
+Each phase writes `answers.json`, `lookups.json` and an informational frozen
+`score.json`. `ab-score --binding FILE --run DIR --keys FILE --output NEW_DIR`
+classifies every answer with the frozen `scoreE2` on that single answer
+(`ratePass` correct, `blocking` confident wrong, `rateMiss` abstain) and crosses
+it with lookups by scope. It reports, per arm, overall and for the primary
+subset: lookup rate, correct, wrong without lookup, wrong after lookup, abstain
+and correct without lookup (a contamination flag). **The A/B is observational,
+`qualification: false`, never the release gate.** Omitting the mode leaves every
+existing registration, policy, schedule, estimate and CLI path unchanged.
+
 ### E2 registration, authorization and paid execution
 
 The closed guarded selector includes `e2-validation`, with independent schemas,

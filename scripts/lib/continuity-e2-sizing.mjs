@@ -135,6 +135,7 @@ export function normalizeE2Sizing(protocol, sizing, checkpointOffset = 0, replay
   return { kind: "proof", arm: sizing.arm, requests, checkpoints: sizing.variants.length };
 }
 export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCounts = [], replayArm, historySurface }) {
+  need(e2ReplayArm(replayArm) !== "history-ab"); // The A/B estimate is estimateE2HistoryAb.
   validateE2EstimateProtocol(protocol); need(Array.isArray(records) && records.length > 0 && records.length <= E2_MAX_SIZING_RECORDS);
   const replay = [], proofs = [], arms = new Set(), scenarios = new Set(); let sourceDigest;
   const replayCheckpoints = protocol.branches.reduce((n, b) => n + b.checkpoints.length, 0);

@@ -216,6 +216,8 @@ export async function runE2Sizing({ source, protocol, output, summary = "faux-sh
   const HISTORY = historyServerName(historySurface), historyTool = historyToolName(historySurface);
   const protectedMode = summary.startsWith("protected-");
   if (protectedMode && (paidAdapter || questions || evaluator || e2ReplayArm(replayArm) === "baseline")) fail("E2_MODELS_SEAM_REFUSED");
+  // Probe-only A/B never replays the source: it runs from a frozen snapshot (continuity-e2-ab.mjs).
+  if (e2ReplayArm(replayArm) === "history-ab") fail("E2_ARGUMENTS_INVALID");
   const real = summary === "real", baseline = e2ReplayArm(replayArm) === "baseline";
   if (real && (modules !== undefined || !paidAdapter || !questions || !evaluator)) fail("E2_MODELS_SEAM_REFUSED");
   if (real) assertE2PhaseAdapter(paidAdapter);

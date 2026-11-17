@@ -6,6 +6,7 @@ import { verifyE2Assignment, createE2PhaseAdapter } from "./continuity-e2-runtim
 import { guardedAuthorization } from "./continuity-guarded-authorization.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
 import { e2PhaseBase } from "./continuity-e2-lineage.mjs";
+import { e2AbArmOfSlot } from "./continuity-e2-history.mjs";
 import { knownRefusalCode } from "./continuity-e2-diagnostics.mjs";
 import { proofRefusalCode } from "./continuity-e2-checks.mjs";
 import { E2_GUARD_STOPS, E2_GUARD_POLICY_REFUSALS, E2_PRE_SEND_REFUSALS } from "./continuity-e2-policy.mjs";
@@ -31,7 +32,15 @@ export async function runE2AssignedPhase(a) {
   const adapter = await createE2PhaseAdapter(a), base = e2PhaseBase(a.outputRoot, a.slot);
   let restore, outcome;
   try {
-    if (a.slot.kind === "replay") {
+    if (a.slot.kind === "replay" && e2AbArmOfSlot(a.slot.arm) !== undefined) {
+      // Pack-withheld probe-only A/B: restore the frozen snapshot, no source replay or summaries.
+      const r = a.pilot.registration, { runE2HistoryAb } = await import("./continuity-e2-ab.mjs");
+      await runE2HistoryAb({ source: await boundJSON(r.source, true), protocol: await boundJSON(r.protocol), questions: await boundJSON(r.probes),
+        evaluator: await boundJSON(r.keys), historyAb: r.historyAb, frozen: await boundJSON(r.historyAb.frozen.replay), arm: e2AbArmOfSlot(a.slot.arm),
+        output: base, summary: "real", paidAdapter: adapter });
+      // Observational: completion is not a quality score; the A/B scorer reads the phase files.
+      outcome = { terminal: "completed", score: null, refusalCode: null };
+    } else if (a.slot.kind === "replay") {
       const r = a.pilot.registration, { runE2Sizing } = await import("./continuity-e2-replay.mjs");
       const result = await runE2Sizing({ source: await boundJSON(r.source, true), protocol: await boundJSON(r.protocol), questions: await boundJSON(r.probes),
         evaluator: await boundJSON(r.keys), output: base, summary: "real", replayArm: r.replayArm, historySurface: r.historySurface, paidAdapter: adapter });

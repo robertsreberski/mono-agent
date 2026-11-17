@@ -10,8 +10,9 @@ export function assertE2ProbeLookupRounds(rounds) {
   return rounds;
 }
 // Omitted metadata is the legacy continuity arm; never encode baseline as R=0.
+// "history-ab" is the explicit pack-withheld, probe-only observational A/B mode.
 export function e2ReplayArm(arm = "continuity") {
-  if (!["continuity", "baseline"].includes(arm)) fail("E2_ARGUMENTS_INVALID");
+  if (!["continuity", "baseline", "history-ab"].includes(arm)) fail("E2_ARGUMENTS_INVALID");
   return arm;
 }
 export function e2ProbeRequestCount(protocol, arm) {
@@ -21,7 +22,7 @@ export function e2ProbeRequestCount(protocol, arm) {
 export function assertE2ReplayBinding(registration, report) {
   assertHistorySurfaceBinding(registration, report);
   if (e2ReplayArm(registration.replayArm) !== e2ReplayArm(report.replayArm)
-    || report.replayArm === "baseline" && report.qualification !== false) fail("e2_authorization_binding_mismatch");
+    || ["baseline", "history-ab"].includes(report.replayArm) && report.qualification !== false) fail("e2_authorization_binding_mismatch");
 }
 // Shipping packs are injected as historical user messages, not arbitrary prose.
 // Share the replay witness's role/position detector with baseline validation.

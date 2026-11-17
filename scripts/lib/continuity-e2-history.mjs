@@ -27,3 +27,31 @@ export function historyCallScope(name, args) {
 export const LOOKUP_TOOL_ALLOWLIST_V1 = Object.freeze({ version: "v1", tools: Object.freeze(["ConversationHistory"]) });
 export const LOOKUP_TOOL_ALLOWLIST_V2 = Object.freeze({ version: "v2", tools: Object.freeze(["ConversationHistory", "History"]) });
 export const lookupToolAllowlist = surface => e2HistorySurface(surface) === "unified" ? LOOKUP_TOOL_ALLOWLIST_V2 : LOOKUP_TOOL_ALLOWLIST_V1;
+
+// Closed History A/B arm table (names and surfaces only, no I/O). The A/B mode is
+// explicit opt-in (`replayArm: "history-ab"`); omitting it keeps every existing
+// E2 registration, schedule and policy byte-identical.
+export const E2_AB_REPLAY_ARM = "history-ab";
+const freeze = value => { for (const child of Object.values(value)) if (child && typeof child === "object") freeze(child); return Object.freeze(value); };
+// A: split ConversationHistory with the default soul. B/C: unified History with
+// the compact or directive description. Nothing else differs between arms.
+export const E2_AB_ARM_SURFACES = freeze({
+  A: { historySurface: "split" },
+  B: { historySurface: "unified", descriptionVariant: "compact" },
+  C: { historySurface: "unified", descriptionVariant: "directive" },
+});
+export const E2_AB_ARMS = Object.freeze(Object.keys(E2_AB_ARM_SURFACES));
+export function e2AbArm(letter) {
+  if (!E2_AB_ARMS.includes(letter)) fail("E2_AB_BINDING_INVALID");
+  return letter;
+}
+export const e2AbSlotArm = letter => `${E2_AB_REPLAY_ARM}-${e2AbArm(letter)}`;
+/** The arm letter of an A/B phase slot, or undefined for every legacy slot arm. */
+export const e2AbArmOfSlot = arm => typeof arm === "string" && /^history-ab-[A-Z]$/u.test(arm) && E2_AB_ARMS.includes(arm.slice(-1)) ? arm.slice(-1) : undefined;
+/** Per-slot History surface: an A/B slot uses its arm, every other slot the registration. */
+export function e2SlotHistorySurface(registration, slot) {
+  const arm = e2AbArmOfSlot(slot?.arm);
+  if (arm === undefined) return registration?.historySurface;
+  if (registration?.replayArm !== E2_AB_REPLAY_ARM || slot.kind !== "replay" || Object.hasOwn(registration, "historySurface")) fail("e2_registration_invalid");
+  return E2_AB_ARM_SURFACES[arm].historySurface;
+}

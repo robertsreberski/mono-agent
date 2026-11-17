@@ -15,7 +15,10 @@ import { E2_REGISTRATION_SCHEMA, E2_PLAN_SCHEMA, E2_ASSUMPTIONS, E2_DEADLINE_LIM
 import { E2_RETRY_POLICY } from "./continuity-e2-retry.mjs";
 import { LOOKUP_PILOT_PROTOCOL_FILES } from "./continuity-lookup-roles.mjs";
 import { BUILD_POLICY, sourceState, verifyRealBuild } from "./memory-e2e-build.mjs";
-const E2_HISTORY_SOURCE_FILES = Object.freeze(["packages/app/src/request-tools/history.ts", "packages/app/src/request-tools/history-policy.ts", "packages/app/src/request-tools/history-presentation.ts"]);
+import { E2_AB_REPLAY_ARM, E2_AB_TOOL_POLICIES, assertE2HistoryAbBinding, assertE2AbArmContracts, assertE2AbSnapshot, e2AbFrozenCheckpoint, e2AbQuestions, e2AbProbeCounts, normalizeE2AbSizing, estimateE2HistoryAb, e2AbPhaseSchedule } from "./continuity-e2-ab.mjs";
+const E2_HISTORY_SOURCE_FILES = Object.freeze(["packages/app/src/request-tools/history.ts", "packages/app/src/request-tools/history-policy.ts", "packages/app/src/request-tools/history-presentation.ts",
+  "packages/app/src/request-tools/conversation-history.ts", "scripts/lib/continuity-runner.mjs",
+  "scripts/lib/continuity-e2-ab.mjs", "scripts/lib/continuity-e2-ab-score.mjs"]);
 export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROTOCOL_FILES, ...E2_HISTORY_SOURCE_FILES,
   "scripts/continuity-e2.mjs", "pnpm-lock.yaml", "package.json",
   "scripts/lib/continuity-e2-checks.mjs", "scripts/lib/continuity-e2-diagnostics.mjs", "scripts/lib/continuity-e2-estimate.mjs",
@@ -64,6 +67,7 @@ export async function verifyE2Code(code, build) {
 }
 export function e2ProbeCounts(protocol, questions, evaluator, source, replayArm) {
   assertE2ProbeLookupRounds(protocol?.probeLookupRounds);
+  need(e2ReplayArm(replayArm) !== E2_AB_REPLAY_ARM); // A/B counts only its bound rows: e2AbProbeCounts.
   validateE2Questions(questions);
   need(fields(evaluator, ["schema", "keys"]) && evaluator.schema === "continuity-recorded-evaluator-keys-v1" && Array.isArray(evaluator.keys) && evaluator.keys.length === questions.questions.length);
   if (evaluator.keys.length) scoreE2({ schema: "continuity-e2-answers-v1", answers: [] }, evaluator);
@@ -80,6 +84,7 @@ export function e2ProbeCounts(protocol, questions, evaluator, source, replayArm)
 }
 export function e2PhaseSchedule(protocol, records, probeCounts, replayArm) {
   const baseline = e2ReplayArm(replayArm) === "baseline";
+  need(e2ReplayArm(replayArm) !== E2_AB_REPLAY_ARM); // A/B schedules come from e2AbPhaseSchedule.
   need(!baseline || records.every(r => r.schema === "continuity-e2-sizing-v1"));
   const phases = [], replays = [], proofs = [], seen = new Set();
   let offset = records.some(isE2ReplaySizing) ? protocol.branches.reduce((n, b) => n + b.checkpoints.length, 0) : 0;
@@ -125,6 +130,7 @@ export function e2PhaseSchedule(protocol, records, probeCounts, replayArm) {
 }
 export const E2_TOOL_POLICIES = Object.freeze({ summary: Object.freeze([]), replay: Object.freeze(["ConversationHistory"]), replayFinal: Object.freeze([]), proof: Object.freeze(["ConversationHistory"]), cancelContinuation: Object.freeze(["ConversationHistory", "ProofSentinel"]) });
 export const e2ToolPolicies = (arm, historySurface) => {
+  if (e2ReplayArm(arm) === E2_AB_REPLAY_ARM) { need(historySurface === undefined); return structuredClone(E2_AB_TOOL_POLICIES); }
   const policies = e2HistorySurface(historySurface) === "unified"
     ? { ...E2_TOOL_POLICIES, replay: ["History"], proof: ["History"], cancelContinuation: ["History", "ProofSentinel"] } : E2_TOOL_POLICIES;
   return e2ReplayArm(arm) === "baseline" ? { ...policies, replay: [] } : policies;
@@ -135,6 +141,7 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     const r = pilot.registration, d = pilot.descriptor;
     if (d?.schema !== E2_PLAN_SCHEMA) throw Object.assign(Error("e2_deadlines_invalid"), { code: "e2_deadlines_invalid" });
     validateE2Deadlines(d.deadlines);
+    if (r?.replayArm === E2_AB_REPLAY_ARM) return await validateE2HistoryAbRegistration(pilot, { safeRead, safeDirectory });
     need(fields(r, ["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "roles", "schedule", "toolPolicies", "sizing", "probeCounts", ...(Object.hasOwn(r, "replayArm") ? ["replayArm"] : []), ...(Object.hasOwn(r, "historySurface") ? ["historySurface"] : [])])
       && fields(d, ["schema", "assumptions", "capUnits", "deadlines", "retryPolicy"]) && d.schema === E2_PLAN_SCHEMA && same(d.assumptions, E2_ASSUMPTIONS) && same(d.retryPolicy, E2_RETRY_POLICY));
     const replayArm = e2ReplayArm(r.replayArm), historySurface = e2HistorySurface(r.historySurface);
@@ -178,6 +185,46 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
   }
 }
 
+// Pack-withheld, probe-only A/B: its own closed field set, sizing and schedule.
+// Arm surfaces, souls and offered description bytes are recomputed from code.
+async function validateE2HistoryAbRegistration(pilot, { safeRead, safeDirectory }) {
+  const r = pilot.registration, d = pilot.descriptor;
+  need(fields(r, ["code", "build", "catalog", "protocol", "source", "probes", "keys", "roles", "schedule", "toolPolicies", "sizing", "probeCounts", "replayArm", "historyAb"])
+    && fields(d, ["schema", "assumptions", "capUnits", "deadlines", "retryPolicy"]) && same(d.assumptions, E2_ASSUMPTIONS) && same(d.retryPolicy, E2_RETRY_POLICY));
+  e2CapUnits(d.capUnits);
+  await safeDirectory(ROOT, "e2_registration_invalid"); await verifyE2Code(r.code, r.build);
+  need(same(r.catalog, await loadE2Catalog()));
+  const historyAb = assertE2HistoryAbBinding(r.historyAb); await assertE2AbArmContracts(historyAb);
+  const paths = new Set();
+  const json = async (b, maxBytes = E2_INPUT_LIMITS.artifactBytes) => {
+    need(fields(b, ["path", "sha256"]) && typeof b.path === "string" && sha(b.sha256) && !paths.has(b.path)); paths.add(b.path);
+    const raw = await safeRead(b.path, "e2_registration_invalid", maxBytes); need(hash(raw) === b.sha256);
+    return JSON.parse(raw);
+  };
+  const source = await json(r.source, E2_INPUT_LIMITS.sourceBytes); validateSource(source);
+  const protocol = validateProtocol(await json(r.protocol), source), questions = await json(r.probes), evaluator = await json(r.keys);
+  e2AbFrozenCheckpoint(await json(historyAb.frozen.replay), historyAb, { protocol, source });
+  await safeDirectory(historyAb.frozen.snapshot, "e2_registration_invalid", true); await assertE2AbSnapshot(historyAb);
+  need(fields(evaluator, ["schema", "keys"]) && Array.isArray(evaluator.keys) && evaluator.keys.length === questions.questions?.length);
+  scoreE2({ schema: "continuity-e2-answers-v1", answers: [] }, evaluator);
+  e2AbQuestions(questions, evaluator, historyAb, protocol);
+  need(same(r.probeCounts, e2AbProbeCounts(protocol, historyAb)) && same(r.toolPolicies, e2ToolPolicies(E2_AB_REPLAY_ARM)));
+  need(Array.isArray(r.sizing) && r.sizing.length > 0 && r.sizing.length <= E2_INPUT_LIMITS.sizingFiles);
+  const records = []; for (const b of r.sizing) records.push(await json(b));
+  for (const record of records) {
+    normalizeE2AbSizing(protocol, record, historyAb);
+    // Fresh offline sizing on exactly the registered clean code and build.
+    const i = record.sizingIdentity;
+    need(record.sourceDigest === hash(JSON.stringify(source)) && i && !i.sourceDirty && i.sourceHead === r.code.revision && i.codeSha256 === r.code.sha256
+      && i.buildOutputSha256 === r.build.outputSha256 && i.node === r.build.node);
+  }
+  const estimate = estimateE2HistoryAb({ protocol, roles: r.roles, historyAb, records, catalog: r.catalog });
+  need(same(r.schedule, e2AbPhaseSchedule(protocol, historyAb, records)));
+  const limits = protocol.branches[historyAb.frozen.branch].limits;
+  for (const phase of r.schedule) need(phase.budgets.reduce((n, b) => n + b.maxRequests, 0) <= limits.probeRequests && phase.budgets.every(b => b.paidRole !== "summary"));
+  need(e2CapUnits(d.capUnits) >= BigInt(estimate.minimumCapUnits));
+  return { protocol, questions, source, estimate };
+}
 export function validateE2ReplayLimits(protocol, records, replayArm) {
   const requests = e2ProbeRequestCount(protocol, replayArm);
   for (const record of records.filter(isE2ReplaySizing)) {
