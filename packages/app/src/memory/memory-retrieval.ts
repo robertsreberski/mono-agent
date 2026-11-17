@@ -71,7 +71,6 @@ interface MemoryRetrievalServiceOptions {
 }
 
 interface SharedMemoryRecallRuntimeExtensionOptions {
-  readonly unifiedHistory?: boolean;
   /** Best-effort diagnostic when the loopback tool endpoint cannot start. */
   readonly onUnavailable?: (error: unknown) => void;
   /** Test seam for simulating endpoint startup failures. */
@@ -662,7 +661,7 @@ export function createSharedMemoryRecallRuntimeExtension(
     let startupCleanupSucceeded = false;
     try {
       const endpoint = await createLoopbackMcpEndpoint({
-        createServer: () => createMemoryRecallServer(boundStore, options),
+        createServer: () => createMemoryRecallServer(boundStore),
         onStartupFailure: () => { startupCleanupSucceeded = true; },
         startingResponse: { status: 503, message: "Memory recall is starting" },
         bodyLimitMessage: "MemoryRecall MCP request exceeds 1 MB.",

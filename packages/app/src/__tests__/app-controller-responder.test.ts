@@ -1,7 +1,7 @@
 import { ToolHistoryReader, ToolHistoryWriter } from "@mono-agent/conversation";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
-import { handleSessionHistoryRequest } from "../request-tools/session-history.js";
-import { handleRunHistoryRequest } from "../request-tools/run-history.js";
+import { handleToolsHistoryRequest } from "./fixtures/history-scopes.js";
+import { handleRunsHistoryRequest } from "./fixtures/history-scopes.js";
 import { resolveJsonMonoAgentConfig, DEFAULT_REPLY_FILE_STORAGE_MAX_BYTES } from "@mono-agent/config";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -778,11 +778,12 @@ async function controllerSecurity(
 }
 
 
-it.each([undefined, false, true])("registers mutually exclusive history modes in the app controller (unified=%s)", async unified => {
+it("registers only History in the app controller", async () => {
+  const unified = true;
   const dir = await mkdtemp(join(tmpdir(), "controller-history-mode-")); tempDirs.push(dir);
   await writeFile(join(dir, "IDENTITY.md"), "Fictional history fixture.");
   const config = resolveJsonMonoAgentConfig({ cwd: dir, json: { runtime: { model: "openai-codex:gpt-5.5", session: { mode: "per-message", rollover: "daily" } },
-    context: { identityPath: "IDENTITY.md" }, tools: { ...(unified === undefined ? {} : { history: { unified } }) }, artifacts: { dir: join(dir, "artifacts") } } });
+    context: { identityPath: "IDENTITY.md" }, tools: {}, artifacts: { dir: join(dir, "artifacts") } } });
   const oldBinding = { conversationId: "tui:fictional#2026-05-17", logicalConversationId: "tui:fictional", runId: "old-dated", isolated: false };
   const writer = await ToolHistoryWriter.open({ root: join(dir, "history"), persistenceCeilingMs: 5000 });
   try {
@@ -808,12 +809,12 @@ it.each([undefined, false, true])("registers mutually exclusive history modes in
         const body = (result: unknown): any => (result as any).structuredContent;
         if (unified || name === "mono-agent-run-history") {
           const result = body(await client.callTool({ name: unified ? "History" : "RunHistory", arguments: unified ? { scope: "runs" } : {} }));
-          const legacy = body(await handleRunHistoryRequest({ artifactDir: config.artifacts.dir, conversationId: "tui:fictional", runId: "current", rollover: "daily" }, {}));
+          const legacy = body(await handleRunsHistoryRequest({ artifactDir: config.artifacts.dir, conversationId: "tui:fictional", runId: "current", rollover: "daily" }, {}));
           expect(result.runs).toEqual(legacy.runs); expect(result.runs.map((run: any) => run.runId)).toEqual(["old-dated"]);
         }
         if (unified || name === "mono-agent-session-history") {
           const result = body(await client.callTool({ name: unified ? "History" : "SessionHistory", arguments: unified ? { scope: "tools" } : {} }));
-          const legacy = body(handleSessionHistoryRequest({ reader: new ToolHistoryReader(join(dir, "history")), conversationId: "tui:fictional", logicalConversationId: "tui:fictional", runId: "current" }, {}));
+          const legacy = body(handleToolsHistoryRequest({ reader: new ToolHistoryReader(join(dir, "history")), conversationId: "tui:fictional", logicalConversationId: "tui:fictional", runId: "current" }, {}));
           expect(result.items).toEqual(legacy.items); expect(result.count).toBe(1);
         }
 

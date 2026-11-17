@@ -20,7 +20,6 @@ const CONTINUITY_TABLES = ["continuity_generations", "continuity_records", "cont
 
 interface SessionToolHistoryDoctorOptions {
   readonly historyRoot: string;
-  readonly unifiedHistory?: boolean;
   readonly artifactRoot?: string;
   readonly requestScopedToolSupported: boolean;
 }
@@ -30,15 +29,15 @@ export async function sessionToolHistorySection(
   options: SessionToolHistoryDoctorOptions,
 ): Promise<ValidationSection> {
   try {
-    return modeSection(await inspectSessionToolHistorySection(options), options.unifiedHistory);
+    return await inspectSessionToolHistorySection(options);
   } catch (error) {
     const details = [
       `Session tool history could not be inspected (${boundedInspectionErrorCode(error)}).`,
     ];
     if (!options.requestScopedToolSupported) {
-      details.push("unsupported_route: lifecycle records persist and cold-project, but this direct OpenCode/ACP route cannot expose SessionHistory.");
+      details.push("unsupported_route: lifecycle records persist and cold-project, but this direct OpenCode/ACP route cannot expose History (scope \"tools\").");
     }
-    return modeSection({ id: "session-tool-history", label: "Session tool history", status: "error", details }, options.unifiedHistory);
+    return { id: "session-tool-history", label: "Session tool history", status: "error", details };
   }
 }
 
@@ -88,7 +87,7 @@ async function inspectSessionToolHistorySection(
   if (toolDirectoryInfo === undefined && ownerInfo === undefined) {
     details.push("Tool history: not created yet (0 bytes).");
     if (!options.requestScopedToolSupported) {
-      worsen("waiting", "unsupported_route: lifecycle records will persist and cold-project, but this direct OpenCode/ACP route cannot expose SessionHistory.");
+      worsen("waiting", "unsupported_route: lifecycle records will persist and cold-project, but this direct OpenCode/ACP route cannot expose History (scope \"tools\").");
     }
     return { id: "session-tool-history", label: "Session tool history", status, details };
   }
@@ -212,7 +211,7 @@ async function inspectSessionToolHistorySection(
     if (owner.live === false) worsen("waiting", "A dead recorded writer owner remains; the next writer will reap it before acquisition.");
   }
   if (!options.requestScopedToolSupported) {
-    worsen("waiting", "unsupported_route: lifecycle records persist and cold-project, but this direct OpenCode/ACP route cannot expose SessionHistory.");
+    worsen("waiting", "unsupported_route: lifecycle records persist and cold-project, but this direct OpenCode/ACP route cannot expose History (scope \"tools\").");
   }
   return { id: "session-tool-history", label: "Session tool history", status, details };
 }
@@ -421,8 +420,4 @@ function isBusyReason(reason: string): boolean {
 /** SQLite extended result SQLITE_READONLY_ROLLBACK. */
 function isReadOnlyRollback(error: unknown): boolean {
   return typeof error === "object" && error !== null && "errcode" in error && error.errcode === 776;
-}
-
-function modeSection(section: ValidationSection, unified = false): ValidationSection {
-  return !unified ? section : { ...section, details: section.details.map(detail => detail.replaceAll("SessionHistory", 'History (scope "tools")')) };
 }

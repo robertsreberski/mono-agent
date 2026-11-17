@@ -126,7 +126,7 @@ export async function validateMonoAgentFolder(
       historyRoot: join(coreConfig.artifacts.dir, "..", "history"),
       artifactRoot: join(coreConfig.artifacts.dir, "tool-output"),
       requestScopedToolSupported: true,
-      ...(coreConfig.tools.history?.unified === true ? { unifiedHistory: true } : {}),
+
     }));
     sections.push(await webToolsSection(coreConfig, options, liveness));
     sections.push(await continuationSection(coreConfig, options));

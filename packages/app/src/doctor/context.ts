@@ -1,3 +1,4 @@
+import { historySoulReferences } from "../context/history-soul.js";
 import { join } from "node:path";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
@@ -25,6 +26,18 @@ export async function contextSection(config: MonoAgentConfig, cwd: string): Prom
   if (config.context.soulPath !== undefined && !(await pathExists(config.context.soulPath))) {
     status = "error";
     details.push(`Soul file is missing: ${config.context.soulPath}`);
+  }
+
+  if (config.context.soulPath !== undefined && await pathExists(config.context.soulPath)) {
+    try { const errors = await historySoulReferences(config.context.soulPath); if (errors.length) { status = "error"; details.push(...errors); } }
+    catch { status = "error"; details.push(`Soul file cannot be read: ${config.context.soulPath}`); }
+  }
+  const warningPaths = [config.context.identityPath,
+    ...activeSelectedSkills.flatMap(skill => config.context.skillsRoot ? [join(config.context.skillsRoot, skill, "SKILL.md")] : []),
+    ...(config.subagents?.definitions ?? []).flatMap(def => def.promptPath ? [def.promptPath] : [])];
+  for (const path of warningPaths) {
+    try { const warnings = await historySoulReferences(path); if (warnings.length) { if (status === "ok") status = "waiting"; details.push(...warnings.map(message => `Warning: ${message}`)); } }
+    catch { /* Owning context/subagent checks diagnose missing files. */ }
   }
 
   for (const skill of retiredSelectedSkills) {

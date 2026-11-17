@@ -1,3 +1,4 @@
+import { scopedCall } from "./fixtures/history-scopes.js";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,11 +15,11 @@ vi.mock("@mono-agent/observability", async (importOriginal) => {
 });
 
 import {
-  createRunHistoryRuntimeExtension,
-  isRunHistoryToolAllowed,
-  RUN_HISTORY_MCP_SERVER_NAME,
-  RUN_HISTORY_TOOL_NAME,
-} from "../request-tools/run-history.js";
+  createRunsHistoryExtension,
+  isHistoryAllowed,
+  HISTORY_MCP_SERVER_NAME,
+  HISTORY_TOOL_NAME,
+} from "./fixtures/history-scopes.js";
 
 const tempDirs: string[] = [];
 
@@ -80,7 +81,7 @@ async function openHistoryClient(
   runId = "current-run",
   rollover?: "none" | "daily",
 ): Promise<OpenHistoryClient> {
-  const extension = await createRunHistoryRuntimeExtension({
+  const extension = await createRunsHistoryExtension({
     artifactDir,
     ...(rollover === undefined ? {} : { rollover }),
   })({
@@ -93,7 +94,7 @@ async function openHistoryClient(
     context: {} as never,
   });
   const mcpServers = extension.runtimeOptions?.mcpServers as Record<string, unknown> | undefined;
-  const spec = mcpServers?.[RUN_HISTORY_MCP_SERVER_NAME] as { readonly url: string } | undefined;
+  const spec = mcpServers?.[HISTORY_MCP_SERVER_NAME] as { readonly url: string } | undefined;
   if (spec === undefined) throw new Error("RunHistory MCP server was not registered.");
   const client = new Client({ name: "run-history-test", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
@@ -136,14 +137,14 @@ async function inspectWithTimeline(client: Client, runId: string): Promise<{
   readonly timeline: ReadonlyArray<Record<string, unknown>>;
   readonly pageResults: readonly Awaited<ReturnType<Client["callTool"]>>[];
 }> {
-  const overviewResult = await client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: { runId } });
+  const overviewResult = await scopedCall(client, "runs", { name: HISTORY_TOOL_NAME, arguments: { runId } });
   const overview = structured<InspectOverview>(overviewResult);
   const timeline: Record<string, unknown>[] = [];
   const pageResults: Awaited<ReturnType<Client["callTool"]>>[] = [];
   let cursor = overview.nextCursor;
   for (let pageCount = 0; cursor !== undefined && pageCount < 100; pageCount += 1) {
-    const pageResult = await client.callTool({
-      name: RUN_HISTORY_TOOL_NAME,
+    const pageResult = await scopedCall(client, "runs", {
+      name: HISTORY_TOOL_NAME,
       arguments: { runId, cursor },
     });
     pageResults.push(pageResult);
@@ -158,40 +159,11 @@ async function inspectWithTimeline(client: Client, runId: string): Promise<{
   return { overviewResult, overview, timeline, pageResults };
 }
 
-describe("isRunHistoryToolAllowed", () => {
-  it.each([
-    RUN_HISTORY_TOOL_NAME,
-    "run_history",
-    `mcp__${RUN_HISTORY_MCP_SERVER_NAME}__${RUN_HISTORY_TOOL_NAME}`,
-    `mcp__${RUN_HISTORY_MCP_SERVER_NAME}__*`,
-    "*",
-  ])("allows the supported policy spelling %s", (name) => {
-    expect(isRunHistoryToolAllowed({ allowedTools: [name], disallowedTools: [] })).toBe(true);
-  });
-
-  it("keeps explicit denial authoritative over aliases and global allow-all", () => {
-    expect(isRunHistoryToolAllowed({
-      allowedTools: ["*"],
-      disallowedTools: [RUN_HISTORY_TOOL_NAME],
-    })).toBe(false);
-    expect(isRunHistoryToolAllowed({
-      allowedTools: [`mcp__${RUN_HISTORY_MCP_SERVER_NAME}__*`],
-      disallowedTools: ["run_history"],
-    })).toBe(false);
-    expect(isRunHistoryToolAllowed({ allowedTools: ["*"], disallowedTools: ["*"] })).toBe(false);
-  });
-
-  it("stays disabled for an absent or unrelated policy", () => {
-    expect(isRunHistoryToolAllowed(undefined)).toBe(false);
-    expect(isRunHistoryToolAllowed({ allowedTools: ["Read"], disallowedTools: [] })).toBe(false);
-  });
-});
-
 describe("RunHistory MCP tool", () => {
   it("accepts a second client initialize on the same per-run endpoint (model failover)", async () => {
     const artifactDir = await tempDir();
     const conversationId = "conversation-failover";
-    const extension = await createRunHistoryRuntimeExtension({ artifactDir })({
+    const extension = await createRunsHistoryExtension({ artifactDir })({
       runId: "current-run",
       request: {
         conversationId,
@@ -201,7 +173,7 @@ describe("RunHistory MCP tool", () => {
       context: {} as never,
     });
     const mcpServers = extension.runtimeOptions?.mcpServers as Record<string, unknown> | undefined;
-    const spec = mcpServers?.[RUN_HISTORY_MCP_SERVER_NAME] as { readonly url: string } | undefined;
+    const spec = mcpServers?.[HISTORY_MCP_SERVER_NAME] as { readonly url: string } | undefined;
     if (spec === undefined) throw new Error("RunHistory MCP server was not registered.");
     const first = new Client({ name: "run-history-test", version: "1.0.0" });
     try {
@@ -215,7 +187,7 @@ describe("RunHistory MCP tool", () => {
     const second = new Client({ name: "run-history-test", version: "1.0.0" });
     try {
       await second.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
-      const result = await second.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: { action: "list" } });
+      const result = await scopedCall(second, "runs", { name: HISTORY_TOOL_NAME, arguments: { action: "list" } });
       expect(result.isError).not.toBe(true);
     } finally {
       await second.close().catch(() => undefined);
@@ -301,8 +273,8 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      expect((await history.client.listTools()).tools.map((tool) => tool.name)).toEqual([RUN_HISTORY_TOOL_NAME]);
-      const result = await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} });
+      expect((await history.client.listTools()).tools.map((tool) => tool.name)).toEqual([HISTORY_TOOL_NAME]);
+      const result = await scopedCall(history.client, "runs", { name: HISTORY_TOOL_NAME, arguments: {} });
       const body = structured<{
         readonly runs: ReadonlyArray<Record<string, unknown>>;
         readonly count: number;
@@ -323,7 +295,7 @@ describe("RunHistory MCP tool", () => {
       expect(body.runs[0]).toMatchObject({ status: "failed", failureKind: "provider_unavailable" });
       expect(body.runs[1]).toMatchObject({ runId: "prior-success", trigger: "first trigger" });
       expect(body.navigation.guidance).toContain("Choose a candidate overview");
-      expect(body.navigation.nextActions[1]?.arguments).toEqual({ runId: "prior-success" });
+      expect(body.navigation.nextActions[1]?.arguments).toEqual({ scope: "runs", action: "get", runId: "prior-success" });
       expect(result.content).toEqual(expect.arrayContaining([
         expect.objectContaining({ text: expect.stringContaining('"trigger":"first trigger"') }),
       ]));
@@ -341,8 +313,8 @@ describe("RunHistory MCP tool", () => {
       expect(serialized).not.toContain("private recalled list context");
       expect(serialized).not.toContain("summaryFileName");
 
-      const limited = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const limited = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "list", limit: 1 },
       });
       expect(structured<{ readonly runs: unknown[]; readonly hasMore: boolean }>(limited)).toMatchObject({
@@ -373,7 +345,7 @@ describe("RunHistory MCP tool", () => {
     try {
       const listed = structured<{
         readonly runs: ReadonlyArray<{ readonly runId: string; readonly status: string; readonly failureKind?: string }>;
-      }>(await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} }));
+      }>(await scopedCall(history.client, "runs", { name: HISTORY_TOOL_NAME, arguments: {} }));
       expect(listed.runs).toEqual([expect.objectContaining({
         runId: "empty-response-run",
         status: "failed",
@@ -382,8 +354,8 @@ describe("RunHistory MCP tool", () => {
 
       const inspected = structured<{
         readonly run: { readonly runId: string; readonly status: string; readonly failureKind?: string };
-      }>(await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      }>(await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { runId: "empty-response-run" },
       }));
       expect(inspected.run).toMatchObject({
@@ -418,12 +390,12 @@ describe("RunHistory MCP tool", () => {
     try {
       const listed = structured<{
         readonly runs: ReadonlyArray<{ readonly cancellationReason?: unknown }>;
-      }>(await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} }));
+      }>(await scopedCall(history.client, "runs", { name: HISTORY_TOOL_NAME, arguments: {} }));
       expect(listed.runs[0]?.cancellationReason).toEqual(cancellationReason);
 
       const searched = structured<{ readonly runs: ReadonlyArray<{ readonly runId: string }> }>(
-        await history.client.callTool({
-          name: RUN_HISTORY_TOOL_NAME,
+        await scopedCall(history.client, "runs", {
+          name: HISTORY_TOOL_NAME,
           arguments: { query: "coordinator_shutdown" },
         }),
       );
@@ -486,12 +458,12 @@ describe("RunHistory MCP tool", () => {
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
       const tools = await history.client.listTools();
-      expect(tools.tools[0]?.description).toContain("pick up, continue, or recover interrupted work");
-      expect(tools.tools[0]?.description).toContain("call with {} first");
-      expect(tools.tools[0]?.description).toContain("cancelled, or interrupted");
-      expect(tools.tools[0]?.description).toContain("does not resume provider state");
+      expect(tools.tools[0]?.description).toContain('scope runs: how prior runs ended');
+      expect(tools.tools[0]?.description).toContain('scope runs: how prior runs ended');
+      expect(tools.tools[0]?.description).toContain('scope runs: how prior runs ended');
+      expect(tools.tools[0]?.description).toContain('scope runs: how prior runs ended');
 
-      const listedResult = await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} });
+      const listedResult = await scopedCall(history.client, "runs", { name: HISTORY_TOOL_NAME, arguments: {} });
       const listed = structured<{
         readonly runs: ReadonlyArray<{
           readonly runId: string;
@@ -527,8 +499,8 @@ describe("RunHistory MCP tool", () => {
           };
         };
         readonly navigation: InspectOverview["navigation"];
-      }>(await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      }>(await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { query: "cancelled_user" },
       }));
       expect(searched.runs).toEqual([expect.objectContaining({ runId: "cancelled-prior", status: "cancelled" })]);
@@ -537,14 +509,14 @@ describe("RunHistory MCP tool", () => {
         failureKind: "cancelled_user",
         cancellationReason: { code: "operator", notice: "Run stopped by the operator." },
       });
-      expect(searched.navigation.relatedTools?.[0]?.arguments).toEqual({
+      expect(searched.navigation.relatedTools?.[0]?.arguments).toMatchObject({
         action: "search",
         runIds: ["cancelled-prior"],
         includeIsolated: true,
       });
 
-      const inspectResult = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const inspectResult = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: listed.navigation.nextActions[0]!.arguments,
       });
       const inspected = structured<InspectOverview & {
@@ -575,8 +547,8 @@ describe("RunHistory MCP tool", () => {
       expect(inspected.navigation.guidance).toContain("did not complete successfully");
       expect(inspected.navigation.guidance).toContain("incomplete evidence");
       expect(inspected.navigation.guidance).toContain("Any continuation is fresh work in the current run");
-      expect(inspected.navigation.relatedTools).toEqual([{
-        tool: "SessionHistory",
+      expect(inspected.navigation.relatedTools).toMatchObject([{
+        tool: "History",
         description: expect.stringContaining("do not add a states filter"),
         arguments: {
           action: "search",
@@ -589,7 +561,7 @@ describe("RunHistory MCP tool", () => {
 
       for (const runId of ["running-decoy", "foreign-cancelled-decoy", "current-run"]) {
         const unavailable = structured<{ readonly error: { readonly code: string } }>(
-          await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: { runId } }),
+          await scopedCall(history.client, "runs", { name: HISTORY_TOOL_NAME, arguments: { runId } }),
         );
         expect(unavailable.error.code).toMatch(/^(current_run|run_incomplete|run_not_available)$/u);
       }
@@ -617,7 +589,7 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const result = await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} });
+      const result = await scopedCall(history.client, "runs", { name: HISTORY_TOOL_NAME, arguments: {} });
       expect(result.isError).not.toBe(true);
       expect(vi.mocked(observability.listRecordedRuns)).toHaveBeenCalledTimes(1);
     } finally {
@@ -655,14 +627,14 @@ describe("RunHistory MCP tool", () => {
       "daily",
     );
     try {
-      const listed = await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} });
+      const listed = await scopedCall(history.client, "runs", { name: HISTORY_TOOL_NAME, arguments: {} });
       const body = structured<{ readonly runs: ReadonlyArray<{ readonly runId: string }> }>(listed);
       expect(body.runs.map((run) => run.runId)).toEqual(["today-prior-run", "yesterday-run"]);
       expect(JSON.stringify(listed)).not.toContain("foreign-thread");
 
-      const inspected = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
-        arguments: { run_id: "yesterday-run" },
+      const inspected = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
+        arguments: { runId: "yesterday-run" },
       });
       expect(structured<{ readonly view: string; readonly run: { readonly runId: string } }>(inspected))
         .toMatchObject({ view: "overview", run: { runId: "yesterday-run" } });
@@ -707,22 +679,22 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const topic = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const topic = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { query: "NORTH spain" },
       });
       expect(structured<{ readonly action: string; readonly runs: ReadonlyArray<{ readonly runId: string }> }>(topic))
         .toMatchObject({ action: "search", runs: [{ runId: "spain-flight-run" }] });
 
-      const metadata = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const metadata = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "search", query: "WEBHOOK admin check" },
       });
       expect(structured<{ readonly runs: ReadonlyArray<{ readonly runId: string }> }>(metadata).runs)
         .toEqual([expect.objectContaining({ runId: "admin-failure-run" })]);
 
-      const eventOnly = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const eventOnly = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { query: "Zaragoza" },
       });
       const eventOnlyBody = structured<{
@@ -734,7 +706,7 @@ describe("RunHistory MCP tool", () => {
       }>(eventOnly);
       expect(eventOnlyBody.runs).toEqual([]);
       expect(eventOnlyBody.navigation.guidance).toContain("No safe topic or metadata matches");
-      expect(eventOnlyBody.navigation.nextActions.at(-1)?.arguments).toEqual({});
+      expect(eventOnlyBody.navigation.nextActions.at(-1)?.arguments).toEqual({scope: "runs", action: "search"});
       expect(JSON.stringify([topic, metadata, eventOnly])).not.toContain("private-system-search-marker");
     } finally {
       await history.close();
@@ -765,8 +737,8 @@ describe("RunHistory MCP tool", () => {
     try {
       // The obvious phrasing of a follow-up names more than the trigger did.
       // Requiring every term answered "0 matching runs" and cost two more calls.
-      const result = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const result = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { query: "unsubscribe group A newsletters" },
       });
       const body = structured<{
@@ -799,8 +771,8 @@ describe("RunHistory MCP tool", () => {
     try {
       // "openai" is only in the model reference — a field the scorer reads. The
       // explanation must come from the same haystack or it names nothing at all.
-      const result = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const result = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { query: "openai newsletters" },
       });
       const body = structured<{
@@ -837,8 +809,8 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const result = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const result = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { query: "unsubscribe newsletter digest" },
       });
       // Two matched terms beats one, even though the weaker run is more recent.
@@ -865,8 +837,8 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const result = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const result = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { query: "unsubscribe" },
       });
       const body = structured<{
@@ -913,8 +885,8 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const result = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const result = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { query: "unsubscribe" },
       });
       const body = structured<{
@@ -947,8 +919,8 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const first = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const first = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { query: "north spain" },
       });
       const firstBody = structured<{
@@ -963,14 +935,14 @@ describe("RunHistory MCP tool", () => {
       expect(firstBody.runs).toHaveLength(5);
       const nextSearch = firstBody.navigation.nextActions.find((action) => action.kind === "next_page");
       expect(nextSearch?.arguments).toMatchObject({ query: "north spain", limit: 5 });
-      const second = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const second = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: nextSearch?.arguments ?? {},
       });
       expect(structured<{ readonly runs: readonly unknown[] }>(second).runs).toHaveLength(2);
 
-      const overview = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const overview = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { runId: "matching-run-6" },
       });
       const overviewBody = structured<{
@@ -982,8 +954,8 @@ describe("RunHistory MCP tool", () => {
       expect(overviewBody).not.toHaveProperty("timeline");
       const firstTimelineArguments = overviewBody.navigation.nextActions[0]?.arguments;
       expect(firstTimelineArguments).toMatchObject({ runId: "matching-run-6" });
-      const timelinePage = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const timelinePage = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: firstTimelineArguments ?? {},
       });
       const timelineBody = structured<{
@@ -1361,8 +1333,8 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const overview = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const overview = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { runId: "many-tools-run" },
       });
       expect(structured<{
@@ -1818,8 +1790,8 @@ describe("RunHistory MCP tool", () => {
         { runId: "running-run", code: "run_incomplete" },
       ] as const;
       for (const testCase of cases) {
-        const result = await history.client.callTool({
-          name: RUN_HISTORY_TOOL_NAME,
+        const result = await scopedCall(history.client, "runs", {
+          name: HISTORY_TOOL_NAME,
           arguments: { action: "inspect", runId: testCase.runId },
         });
         expect(result.isError).toBe(true);
@@ -1832,18 +1804,18 @@ describe("RunHistory MCP tool", () => {
         }>(result);
         expect(body.error.code).toBe(testCase.code);
         expect(body.navigation.guidance).toContain("List recent runs");
-        expect(body.navigation.nextActions[0]?.arguments).toEqual({});
+        expect(body.navigation.nextActions[0]?.arguments).toEqual({scope: "runs", action: "search"});
         const serialized = JSON.stringify(result);
         expect(serialized).not.toContain(artifactDir);
         expect(serialized).not.toContain("/private/secret");
       }
-      const conflictingAlias = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const conflictingAlias = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { runId: "missing-run", run_id: "other-run" },
       });
       expect(conflictingAlias.isError).toBe(true);
       expect(structured<{ readonly error: { readonly code: string } }>(conflictingAlias).error.code)
-        .toBe("conflicting_run_id");
+        .toBe("invalid_request");
     } finally {
       await history.close();
     }
@@ -1885,8 +1857,8 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const listed = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const listed = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "list" },
       });
       expect(structured<{ readonly runs: ReadonlyArray<{ readonly runId: string }>; readonly warnings: string[] }>(listed))
@@ -1898,8 +1870,8 @@ describe("RunHistory MCP tool", () => {
           warnings: ["Some recorded-run artifacts were unavailable or malformed."],
         });
 
-      const missing = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const missing = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "inspect", runId: "missing-events" },
       });
       expect(structured<{ readonly trigger: string; readonly warnings: string[] }>(missing)).toMatchObject({
@@ -1907,8 +1879,8 @@ describe("RunHistory MCP tool", () => {
         warnings: ["Some recorded-run artifacts were unavailable or malformed."],
       });
 
-      const partial = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const partial = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "inspect", runId: "partial-events" },
       });
       expect(structured<{ readonly finalOutput: string; readonly warnings: string[] }>(partial)).toMatchObject({
@@ -1928,8 +1900,8 @@ describe("RunHistory MCP tool", () => {
 
     const missingDirHistory = await openHistoryClient(join(artifactDir, "absent"), conversationId);
     try {
-      const empty = await missingDirHistory.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const empty = await scopedCall(missingDirHistory.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "list" },
       });
       expect(structured<{ readonly runs: unknown[]; readonly warnings: string[] }>(empty)).toMatchObject({
@@ -1957,8 +1929,8 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const result = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const result = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "inspect", runId: "delta-run" },
       });
       expect(structured<{ readonly finalOutput: string }>(result).finalOutput).toBe("Hello world.");
@@ -1995,15 +1967,15 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const listed = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const listed = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "list" },
       });
       expect(JSON.stringify(listed)).not.toContain("987654321");
       expect(JSON.stringify(listed)).not.toContain("started-at-secret");
       expect(JSON.stringify(listed)).not.toContain("123456789");
-      const inspected = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const inspected = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "inspect", runId: "credential-run" },
       });
       const body = structured<{ readonly trigger: string; readonly finalOutput: string }>(inspected);
@@ -2039,8 +2011,8 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const result = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const result = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "inspect", runId: "split-credential-run" },
       });
       const serialized = JSON.stringify(result);
@@ -2077,8 +2049,8 @@ describe("RunHistory MCP tool", () => {
 
     const history = await openHistoryClient(artifactDir, conversationId);
     try {
-      const result = await history.client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const result = await scopedCall(history.client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "inspect", runId: "very-long-run" },
       });
       const body = structured<{

@@ -1,3 +1,5 @@
+import { historyToolAvailabilityForRuntime } from "../request-tools/history-policy.js";
+import { assertCurrentHistorySoul } from "../context/history-soul.js";
 import { prepareContinuityUpkeep } from "@mono-agent/turn/host";
 import { assertSupportedSessionsRoot } from "../conversation-admin/sessions-root.js";
 import type { ConversationHistoryTurnInspection } from "@mono-agent/conversation";
@@ -34,7 +36,6 @@ import type {
 
 import { agentArtifactDerivedRoots } from "../artifacts/agent-artifact-paths.js";
 import { createHistoryRuntimeExtension } from "../request-tools/history.js";
-import { createConversationHistoryRuntimeExtension, isConversationHistoryToolAllowed, historyToolAvailabilityForRuntime } from "../request-tools/conversation-history.js";
 import { createToolOutputArtifactsRuntimeExtension } from "../artifacts/tool-output-artifacts.js";
 import {
   acquireAgentRootOwnership,
@@ -112,8 +113,8 @@ async function createConfiguredConversationHarnessInternal(
   internalHooks: ConfiguredAgentInternalHooks = {},
 ): Promise<ConversationHarness> {
   const config = options.config;
-  const unifiedHistory = config.tools.history?.unified === true;
   assertNoRetiredMonoAgentConfig(config);
+  await assertCurrentHistorySoul(config.context.soulPath);
   await assertSupportedSessionsRoot(config.runtime.session.root);
   const switchConfig = config.runtime.session.modelSwitch;
   if (switchConfig?.enabled === true) {
@@ -225,7 +226,6 @@ async function createConfiguredConversationHarnessInternal(
     || !(memory instanceof MemoryRetrievalService)
     ? undefined
     : createSharedMemoryRecallRuntimeExtension(memory, {
-        ...(unifiedHistory ? { unifiedHistory: true } : {}),
         ...(options.onMemoryRecallUnavailable === undefined
           ? {}
           : { onUnavailable: options.onMemoryRecallUnavailable }),
@@ -239,7 +239,6 @@ async function createConfiguredConversationHarnessInternal(
     || !isMemoryJournalToolAllowed(config.tools)
     ? undefined
     : createMemoryJournalRuntimeExtension(memory, {
-        ...(unifiedHistory ? { unifiedHistory: true } : {}),
         ...(options.env === undefined ? {} : { env: options.env }),
         ...(options.onMemoryJournalUnavailable === undefined
           ? {}
@@ -273,16 +272,10 @@ async function createConfiguredConversationHarnessInternal(
     channelId: internalHooks.processJobs?.channelId,
     conversationScheme: internalHooks.processJobs?.conversationScheme,
   });
-  const conversationHistory = unifiedHistory || internalHooks.conversationHistoryExtension === null || config.runtime.session.continuity?.enabled === false || !isConversationHistoryToolAllowed(config.tools)
-    ? undefined : internalHooks.conversationHistoryExtension ?? createConversationHistoryRuntimeExtension({
-      historyRoot: artifactDerivedRoots.history,
-      rollover: internalHooks.sessionRollover ?? config.runtime.session.rollover ?? "none",
-      onUnavailable: () => options.onToolHistoryWarning?.("ConversationHistory endpoint could not start; retained evidence is unavailable this run."),
-    });
-  const unifiedHistoryTool = !unifiedHistory || internalHooks.historyExtension === null ? undefined
+  const historyTool = internalHooks.historyExtension === null ? undefined
     : internalHooks.historyExtension ?? createHistoryRuntimeExtension({ historyRoot: artifactDerivedRoots.history, artifactDir: config.artifacts.dir,
       scopeRollovers: { said: internalHooks.sessionRollover ?? config.runtime.session.rollover ?? "none" }, policy: config.tools,
-      // Standalone split composition offers only ConversationHistory. The app
+      // Standalone composition supports only the said scope. The app
       // controller owns lifecycle/artifact reader exposure in either mode.
       capabilities: { said: config.runtime.session.continuity?.enabled !== false, tools: false, runs: false },
       onUnavailable: () => options.onToolHistoryWarning?.("History endpoint could not start; retained evidence is unavailable this run."),
@@ -303,8 +296,7 @@ async function createConfiguredConversationHarnessInternal(
         : {};
     },
     peerAgent,
-    conversationHistory,
-    unifiedHistoryTool,
+    historyTool,
     memoryRecall,
     memoryJournal,
     memoryRemember,
@@ -391,8 +383,7 @@ async function createConfiguredConversationHarnessInternal(
         return owner.prepareContinuityUpkeep ? await owner.prepareContinuityUpkeep(inference, { defaults: runtimeHostOptionsForConfig(config), requireRequestCap, pinned: config.runtime.session.continuity?.upkeep?.extractionModel !== undefined })
           : await prepareContinuityUpkeep({ ...runtimeHostOptionsForConfig(config), ...inference }, requireRequestCap);
       } } } : {}),
-    conversationHistoryAvailable: conversationHistory !== undefined,
-    ...(unifiedHistory ? { unifiedHistory: true, historyToolAvailabilityForRuntime: runtime => historyToolAvailabilityForRuntime(runtime, true) } : { historyToolAvailabilityForRuntime }),
+    appOwnedHistory: true, historyToolAvailabilityForRuntime,
     artifactRoot: toolOutputArtifactRoot,
     rollover,
     ...(options.onToolHistoryWarning === undefined
@@ -435,14 +426,13 @@ async function createConfiguredConversationHarnessInternal(
   // Conversation history and managed-tool history are distinct contracts. A
   // caller-supplied message store remains the sole message-history owner, while
   // the configured app keeps its independent lifecycle sidecar and
-  // SessionHistory capability. Continuity borrows the default store owner;
+  // History tools-scope capability. Continuity borrows the default store owner;
   // acquisition stays lazy until a canonical mutation or managed-tool event.
 
 
   try {
     const harnessOptions: ConversationHarnessOptions = {
     identityPath: config.context.identityPath,
-    ...(unifiedHistory && config.context.soulPath === undefined ? { defaultCore: "unified" as const } : {}),
     ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
     ...(config.context.skillMaxBytes === undefined ? {} : { skillMaxBytes: config.context.skillMaxBytes }),

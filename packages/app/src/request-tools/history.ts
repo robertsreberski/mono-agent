@@ -1,18 +1,18 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { ToolHistoryReader, toolHistoryLogicalConversationId, type UnifiedHistoryAvailability, type ToolPolicyInput } from "@mono-agent/conversation";
+import { ToolHistoryReader, toolHistoryLogicalConversationId, type HistoryToolAvailability, type ToolPolicyInput } from "@mono-agent/conversation";
 import * as z from "zod/v4";
 import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import { createRequestScopedMcpRuntimeExtension } from "../mcp/request-scoped-mcp.js";
-import { INPUT as SAID_INPUT, handleConversationHistoryRequest } from "./conversation-history.js";
-import { SESSION_HISTORY_INPUT_SCHEMA, handleSessionHistoryRequest } from "./session-history.js";
-import { RUN_HISTORY_INPUT_SCHEMA, handleRunHistoryRequest } from "./run-history.js";
+import { INPUT as SAID_INPUT, handleSaidHistoryRequest } from "./history-said.js";
+import { TOOLS_INPUT_SCHEMA, handleToolsHistoryRequest } from "./history-tools.js";
+import { RUNS_INPUT_SCHEMA, handleRunsHistoryRequest } from "./history-runs.js";
 import { presentHistoryResult } from "./history-presentation.js";
-import { HISTORY_MCP_SERVER_NAME, HISTORY_TOOL_NAME, historyPolicyAliases, resolveHistoryScopes, type HistoryScope } from "./history-policy.js";
+import { HISTORY_MCP_SERVER_NAME, HISTORY_TOOL_NAME, resolveHistoryScopes, type HistoryScope } from "./history-policy.js";
 
 // Scope is deliberately a string, not an enum: invalid scopes get guided errors.
-export const HISTORY_INPUT_SCHEMA = z.object({ ...SAID_INPUT.shape, ...SESSION_HISTORY_INPUT_SCHEMA.shape,
-  runId: RUN_HISTORY_INPUT_SCHEMA.shape.runId, scope: z.string().describe("Required: said, tools or runs, as permitted in the description."),
+export const HISTORY_INPUT_SCHEMA = z.object({ ...SAID_INPUT.shape, ...TOOLS_INPUT_SCHEMA.shape,
+  runId: RUNS_INPUT_SCHEMA.shape.runId, scope: z.string().describe("Required: said, tools or runs, as permitted in the description."),
 }).strict();
 interface Binding {
   readonly reader: ToolHistoryReader;
@@ -31,7 +31,7 @@ interface Options {
   readonly artifactDir: string;
   readonly scopeRollovers?: Readonly<Partial<Record<HistoryScope, "none" | "daily">>>;
   readonly policy: Pick<ToolPolicyInput, "allowedTools" | "disallowedTools">;
-  readonly capabilities: UnifiedHistoryAvailability;
+  readonly capabilities: HistoryToolAvailability;
   readonly onUnavailable?: (error: unknown) => void;
   /** @internal Offline harness selection only; there is no config key. */
   readonly descriptionVariant?: HistoryDescriptionVariant;
@@ -79,16 +79,16 @@ export async function handleHistoryRequest(binding: Binding, raw: unknown) {
   const presentation = { scope, scopes: binding.scopes };
   if (scope === "said") {
     const valid = SAID_INPUT.safeParse(input);
-    return valid.success ? handleConversationHistoryRequest({ ...binding, presentation }, valid.data) : failure("invalid_request", "Unsupported said arguments.");
+    return valid.success ? handleSaidHistoryRequest({ ...binding, presentation }, valid.data) : failure("invalid_request", "Unsupported said arguments.");
   }
   if (scope === "tools") {
-    const valid = SESSION_HISTORY_INPUT_SCHEMA.safeParse(input);
-    return valid.success ? presentHistoryResult(handleSessionHistoryRequest({ ...binding, logicalConversationId: binding.toolsLogicalConversationId ?? binding.logicalConversationId, unifiedHistory: true }, valid.data), presentation) : failure("invalid_request", "Unsupported tools arguments.");
+    const valid = TOOLS_INPUT_SCHEMA.safeParse(input);
+    return valid.success ? presentHistoryResult(handleToolsHistoryRequest({ ...binding, logicalConversationId: binding.toolsLogicalConversationId ?? binding.logicalConversationId }, valid.data), presentation) : failure("invalid_request", "Unsupported tools arguments.");
   }
   const { action, ...rest } = input;
   if (Object.keys(rest).some(key => !["query", "limit", "cursor", "runId"].includes(key))) return failure("invalid_request", "Unsupported runs arguments.");
-  const valid = RUN_HISTORY_INPUT_SCHEMA.safeParse({ ...rest, action: action === "get" ? "inspect" : action === "search" ? input.query === undefined ? "list" : "search" : undefined });
-  return valid.success ? presentHistoryResult(await handleRunHistoryRequest({ ...binding, unifiedHistory: true }, valid.data), presentation) : failure("invalid_request", "Unsupported runs arguments.");
+  const valid = RUNS_INPUT_SCHEMA.safeParse({ ...rest, action: action === "get" ? "inspect" : action === "search" ? input.query === undefined ? "list" : "search" : undefined });
+  return valid.success ? presentHistoryResult(await handleRunsHistoryRequest({ ...binding }, valid.data), presentation) : failure("invalid_request", "Unsupported runs arguments.");
 }
 export function createHistoryRuntimeExtension(options: Options): RuntimeOptionsExtension | undefined {
   const scopes = resolveHistoryScopes(options.policy, options.capabilities);
@@ -96,7 +96,7 @@ export function createHistoryRuntimeExtension(options: Options): RuntimeOptionsE
   const reader = new ToolHistoryReader(options.historyRoot);
   const scopeRollovers = Object.freeze({ ...options.scopeRollovers });
   return createRequestScopedMcpRuntimeExtension({ serverName: HISTORY_MCP_SERVER_NAME, startingMessage: "History is starting",
-    policyAliases: Object.freeze({ History: historyPolicyAliases(scopes) }),
+    historyScopes: Object.freeze(Object.fromEntries(["said", "tools", "runs"].map(scope => [scope, scopes.includes(scope as HistoryScope)]))) as unknown as HistoryToolAvailability,
     createServer: ({ request, runId }) => createHistoryServer({ reader, artifactDir: options.artifactDir, scopes,
       conversationId: request.conversationId, logicalConversationId: toolHistoryLogicalConversationId(request.conversationId, scopeRollovers.said),
       toolsLogicalConversationId: toolHistoryLogicalConversationId(request.conversationId, scopeRollovers.tools), runId,

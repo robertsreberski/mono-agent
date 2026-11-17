@@ -20,7 +20,7 @@ interface RequestScopedMcpEndpointOptions {
   readonly createServer: (input: Parameters<RuntimeOptionsExtension>[0]) => McpServer;
   readonly onUnavailable?: (error: unknown) => void;
   /** Frozen per-request policy aliases, shared with runtime advertising. */
-  readonly policyAliases?: Readonly<Record<string, readonly string[]>>;
+  readonly historyScopes?: Readonly<{ said: boolean; tools: boolean; runs: boolean }>;
   /** Optional code-only refusal before SDK input diagnostics; advertised schemas stay strict. */
   readonly toolCallError?: (tool: string, args: unknown) => string | undefined;
   /** Test seam for simulating loopback startup failure. */
@@ -42,7 +42,7 @@ export function createRequestScopedMcpRuntimeExtension(options: RequestScopedMcp
         ...(options.listen === undefined ? {} : { listen: options.listen }),
       });
       return {
-        runtimeOptions: { mcpServers: { [options.serverName]: appOwnedMcpServerSpec(options.serverName, { type: "http", url: endpoint.url }, options.policyAliases) } },
+        runtimeOptions: { mcpServers: { [options.serverName]: appOwnedMcpServerSpec(options.serverName, { type: "http", url: endpoint.url }, options.historyScopes) } },
         cleanup: endpoint.close,
       };
     } catch (error) {
@@ -72,10 +72,8 @@ export function requestScopedNestedResult(
   aliases: readonly string[],
   value: unknown,
   omission = REQUEST_SCOPED_MCP_NESTED_RESULT_OMISSION,
-  unifiedHistory = false,
 ): unknown {
-  return (unifiedHistory && (toolName === "History" || toolName === "mcp__mono-agent-history__History"))
-    || aliases.some((alias) => toolName === alias || toolName.endsWith(`__${alias}`))
+  return aliases.some((alias) => toolName === alias || toolName.endsWith(`__${alias}`))
     ? omission
     : value;
 }
@@ -93,7 +91,7 @@ export function splitRequestScopedModelText(
   }));
 }
 
-/** Unsigned cursor, matching RunHistory: structure + binding digest provide validation. */
+/** Unsigned cursor, matching History runs: structure + binding digest provide validation. */
 export function encodeRequestScopedCursor(value: Readonly<Record<string, unknown>>): string {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 }

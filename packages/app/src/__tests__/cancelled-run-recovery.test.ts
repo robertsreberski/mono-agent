@@ -1,3 +1,4 @@
+import { scopedCall } from "./fixtures/history-scopes.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,15 +10,13 @@ import { createJsonlRunRecorder, type RuntimeEventLike } from "@mono-agent/obser
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  createRunHistoryRuntimeExtension,
-  RUN_HISTORY_MCP_SERVER_NAME,
-  RUN_HISTORY_TOOL_NAME,
-} from "../request-tools/run-history.js";
+  createRunsHistoryExtension,
+  HISTORY_MCP_SERVER_NAME,
+  HISTORY_TOOL_NAME,
+} from "./fixtures/history-scopes.js";
 import {
-  createSessionHistoryRuntimeExtension,
-  SESSION_HISTORY_MCP_SERVER_NAME,
-  SESSION_HISTORY_TOOL_NAME,
-} from "../request-tools/session-history.js";
+  createToolsHistoryExtension,
+} from "./fixtures/history-scopes.js";
 
 const tempDirs: string[] = [];
 
@@ -246,7 +245,7 @@ describe("cancelled run recovery contract", () => {
     }, "current-call", "success", "current evidence");
     await writer.close();
 
-    const extension = await createRunHistoryRuntimeExtension({ artifactDir, rollover: "daily" })({
+    const extension = await createRunsHistoryExtension({ artifactDir, rollover: "daily" })({
       runId: currentRunId,
       request: {
         conversationId,
@@ -256,9 +255,9 @@ describe("cancelled run recovery contract", () => {
       context: {} as never,
     });
     const servers = extension.runtimeOptions?.mcpServers as Record<string, unknown> | undefined;
-    const spec = servers?.[RUN_HISTORY_MCP_SERVER_NAME] as { readonly url?: string } | undefined;
+    const spec = servers?.[HISTORY_MCP_SERVER_NAME] as { readonly url?: string } | undefined;
     if (spec?.url === undefined) throw new Error("RunHistory MCP server was not registered.");
-    const sessionExtension = await createSessionHistoryRuntimeExtension({ historyRoot, rollover: "daily" })({
+    const sessionExtension = await createToolsHistoryExtension({ historyRoot, rollover: "daily" })({
       runId: currentRunId,
       request: {
         conversationId,
@@ -268,14 +267,14 @@ describe("cancelled run recovery contract", () => {
       context: {} as never,
     });
     const sessionServers = sessionExtension.runtimeOptions?.mcpServers as Record<string, unknown> | undefined;
-    const sessionSpec = sessionServers?.[SESSION_HISTORY_MCP_SERVER_NAME] as { readonly url?: string } | undefined;
+    const sessionSpec = sessionServers?.[HISTORY_MCP_SERVER_NAME] as { readonly url?: string } | undefined;
     if (sessionSpec?.url === undefined) throw new Error("SessionHistory MCP server was not registered.");
     const client = new Client({ name: "cancelled-recovery-run-test", version: "1.0.0" });
     const sessionClient = new Client({ name: "cancelled-recovery-session-test", version: "1.0.0" });
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
       await sessionClient.connect(new StreamableHTTPClientTransport(new URL(sessionSpec.url)) as never);
-      const listedResult = await client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} });
+      const listedResult = await scopedCall(client, "runs", { name: HISTORY_TOOL_NAME, arguments: {} });
       const listed = structured<{
         readonly runs: ReadonlyArray<{ readonly runId: string; readonly status: string }>;
         readonly navigation: {
@@ -286,8 +285,8 @@ describe("cancelled run recovery contract", () => {
       const candidateIndex = listed.runs.findIndex((run) => run.status === "cancelled");
       expect(candidateIndex).toBe(0);
 
-      const overviewResult = await client.callTool({
-        name: RUN_HISTORY_TOOL_NAME,
+      const overviewResult = await scopedCall(client, "runs", {
+        name: HISTORY_TOOL_NAME,
         arguments: listed.navigation.nextActions[candidateIndex]!.arguments,
       });
       const overview = structured<{
@@ -314,7 +313,7 @@ describe("cancelled run recovery contract", () => {
       });
       expect(overview).not.toHaveProperty("finalOutput");
       expect(overview.navigation.relatedTools[0]).toMatchObject({
-        tool: "SessionHistory",
+        tool: "History",
         arguments: { action: "search", runIds: [cancelledRunId], includeIsolated: true },
       });
       expect(overview.navigation.relatedTools[0]!.arguments).not.toHaveProperty("states");
@@ -327,8 +326,8 @@ describe("cancelled run recovery contract", () => {
       const timeline: unknown[] = [];
       let pages = 0;
       while (cursor !== undefined) {
-        const pageResult = await client.callTool({
-          name: RUN_HISTORY_TOOL_NAME,
+        const pageResult = await scopedCall(client, "runs", {
+          name: HISTORY_TOOL_NAME,
           arguments: { runId: cancelledRunId, cursor },
         });
         const page = structured<{
@@ -341,15 +340,15 @@ describe("cancelled run recovery contract", () => {
         timeline.push(...page.timeline);
         expect(page.page.hasMore).toBe(page.nextCursor !== undefined);
         if (page.nextCursor !== undefined) {
-          expect(page.navigation.nextActions[0]?.arguments).toEqual({ runId: cancelledRunId, cursor: page.nextCursor });
+          expect(page.navigation.nextActions[0]?.arguments).toEqual({ scope: "runs", action: "get", runId: cancelledRunId, cursor: page.nextCursor });
         }
         cursor = page.nextCursor;
       }
       expect(pages).toBeGreaterThan(1);
       expect(JSON.stringify(timeline)).toContain(instructionText);
 
-      const sessionSearchResult = await sessionClient.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
+      const sessionSearchResult = await scopedCall(sessionClient, "tools", {
+        name: HISTORY_TOOL_NAME,
         arguments: overview.navigation.relatedTools[0]!.arguments,
       });
       const sessionSearch = structured<{
@@ -387,8 +386,8 @@ describe("cancelled run recovery contract", () => {
         action.kind === "get_result" && action.arguments.recordId === pendingItem?.resultRecordId);
       const pendingResult = structured<{
         readonly record: { readonly failureKind?: string; readonly detailCode?: string; readonly chunk: string };
-      }>(await sessionClient.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
+      }>(await scopedCall(sessionClient, "tools", {
+        name: HISTORY_TOOL_NAME,
         arguments: pendingResultAction!.arguments,
       }));
       expect(pendingResult.record).toMatchObject({
@@ -425,8 +424,8 @@ describe("cancelled run recovery contract", () => {
 
         const invocationGet = structured<{
           readonly record: { readonly runId: string; readonly phase: string; readonly chunk: string };
-        }>(await sessionClient.callTool({
-          name: SESSION_HISTORY_TOOL_NAME,
+        }>(await scopedCall(sessionClient, "tools", {
+          name: HISTORY_TOOL_NAME,
           arguments: invocationAction!.arguments,
         }));
         expect(invocationGet.record).toMatchObject({ runId: cancelledRunId, phase: "invocation" });
@@ -452,7 +451,7 @@ describe("cancelled run recovery contract", () => {
                 readonly arguments: Readonly<Record<string, unknown>>;
               }>;
             };
-          }>(await sessionClient.callTool({ name: SESSION_HISTORY_TOOL_NAME, arguments: getArguments }));
+          }>(await scopedCall(sessionClient, "tools", { name: HISTORY_TOOL_NAME, arguments: getArguments }));
           resultPages += 1;
           resultPayload += resultGet.record.chunk;
           expect(resultGet.record).toMatchObject({ runId: cancelledRunId, phase: "result", state: item.state });
@@ -464,6 +463,7 @@ describe("cancelled run recovery contract", () => {
           expect(resultGet.navigation.nextActions).toEqual([expect.objectContaining({
             kind: "next_get_chunk",
             arguments: {
+              scope: "tools",
               action: "get",
               cursor: resultGet.record.nextCursor,
               includeIsolated: true,
@@ -486,8 +486,8 @@ describe("cancelled run recovery contract", () => {
         const unavailable = structured<{
           readonly items: readonly unknown[];
           readonly navigation: { readonly guidance: string; readonly nextActions: readonly unknown[] };
-        }>(await sessionClient.callTool({
-          name: SESSION_HISTORY_TOOL_NAME,
+        }>(await scopedCall(sessionClient, "tools", {
+          name: HISTORY_TOOL_NAME,
           arguments: { action: "search", runIds: [runId], includeIsolated: true },
         }));
         expect(unavailable.items).toEqual([]);

@@ -237,7 +237,7 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
       expect(tools.tools[0]?.description).toMatch(/one short, specific topic per query.*several times for several topics/iu);
       expect(tools.tools[0]?.description).toMatch(/owner's name unless asking about the owner.*Weak or merely related hits are not answers/iu);
       expect(tools.tools[0]?.description).toMatch(/Do not use MemoryRecall.*current or last message/iu);
-      expect(tools.tools[0]?.description).toMatch(/pick up, continue, or recover interrupted work.*RunHistory with \{\} first/iu);
+      expect(tools.tools[0]?.description).toMatch(/pick up, continue, or recover interrupted work.*History with \{scope:"runs"\} first/iu);
       expect(tools.tools[0]?.description).not.toMatch(/original.*automatic lookup/iu);
       expect(tools.tools[0]?.inputSchema).toMatchObject({
         type: "object",
@@ -320,11 +320,11 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
         };
       };
       expect(result.content[0]?.text).toMatch(/No memories matched/u);
-      expect(result.content[0]?.text).toMatch(/RunHistory with \{\} first/u);
+      expect(result.content[0]?.text).toContain('History with {scope:"runs"} first');
       expect(result.structuredContent?.hits).toEqual([]);
       expect(result.structuredContent?.navigation?.relatedTools).toEqual([expect.objectContaining({
-        tool: "RunHistory",
-        arguments: {},
+        tool: "History",
+        arguments: { scope: "runs" },
       })]);
     } finally {
       await client.close();

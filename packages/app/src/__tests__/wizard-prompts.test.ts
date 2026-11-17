@@ -231,9 +231,7 @@ describe("wizard prompt builders", () => {
     expect(values).not.toContain("AskParent");
     expect(values.slice(0, parentBuiltins.length)).toEqual(parentBuiltins);
     expect(values.slice(parentBuiltins.length)).toEqual([
-      "RunHistory",
-      "SessionHistory",
-      "ConversationHistory",
+      "History",
       "SetConversationTitle",
       "SuggestReplies",
       "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule",
@@ -248,9 +246,7 @@ describe("wizard prompt builders", () => {
     expect(ask?.hint).toContain("web, Slack, or Telegram");
     const send = options.find((option) => option.value === "TelegramSendMessage");
     expect(send?.hint).toBe("proactive send (Telegram)");
-    expect(options.find((option) => option.value === "RunHistory")?.hint).toContain("prior runs");
-    expect(options.find((option) => option.value === "SessionHistory")?.hint).toContain("tool calls");
-    expect(options.find((option) => option.value === "ConversationHistory")?.hint).toContain("default on");
+    expect(options.find((option) => option.value === "History")?.hint).toContain("default on");
     expect(options.find((option) => option.value === "SetConversationTitle")?.hint).toContain("web conversations");
     expect(options.find((option) => option.value === "MemoryJournal")?.hint).toContain("calendar-date range");
     expect(options.find((option) => option.value === "Remember")?.hint).toContain("durably save");

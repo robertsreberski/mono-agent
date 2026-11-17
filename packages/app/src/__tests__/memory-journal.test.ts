@@ -1,3 +1,4 @@
+import { createHistoryServer } from "../request-tools/history.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,9 +24,6 @@ import {
   type MemoryJournalCapableStore,
 } from "../memory/memory-journal.js";
 import { createMemoryRecallServer } from "../memory/memory-recall.js";
-import { createRunHistoryServer } from "../request-tools/run-history.js";
-import { createConversationHistoryServer } from "../request-tools/conversation-history.js";
-import { createSessionHistoryServer } from "../request-tools/session-history.js";
 
 function memoryRecord(id: string, over: Partial<MemoryRecord> = {}): MemoryRecord {
   return {
@@ -464,18 +462,18 @@ describe("MemoryJournal capability, policy, and routing separation", () => {
     await recallClient.connect(recallClientTransport);
     const journalConnection = await connectJournal(journal);
     const historyDir = await mkdtemp(join(tmpdir(), "memory-journal-routing-"));
-    const runHistory = createRunHistoryServer({
+    const runHistory = createHistoryServer({ reader: new ToolHistoryReader(historyDir), logicalConversationId: "web:fixture", scopes: ["runs"],
       artifactDir: historyDir,
       conversationId: "web:thread",
       runId: "current",
     });
-    const sessionHistory = createSessionHistoryServer({
+    const sessionHistory = createHistoryServer({ artifactDir: historyDir, scopes: ["tools"],
       reader: new ToolHistoryReader(historyDir),
       conversationId: "web:thread",
       logicalConversationId: "web:thread",
       runId: "current",
     });
-    const conversationHistory = createConversationHistoryServer({ reader: new ToolHistoryReader(historyDir),
+    const conversationHistory = createHistoryServer({ artifactDir: historyDir, scopes: ["said"], reader: new ToolHistoryReader(historyDir),
       conversationId: "web:thread", logicalConversationId: "web:thread", runId: "current" });
     const conversationClient = new Client({ name: "routing-conversation", version: "1.0.0" });
     const [conversationClientTransport, conversationServerTransport] = InMemoryTransport.createLinkedPair();
@@ -510,16 +508,11 @@ describe("MemoryJournal capability, policy, and routing separation", () => {
       const runDescription = (await runClient.listTools()).tools[0]!.description!;
       const sessionDescription = (await sessionClient.listTools()).tools[0]!.description!;
       expect(recallDescription).toMatch(/broad retrospective.*MemoryJournal/iu);
-      expect(recallDescription).toMatch(/RunHistory with \{\} first/iu);
-      expect(runDescription).toMatch(/exact execution evidence/iu);
-      expect(runDescription).toMatch(/MemoryJournal.*broad retrospective/iu);
-      expect(sessionDescription).toMatch(/exact tool-lifecycle evidence/iu);
-      expect(sessionDescription).toMatch(/not a broad chronological journal summary/iu);
-      expect((await journalConnection.client.listTools()).tools[0]!.description).toContain("ConversationHistory");
-      const conversationDescription = (await conversationClient.listTools()).tools[0]!.description!;
-      expect(conversationDescription).toContain("portable-summary");
-      expect(conversationDescription).toContain("Generated summaries");
-      expect(conversationDescription).toContain("SessionHistory keeps its prior-run");
+      expect(recallDescription).toContain('History with {scope:"runs"} first');
+      expect(runDescription).toContain('scope runs: how prior runs ended');
+      expect(sessionDescription).toContain('scope tools: exact prior tool calls and results');
+      expect((await conversationClient.listTools()).tools[0]!.description!).toContain('scope said: earlier user/assistant text');
+
     } finally {
       await Promise.all([
         recallClient.close(),
@@ -585,26 +578,26 @@ describe("MemoryJournal capability, policy, and routing separation", () => {
 });
 
 
-it("changes memory recovery guidance only in unified mode, never stored evidence", async () => {
+it("uses native History recovery guidance without changing stored evidence", async () => {
   const outputs: string[] = [];
-  for (const unifiedHistory of [undefined, false, true]) {
-    const recall = createMemoryRecallServer({ recall: async () => [], close: async () => {} }, { ...(unifiedHistory === undefined ? {} : { unifiedHistory }) });
+  for (const attempt of [1, 2]) {
+    const recall = createMemoryRecallServer({ recall: async () => [], close: async () => {} });
     const client = new Client({ name: "fictional-routing", version: "1" });
     const [a, b] = InMemoryTransport.createLinkedPair(); await recall.connect(a); await client.connect(b);
     const evidence = "Fictional journal quote names ConversationHistory verbatim.";
-    const journal = await connectJournal(fakeJournalStore([memoryRecord("fixture", { text: evidence })]), { runId: "fictional", ...(unifiedHistory === undefined ? {} : { unifiedHistory }) });
+    const journal = await connectJournal(fakeJournalStore([memoryRecord("fixture", { text: evidence })]), { runId: "fictional" });
     try {
       const list = await client.listTools(), result = await client.callTool({ name: "MemoryRecall", arguments: { query: "fictional" } });
       const journalList = await journal.client.listTools();
       const journalResult = await journal.client.callTool({ name: "MemoryJournal", arguments: firstPageArguments() });
       outputs.push(JSON.stringify({ list, result, journalList }));
       const descriptions = [list.tools[0]!.description, journalList.tools[0]!.description].join("\n");
-      if (unifiedHistory) {
+      {
         expect(descriptions).not.toMatch(/ConversationHistory|SessionHistory|RunHistory/u);
         expect(descriptions).toContain('History with {scope:"runs"}');
         expect(result.structuredContent).toMatchObject({ navigation: { relatedTools: [{ tool: "History", arguments: { scope: "runs" } }] } });
         expect(journalResult.content).toEqual(expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining(evidence) })]));
-      } else expect(descriptions).toContain("RunHistory");
+      }
     } finally { await client.close(); await recall.close(); await journal.close(); }
   }
   expect(outputs[0]).toBe(outputs[1]);
