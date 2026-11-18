@@ -1,4 +1,4 @@
-import { manualCompactionDiagnostic } from "@mono-agent/contracts";
+import { compactionMarkerDiagnostic } from "./conversation-markers.js";
 import { parseCredentialSnapshot, parseCredentialSaved, type CredentialSaveRequest, type CredentialRequest } from "@mono-agent/channel-operator/client";
 import { parseCapabilityActionsSnapshot, parseCapabilityActionPreview, parseCapabilityActionSaved, MAX_CAPABILITY_ACTION_BYTES, type CapabilityActionInput, type CapabilityActionSaveInput } from "@mono-agent/channel-operator/client";
 import { parseCapabilitySetupSnapshot, MAX_CAPABILITY_SETUP_BYTES, type CapabilitySetupSnapshot } from "@mono-agent/channel-operator/client";
@@ -715,7 +715,7 @@ export class OperatorClient {
     return {
       ...(isAgentCompactionAccounting(body.accounting) ? { accounting: body.accounting } : {}),
       status: body.status as AgentManualCompactionResult["status"], trigger: "manual", operationId: body.operationId,
-      ...(body.reason !== undefined || body.status === "failed" ? manualCompactionDiagnostic(body) : {}),
+      ...compactionMarkerDiagnostic({ status: body.status, reason: body.reason, httpStatus: body.httpStatus }),
       ...(typeof body.tokensBefore === "number" ? { tokensBefore: body.tokensBefore } : {}),
       ...(typeof body.tokensAfter === "number" ? { tokensAfter: body.tokensAfter } : {}),
       tokenCountsExact: body.tokenCountsExact === true,

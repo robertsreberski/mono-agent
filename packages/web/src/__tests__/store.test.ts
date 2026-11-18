@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   MAX_AGENT_REPLY_PARTS,
+  manualCompactionReasons,
   type AgentReplyPart,
   type AgentStreamWireFrame,
   type ProcessJobProjection,
@@ -30,6 +31,7 @@ import {
   diffParts,
   type StoredTurnFinish,
 } from "../store.js";
+import { compactionFailureDetail, compactionReasonLabels } from "../../webapp/src/manual-compaction.js";
 // Exercise the actual turn selector and store together, without a provider or
 // a substitute runtime. This source import intentionally adds no public API.
 import { finalReplyText } from "../../../turn/src/execution/pi/reply-text.js";
@@ -2335,13 +2337,82 @@ describe("WebStore", () => {
     store.recordManualCompaction(thread.id, { status: "failed", trigger: "manual", operationId: "unknown-reason", reason: "synthetic-provider-detail" as never });
     const markers = store.getThreadDetail(thread.id)?.messages.filter((m) => m.role === "system" && m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction");
     expect(markers).toHaveLength(3);
-    expect(markers?.find((m) => m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction" && m.parts[0].operationId === "unknown-reason")?.parts[0]).toMatchObject({ reason: "provider_error" });
+    expect(markers?.find((m) => m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction" && m.parts[0].operationId === "unknown-reason")?.parts[0]).not.toHaveProperty("reason");
     expect(JSON.stringify(store.getThreadDetail(thread.id))).not.toContain("synthetic-provider-detail");
     const next = store.beginTurn({ threadId: thread.id, text: "follow up", attachmentIds: [] });
     expect(store.conversationMarkersForTurn(next.turnId)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "compaction", operationId: "c1" })]));
     expect(JSON.stringify(store.getThreadDetail(thread.id)?.messages.find((m) => m.id === id)?.parts)).toContain('"status":"succeeded"');
     expect(store.getThreadDetail(other.id)?.messages).toEqual([]);
     store.close();
+  });
+
+  it("round-trips every allow-listed compaction reason from the store to the webapp detail", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "Fictional inventory check", attachmentIds: [] });
+      for (const reason of [...manualCompactionReasons, "unknown_future_code"]) {
+        store.applyStreamFrames(turn.turnId, [{ kind: "event", event: { type: "runtime_telemetry", kind: "context_compaction",
+          data: { operationId: reason === "unknown_future_code" ? "fictional-future" : reason, status: "failed",
+            trigger: "proactive", reason, message: "Fictional unsafe provider text", httpStatus: reason === "rate_limited" ? 429 : "unsafe" } } }]);
+      }
+      store.completeTurn(turn.turnId, "Done");
+      for (const reason of manualCompactionReasons) {
+        store.recordManualCompaction(thread.id, { status: "failed", trigger: "manual", operationId: `manual-${reason}`, reason });
+      }
+      const messages = store.getThreadDetail(thread.id, { limit: 100 })!.messages;
+      const markers = messages.flatMap(message => message.parts)
+        .filter(part => part.type === "conversation-marker" && part.kind === "compaction");
+      expect(markers).toHaveLength(manualCompactionReasons.length * 2 + 1);
+      for (const marker of markers) {
+        if (marker.operationId === "fictional-future") {
+          expect(marker).not.toHaveProperty("reason");
+          expect(marker).not.toHaveProperty("httpStatus");
+          expect(compactionFailureDetail(marker)).toBeUndefined();
+        } else {
+          const reason = marker.operationId.replace(/^manual-/, "") as (typeof manualCompactionReasons)[number];
+          expect(marker.reason).toBe(reason);
+          const label = compactionReasonLabels[reason];
+          expect(label).toBeTruthy();
+          if (marker.trigger === "automatic" && reason === "rate_limited") {
+            expect(marker.httpStatus).toBe(429);
+            expect(compactionFailureDetail(marker)).toBe("Provider rate limit reached (HTTP 429).");
+          } else {
+            expect(compactionFailureDetail(marker)).toBe(label);
+            expect(marker).not.toHaveProperty("httpStatus");
+          }
+        }
+      }
+      expect(JSON.stringify(messages)).not.toMatch(/unknown_future_code|Fictional unsafe provider text/);
+    } finally { store.close(); }
+  });
+
+  it("hides unpaid automatic no-ops and their inline running rows, but keeps paid skips and refusals", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "Fictional inventory check", attachmentIds: [] });
+      const apply = (operationId: string, status: string, reason?: string, accounting?: unknown) => store.applyStreamFrames(turn.turnId, [{
+        kind: "event", event: { type: "runtime_telemetry", kind: "context_compaction", data: { operationId, status, trigger: "proactive", reason, accounting } },
+      }]);
+      apply("fictional-unpaid", "running");
+      expect(JSON.stringify(store.getThreadDetail(thread.id))).toContain("fictional-unpaid");
+      apply("fictional-unpaid", "skipped", "nothing_to_compact", { requests: [] });
+      apply("fictional-guard", "skipped", "below_trigger");
+      apply("fictional-paid", "skipped", "nothing_to_compact", { requests: [{ providerInvoked: true }] });
+      apply("fictional-refused", "skipped", "protected_tuples_missing");
+      const detail = store.getThreadDetail(thread.id)!;
+      const markers = detail.messages.flatMap(message => message.parts)
+        .filter(part => part.type === "conversation-marker" && part.kind === "compaction");
+      expect(markers.map(marker => marker.operationId)).toEqual(["fictional-paid", "fictional-refused"]);
+      expect(JSON.stringify(detail)).not.toMatch(/fictional-unpaid|fictional-guard/);
+    } finally { store.close(); }
   });
 
   it("persists additive session boundary facts as opaque telemetry across reopen", async () => {

@@ -734,6 +734,12 @@ confirm an outcome it persists a failed-status marker explicitly labeled
 failure is labeled failed. Failure markers include an allow-listed reason (for
 example, provider overloaded, cancelled, authentication, or insufficient summary
 headroom) and the HTTP status when available, never provider error prose.
+Automatic markers also explain known skips, such as a recent failed attempt or
+a historical preservation refusal. An unrecognized reason leaves a neutral
+skipped or failed marker with no diagnostic. Benign automatic skips that did
+not invoke a provider (for example, nothing to compact) do not add transcript
+markers; manual outcomes and actionable automatic failures or refusals remain
+visible.
 Scheduled **Compact conversation first** uses the same diagnostics. The explicit
 15-minute deadline, not the HTTP client's shorter idle-header timer, bounds the
 request. Neither marker is an in-progress state.
