@@ -249,8 +249,9 @@ it("preserves runs evidence blocks byte-for-byte in list, search, overview and t
     const legacy = await handleRunsHistoryRequest(f.binding, input);
     const unified = await handleHistoryRequest(f.binding, { scope: "runs", ...input });
     expect(unified.content.slice(1)).toEqual(legacy.content.slice(1));
-    const { navigation: _old, ...oldEvidence } = body(legacy);
-    const { navigation: _new, scope: _scope, ...newEvidence } = body(unified);
+    const { navigation: _old, action: oldAction, ...oldEvidence } = body(legacy);
+    const { navigation: _new, action: newAction, scope: _scope, ...newEvidence } = body(unified);
+    expect(newAction).toBe(oldAction === "inspect" ? "get" : "search");
     expect(newEvidence).toEqual(oldEvidence);
   }
 });
@@ -281,9 +282,10 @@ it("keeps said/tools record bytes identical through multi-block scoped envelopes
     const scopedBody = decode(unified);
     expect(unified.content.length, `${scope}: ${JSON.stringify(scopedBody).length} envelope chars`).toBeGreaterThan(2);
     expect(unified.content.every(block => block.text.length <= 10000)).toBe(true);
-    expect(scope === "said" ? scopedBody.chunk : scopedBody.record.chunk).toBe(scope === "said" ? body(legacy).chunk : body(legacy).record.chunk);
-    const { scope: _scope, navigation: _new, ...newEvidence } = scopedBody;
+    expect(scopedBody).toEqual(unified.structuredContent);
+    const { scope: actualScope, navigation: _new, ...newEvidence } = scopedBody;
     const { navigation: _old, ...oldEvidence } = body(legacy);
+    expect(actualScope).toBe(scope);
     expect(JSON.stringify(newEvidence)).toBe(JSON.stringify(oldEvidence));
   }
 });

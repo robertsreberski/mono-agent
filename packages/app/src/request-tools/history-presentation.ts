@@ -39,7 +39,7 @@ export function presentHistoryResult(result: Result, presentation: HistoryPresen
   const navigation = { guidance: old?.guidance ?? String((body.error as { message?: string } | undefined)?.message ?? "Read-only historical evidence."),
     ...(old?.nextPage === undefined ? {} : { nextPage: args(old.nextPage) }), nextActions: actions,
     ...(scope === "runs" && scopes.includes("tools") && old?.relatedTools?.length ? { relatedTools: (old?.relatedTools ?? []).map(related => ({tool: "History", description: related.description, arguments: {scope: "tools", ...related.arguments}})) } : {}) };
-  const structuredContent = { ...body, scope, navigation };
+  const structuredContent = { ...body, ...(scope === "runs" ? { action: body.action === "inspect" ? "get" : "search" } : {}), scope, navigation };
   const header = [`History navigation (scope: ${scope}; tool-authored guidance):`,
     ...(scope === "said" && body.notice !== undefined ? [String(body.notice)] : []), navigation.guidance,
     ...(navigation.nextPage === undefined ? [] : [`Next search page: ${JSON.stringify(navigation.nextPage)}`]),
