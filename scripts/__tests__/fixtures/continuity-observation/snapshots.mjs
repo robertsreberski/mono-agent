@@ -9,7 +9,7 @@ export const telemetry = (kind, data) => ({ type: "telemetry", event: "runtime_t
 export const boundary = () => telemetry("session_boundary", { kind: "resume_replay", reason: "model_change", context: "reconstructed", conversationId: CANARY, timestamp: at(1), providerSessionId: CANARY });
 export const compaction = () => telemetry("context_compaction", { operationId: CANARY, status: "succeeded", trigger: "proactive", tokensBefore: 90000, tokensAfter: 14000, model: CANARY });
 export const pack = () => telemetry("continuity_pack_injected", { reason: CANARY, ownerEntries: 2, toolEntries: 1, summaryEntries: 1, evidenceEntries: 0, omittedCount: 3, tokens: 700, degradedReason: "none", text: CANARY });
-export const tool = (overrides = {}) => ({ type: "tool-call", toolCallId: `${CANARY}_call`, toolName: "History", args: { action: "search", query: CANARY }, status: "complete", result: CANARY,
+export const tool = (overrides = {}) => ({ type: "tool-call", toolCallId: `${CANARY}_call`, toolName: "History", args: { scope: "said", action: "search", query: CANARY }, status: "complete", result: CANARY,
   structuredResult: { status: "available", items: [{ text: CANARY, recordId: CANARY }], notice: CANARY }, history: { persistence: "persisted", terminalState: "success", untrusted: true, recordId: CANARY }, ...overrides });
 export function fixture(dir, { parts, statuses = [], count = 4, telemetryCoverage = "complete", soul = "default", closure = "target", strata, sidecar = false, journal = false } = {}) {
   const web = join(dir, "snapshot.sqlite"), db = new DatabaseSync(web);

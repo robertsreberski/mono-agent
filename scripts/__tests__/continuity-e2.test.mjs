@@ -259,7 +259,7 @@ it.each([["faux-short", undefined], ["faux-max", "unified"], ["faux-short", "uni
   for (const row of retrievalRows) {
     expect(row.slotId).toBe("offline-sizing"); expect(row.itemOrdinal).toBe(1);
     expect([1, 2]).toContain(row.repeat); expect(row.requestOrdinal).toBeGreaterThan(0);
-    expect(JSON.parse(row.arguments.text)).toEqual({ ...(historySurface === "unified" ? { scope: "said" } : {}), action: "search", query: "retained", limit: 1 });
+    expect(JSON.parse(row.arguments.text)).toEqual({ scope: "said", action: "search", query: "retained", limit: 1 });
     if (row.phase === "response") expect(row.response.text).toContain('"action":"search"');
   }
   expect(JSON.stringify(report)).not.toContain("probe-receipt");
