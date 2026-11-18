@@ -216,7 +216,7 @@ it.each([128, 1600])("runtime bypasses shrink and refuses proactive loss at B=%s
     expect(result).toEqual({ cancel: true });
     expect(hook.getDecision()).toMatchObject({ kind: "summary_refused" });
   }
-  expect(completeSimple).toHaveBeenCalledTimes(1);
+  expect(completeSimple).toHaveBeenCalledTimes(B === 128 ? 1 : 2);
   expect(entries).toEqual(before);
   if (B === 128) return;
   const events: any[] = [], warnings: any[] = [];
@@ -417,3 +417,59 @@ it("dispatches the protected split prefix at its 1024-token floor after history 
   expect(p.preservation).toMatchObject({ missingTupleCount: 0, refusalReason: null });
   expect(plan.budget.fits(result.value!.summary)).toBe(true);
 });
+
+it.each(["after prefix", "before prefix", "before prefix but still over budget"])(
+  "uses at most one history-only condensation %s for a protected 12k split summary", async stage => {
+    const limit = 12000;
+    const p = prep({ previousSummary: history, settings: { reserveTokens: piSummaryReserveTokens(limit, true), summaryMaxTokens: limit },
+      isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "Fictional turn-prefix transcript", timestamp: 1 }] });
+    const wrap = createSummaryBudget(limit, estimateTokens).estimate;
+    const size = stage === "after prefix" ? 10128 : 11000;
+    const text = `${history}\n\n## Critical Context\n`;
+    const draft = text + "x".repeat(size * 4 - text.length);
+    // Same history allocation and remaining space as the overrun shape. The
+    // ordinary 1024-token prefix can be valid in isolation but exceed the 892 left.
+    const file = "/fictional/inventory";
+    const base = `${"x".repeat(10128 * 4)}${SPLIT_SUMMARY_SEPARATOR}\n\n<read-files>\n${file}\n</read-files>`;
+    p.fileOps.read.add(file + "x".repeat(4 * (limit - 892 - wrap(base))));
+    const plan = planSummaryBudget(p, estimateTokens);
+    const prefix = "## Context for Suffix\n" + "y".repeat(stage.endsWith("over budget") ? 48000 : 4000);
+    const condensed = `${history}\n\n## Critical Context\n- Keep the fictional inventory reference.`;
+    expect(plan.targets.history).toBe(5763);
+    expect(plan.budget.fits(draft + plan.separator + prefix + plan.metadata)).toBe(false);
+    const selected = { ...model, reasoning: true, provider: "openai-codex", api: "openai-codex-responses", id: "fictional-summary", contextWindow: 1_000_000 };
+    const requests: any[] = [];
+    const initial = response(draft);
+    initial.usage.output = 9779;
+    initial.usage.totalTokens = 9780;
+    const completeSimple = vi.fn().mockResolvedValueOnce(initial);
+    const recovery = response(condensed);
+    recovery.usage.input = 10500;
+    recovery.usage.output = 280;
+    recovery.usage.totalTokens = 10780;
+    recovery.usage.cost.total = 0.0952;
+    if (stage === "after prefix") completeSimple.mockResolvedValueOnce(response(prefix)).mockResolvedValueOnce(recovery);
+    else completeSimple.mockResolvedValueOnce(recovery).mockResolvedValueOnce(response(prefix));
+    const facade = summaryModels({ completeSimple }, { operationId: "fictional-overrun", effort: "low", focus: "", requests, minimumAnswerTokens: plan.minimumAnswerTokens });
+    const result = await compactWithRequest(p, { model: selected,
+      recoverHistory: (recoveryReason, context, options) => summaryModels({ completeSimple }, { operationId: "fictional-overrun", effort: "none", focus: "", requests, recoveryReason })
+        .completeSimple(selected, context, options) }, (context: any, options: any) => facade.completeSimple(selected, context, options), {});
+    expect(completeSimple).toHaveBeenCalledTimes(3);
+    expect(requests[0]).toMatchObject({ status: "succeeded", textTargetTokens: 5763, providerMaxTokens: 8645, generatedSummaryTokens: size, output: 9779 });
+    const index = stage === "after prefix" ? 2 : 1;
+    expect(requests[index]).toMatchObject({ status: "succeeded", requestOrdinal: index + 1, providerInvoked: true, recoveryReason: "summary_budget_exceeded", input: 10500, output: 280, costUsd: 0.0952 });
+    const [, context, options] = completeSimple.mock.calls[index]!;
+    expect(context.messages[0].content).toContain(JSON.stringify(draft));
+    expect(context.messages[0].content).not.toContain("Fictional update");
+    expect(context.messages[0].content).not.toContain("Fictional turn-prefix transcript");
+    expect(options.maxTokens).toBeLessThanOrEqual(5763);
+    if (stage.endsWith("over budget")) {
+      expect(result).toMatchObject({ ok: false, error: { code: "summary_refused" } });
+      expect(p.preservation.refusalReason).toBe("summary_budget_exceeded");
+    } else {
+      expect(result.value?.summary).toBe(condensed + plan.separator + prefix + plan.metadata);
+      expect(result.value?.usage).toMatchObject({ input: 10502, output: 10061, cost: { total: 0.0952 } });
+      expect(plan.budget.fits(result.value!.summary)).toBe(true);
+    }
+  },
+);

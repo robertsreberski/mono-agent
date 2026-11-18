@@ -84,8 +84,15 @@ Cold reseed carriage admits an authenticated predecessor as input; it is not
 an output repair. The public
 `compact`/`compactWithRequest` helpers can return `CompactionError.code` equal to
 `summary_refused` for a lossy/oversized/truncated protected candidate. Native
-proactive/threshold cuts refuse without changing history or poisoning the provider
-failure cooldown. Threshold retries retain assistant-progress/growth vetoes.
+proactive/threshold cuts can try one bounded revision of a newly generated warm
+history draft if it omits protected tuples or crowds out the split prefix. The
+revision sees only the draft and any missing tuple occurrences, never the
+transcript. The same exact-tuple and composed-size checks apply before the host
+uses the provider's replacement. Cold authenticated admission, inherited-prefix
+recovery, manual/overflow, and preservation bypass do not use this path. If the
+candidate still fails validation, the cut refuses without changing history or
+poisoning the provider failure cooldown. Threshold retries retain
+assistant-progress/growth vetoes.
 Idle and mid-run proactive share a paid-refusal baseline, requiring
 `max(8192, ceil(previousTokens * 0.1))` transcript growth or changed protected
 blocks/model or preservation-affecting summary policy (`summaryMaxTokens`,
@@ -108,7 +115,9 @@ manual compaction can recover from automatic refusal.
 Content-free `accounting.preservation` diagnostics (present only for protected or
 unavailable history) record sizes/counts, missing tuples, refusal/bypass reason and
 final-summary size separately from provider usage, cost and
-`generatedSummaryTokens`, which account for the bounded truncation retry. Recovered
+`generatedSummaryTokens`, which account for the bounded truncation retry or
+revision. A revision has its own request row with the triggering `recoveryReason`.
+Codex receives visible-size guidance, not an enforced wire output limit. Recovered
 cuts keep native `usage` defined: known parts are summed, with `usage.partial: true`
 when any part is missing. Numeric subtotals are not complete billing:
 `accounting.requests` rows retain nullable cost/usage fields such as `costUsd`.

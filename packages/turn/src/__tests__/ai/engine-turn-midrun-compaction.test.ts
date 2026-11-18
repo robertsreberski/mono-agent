@@ -528,21 +528,21 @@ describe("mid-run compaction guards", () => {
     fixture.setTranscript(growingTranscript(2));
     for (let attempt = 1; attempt <= 3; attempt++) {
       expect(await fixture.checkpoint()).toEqual({ cancel: true });
-      expect(fixture.summaryRequests()).toBe(1);
+      expect(fixture.summaryRequests()).toBe(2);
       expect(fixture.events.at(-1)).toMatchObject({ status: "skipped", reason: "protected_tuples_missing" });
       expect(fixture.runState.compaction.applied).toBe(false);
     }
     expect(fixture.recorded).toHaveLength(0);
     fixture.append(assistantMessage("Small progress."));
     await fixture.checkpoint();
-    expect(fixture.summaryRequests()).toBe(1);
+    expect(fixture.summaryRequests()).toBe(2);
     fixture.append(assistantMessage("x".repeat(8000))); // 2,000 tokens pass the local veto, not the shared growth step.
     await fixture.checkpoint();
-    expect(fixture.summaryRequests()).toBe(1);
+    expect(fixture.summaryRequests()).toBe(2);
     expect(fixture.events.at(-1)).toMatchObject({ reason: "preservation_growth_required" });
     fixture.append(assistantMessage("x".repeat(40000)));
     await fixture.checkpoint();
-    expect(fixture.summaryRequests()).toBe(2);
+    expect(fixture.summaryRequests()).toBe(4);
     await fixture.controller.disarm();
   });
 

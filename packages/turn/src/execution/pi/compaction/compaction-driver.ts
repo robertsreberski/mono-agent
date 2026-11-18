@@ -6,7 +6,7 @@ import { classifyCompactionFailure } from "./manual-failure.js";
 // runtime owns triggers, fixed overhead, savings and one overflow-recovery attempt.
 // Mid-run compaction reuses these guards at completed model/tool boundaries.
 
-import { createHistorySummaryContext, createPrefixSummaryContext, calculateContextTokens, compact as compactPreparedContext, estimateProjectedContextTokens, estimateTokens, getLastAssistantUsage, prepareCompaction, shouldCompact } from "../../../engine/compaction-kit/compaction.js";
+import { createHistorySummaryContext, createPrefixSummaryContext, calculateContextTokens, compact as compactPreparedContext, estimateProjectedContextTokens, estimateTokens, getLastAssistantUsage, prepareCompaction, shouldCompact, type RecoverHistorySummary } from "../../../engine/compaction-kit/compaction.js";
 import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "../../../engine/context.js";
 import { planSummaryBudget, planSummaryProtection } from "../../../engine/compaction-kit/historical-preservation.js";
 import { assembleSummaryContext, prepareSummaryInput, prepareSummaryRequest, summaryModels } from "./compaction-summary.js";
@@ -286,6 +286,7 @@ export function createGuardedCompactionHook({
   runtimeWarnings = null,
   beforeAttempt = null,
   beforeSummary = null,
+  abortSignal = undefined,
 }: any) {
   let decision: { kind: string; reason?: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; retainedTailLength?: number; compaction?: any; error?: any; diagnostic?: AgentManualCompactionDiagnostic; warn?: boolean; retryAfterMs?: number; growthRequiredTokens?: number; } | null = null;
   const handler = async (event: any): Promise<{ cancel?: boolean; compaction?: any; retainedAuthorityUsed?: boolean }> => {
@@ -418,9 +419,21 @@ export function createGuardedCompactionHook({
           return { cancel: true };
         }
       }
+      // The authenticated cold-admission protocol binds the original request
+      // and split receipts. Only warm proactive cuts may purchase a revision.
+      const warmProactive = trigger === "proactive" && !preservationFallback && !event.retainedPredecessor
+        && summaryBudget.protecting;
+      const model = harness.getModel();
+      const { abortSignal: engineSignal, ...summaryContext } = event.context || BACKGROUND_CONTEXT;
+      const signals: AbortSignal[] = [...new Set<AbortSignal>([engineSignal, event.signal, abortSignal].filter(Boolean))];
+      const requestContext = { ...summaryContext, abortSignal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] };
+      const recoverHistory: RecoverHistorySummary | undefined = warmProactive ? (reason, context, options) =>
+        summaryModels(harness.models, { operationId, focus: "", requests: accounting.requests, recoveryReason: reason, effort: "none" })
+          .completeSimple(model, context, options) : undefined;
       const compacted = await compactPreparedContext(
         input.preparation,
         summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests, effort: effectivePolicy.effort,
+          guideVisibleSize: warmProactive,
           onDiagnostic: (diagnostic) => { summaryDiagnostic = diagnostic; },
           // Manual work shares the host response budget, not an SDK's shorter default.
           ...(trigger === "manual" ? { timeoutMs: 15 * 60_000 } : {}),
@@ -429,12 +442,13 @@ export function createGuardedCompactionHook({
           minimumAnswerTokens: summaryBudget.minimumAnswerTokens,
           unprotected: { preservation: input.preparation.preservation, targets: [summaryBudget.generateHistory ? summaryBudget.originalHistory : summaryBudget.originalPrefix, summaryBudget.originalPrefix],
             minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, prepared.value.isSplitTurn ? summaryBudget.originalPrefix : summaryBudget.originalHistory) } }),
-        harness.getModel(),
+        model,
         event.customInstructions,
-        summaryThinkingLevel(harness.getModel(), effectivePolicy.effort),
+        summaryThinkingLevel(model, effectivePolicy.effort),
         undefined,
         undefined,
-        event.context || BACKGROUND_CONTEXT,
+        requestContext,
+        recoverHistory,
       );
       if (compacted.ok === false) {
         decision = { kind: compacted.error.code === "summary_refused" ? "summary_refused" : accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", reason: accounting.preservation?.refusalReason, error: compacted.error, ...(summaryDiagnostic ? { diagnostic: summaryDiagnostic } : {}) };
@@ -644,6 +658,7 @@ export async function tryCompact(harness: any, {
   session,
   policy,
   fixedOverheadTokens = null,
+  abortSignal,
 }: {
     trigger: any;
     onEvent: any;
@@ -655,6 +670,7 @@ export async function tryCompact(harness: any, {
     session?: any;
     policy?: any;
     fixedOverheadTokens?: any;
+    abortSignal?: AbortSignal | undefined;
 }) {
   const operationId = randomUUID();
   const started = performance.now();
@@ -697,6 +713,7 @@ export async function tryCompact(harness: any, {
       accounting,
       runtimeWarnings,
       fixedOverheadTokens,
+      abortSignal,
     });
     readDecision = guarded.getDecision;
     removeHook = harness.on("session_before_compact", guarded.handler);
@@ -945,6 +962,7 @@ export async function runProactiveCompaction(runState: any, {
         model: reference,
         session: runState.session,
         policy,
+        abortSignal: options.abortSignal,
         fixedOverheadTokens: fixedOverhead.fixedOverheadTokens,
       });
       Object.assign(runState.compaction.diagnostics, {

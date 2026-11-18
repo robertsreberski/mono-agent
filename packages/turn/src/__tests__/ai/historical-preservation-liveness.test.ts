@@ -58,7 +58,7 @@ async function fixture(summary = history, inherited = false, admitted: boolean |
     on: (_type: string, handler: any) => driver.hooks.on("before_compaction", handler), compact: () => driver.compact(), prompt: vi.fn((text: string) => driver.prompt(text)) };
   const events: any[] = [], warnings: any[] = [];
   const policy = { enabled: true, summaryMaxTokens: 1000, keepRecentTokens: 1000, compactionMinSavingsTokens: 0, effort: "none", failureCooldownMs: 900000 };
-  const compact = (trigger: string) => tryCompact(harness, { trigger, onEvent: (event: any) => events.push(event), runtimeWarnings: warnings, session, policy });
+  const compact = (trigger: string, abortSignal?: AbortSignal) => tryCompact(harness, { trigger, abortSignal, onEvent: (event: any) => events.push(event), runtimeWarnings: warnings, session, policy });
   const grow = async () => { for (let i = 0; i < 2; i++) await raw.appendMessage({ role: "user", content: "Fictional context. ".repeat(2000), timestamp: 2 }); };
   return { root, raw, session, harness, driver, faux, completeSimple, events, warnings, policy, compact, grow, access,
     close: async () => { await driver.close(); await raw.close(); await repo.close(); await rm(root, { recursive: true, force: true }); } };
@@ -86,7 +86,7 @@ it("a real journal/driver refusal never suppresses reactive overflow: bypass, co
     await f.grow();
     expect((await f.compact("proactive")).applied).toBe(false);
     expect(f.events.at(-1)).toMatchObject({ status: "skipped", reason: "protected_tuples_missing" });
-    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
     const before = await f.raw.getEntries();
     expect(before.filter((entry: any) => entry.type === "compaction")).toHaveLength(1);
     const runState = { session: f.session, sessionBaselineCount: 0, compaction: { policy: f.policy, diagnostics: {}, applied: false, compactedThisRun: false, reactiveAttempted: false } };
@@ -94,7 +94,7 @@ it("a real journal/driver refusal never suppresses reactive overflow: bypass, co
       promptText: "Continue fictional work.", reference: "faux:liveness", onEvent: (event: any) => f.events.push(event), runtimeWarnings: f.warnings,
       state: { stopReason: "error" }, runError: new Error("context length exceeded"), captureState: async () => ({ stopReason: "stop" }) });
     expect(result.runError).toBeNull();
-    expect(f.completeSimple).toHaveBeenCalledTimes(2); // one refused attempt + one legacy-count recovery request
+    expect(f.completeSimple).toHaveBeenCalledTimes(3); // history + failed correction, then one legacy-count overflow request
     expect(f.harness.prompt).toHaveBeenCalledTimes(1);
     expect(f.warnings).toContainEqual(expect.objectContaining({ warning_kind: "historical_preservation_bypassed", reason: "protected_tuples_missing" }));
     expect(f.events.some(event => event.reason === "recent_identical_failure")).toBe(false);
@@ -145,16 +145,16 @@ it("idle proactive pays once per growth step, but changed protected history perm
   try {
     await f.grow();
     for (let attempt = 0; attempt < 3; attempt++) expect((await f.compact("proactive")).applied).toBe(false);
-    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
     expect(f.events.at(-1).reason).toBe("preservation_growth_required");
     await f.grow();
     expect((await f.compact("proactive")).applied).toBe(false);
-    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect(f.completeSimple).toHaveBeenCalledTimes(4);
     await f.raw.appendCompaction({ summary: history.replace(tuple, `${tuple} Changed event.`), tokensBefore: 10000,
       retainedTail: (await f.session.buildContext()).messages?.filter((message: any) => ["user", "assistant"].includes(message.role)), details: { readFiles: [], modifiedFiles: [] } });
     await f.raw.appendMessage({ role: "user", content: "Fictional changed summary delta.", timestamp: 3 });
     expect((await f.compact("proactive")).applied).toBe(false);
-    expect(f.completeSimple).toHaveBeenCalledTimes(3);
+    expect(f.completeSimple).toHaveBeenCalledTimes(6);
   } finally { await f.close(); }
 });
 it.each(["", "(none)", "- (none)", "None", "- None"])("healthy zero-tuple section %s adds no warning/accounting key", async placeholder => {
@@ -211,10 +211,10 @@ it("a changed split prefix cannot repay an idle refusal below the shared growth 
     expect((await f.compact("proactive")).applied).toBe(false);
     await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "x".repeat(5000) }], timestamp: 3 });
     expect((await f.compact("proactive")).applied).toBe(false);
-    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
     expect(f.events.at(-1).reason).toBe("preservation_growth_required");
     await f.compact("proactive");
-    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
   } finally { await f.close(); }
 });
 it("successful manual recovery clears the idle refusal baseline even with unchanged protected tuples", async () => {
@@ -226,7 +226,7 @@ it("successful manual recovery clears the idle refusal baseline even with unchan
     expect((await f.compact("manual")).applied).toBe(true);
     await f.raw.appendMessage({ role: "user", content: "x".repeat(8000), timestamp: 3 });
     expect((await f.compact("proactive")).applied).toBe(false);
-    expect(f.completeSimple).toHaveBeenCalledTimes(3);
+    expect(f.completeSimple).toHaveBeenCalledTimes(5);
     expect(f.events.at(-1).reason).toBe("protected_tuples_missing");
   } finally { await f.close(); }
 });
@@ -270,24 +270,24 @@ it("shares a single paid refusal across idle, threshold checkpoints and new run 
     f.faux.setResponses(Array.from({ length: 4 }, () => fauxAssistantMessage([fauxText("Fictional continuation.")])));
     await f.grow();
     expect((await f.compact("proactive")).applied).toBe(false);
-    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
     expect(await controller.arm()).toBe(true);
     const unchanged = await f.driver.prompt("Continue fictional work.");
     expect(unchanged.status).toBe("completed");
     expect(f.events.at(-1)).toMatchObject({ reason: "preservation_growth_required", accounting: { midRun: true } });
-    expect(f.completeSimple).toHaveBeenCalledTimes(1); // fixed overhead is not new transcript growth
+    expect(f.completeSimple).toHaveBeenCalledTimes(2); // fixed overhead is not new transcript growth
     await controller.disarm();
     controller = arm(); // a fresh turn/controller cannot repay the idle refusal
     expect(await controller.arm()).toBe(true);
     await f.driver.prompt("Continue unchanged fictional work.");
-    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
     await f.raw.appendMessage({ role: "user", content: "Fictional growth. ".repeat(4000), timestamp: 4 });
     await f.driver.prompt("Continue after meaningful growth.");
-    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect(f.completeSimple).toHaveBeenCalledTimes(4);
     expect(f.events.at(-1)).toMatchObject({ reason: "protected_tuples_missing", accounting: { midRun: true, splitTurn: false } });
     await controller.disarm();
     await f.compact("proactive"); // threshold refusal also suppresses the next idle check
-    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect(f.completeSimple).toHaveBeenCalledTimes(4);
     expect(f.events.at(-1).reason).toBe("preservation_growth_required");
     expect((await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction")).toHaveLength(1);
   } finally { await controller.disarm(); await f.close(); }
@@ -317,7 +317,7 @@ it("bounds split-cut refusals across idle and advancing mid-run tool steps by sh
     await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "b".repeat(2400) }], timestamp: 4 });
     expect((await f.compact("proactive")).applied).toBe(false);
     expect(f.events.at(-1)).toMatchObject({ reason: "protected_tuples_missing", accounting: { splitTurn: true } });
-    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
     const baseline = cuts[0]!.tokens, growth = Math.max(8192, Math.ceil(baseline * 0.1));
     expect(growth).toBe(8192);
     f.faux.setResponses(Array.from({ length: 8 }, (_, index) => () => {
@@ -336,7 +336,7 @@ it("bounds split-cut refusals across idle and advancing mid-run tool steps by sh
     expect(new Set(cuts.map(cut => cut.firstKeptId)).size).toBe(cuts.length);
     expect(cuts.every(cut => typeof cut.firstKeptId === "string")).toBe(true);
     expect(new Set(cuts.map(cut => cut.prefix)).size).toBe(cuts.length);
-    expect(observed.map(row => row.calls)).toEqual([1, 1, 1, 1, 1, 1, 2, 2]);
+    expect(observed.map(row => row.calls)).toEqual([2, 2, 2, 2, 2, 2, 4, 4]);
     for (const row of observed.slice(0, 6)) expect(row.tokens - baseline).toBeLessThan(growth);
     for (let index = 1; index < observed.length; index++) {
       const added = observed[index]!.tokens - observed[index - 1]!.tokens;
@@ -349,7 +349,7 @@ it("bounds split-cut refusals across idle and advancing mid-run tool steps by sh
     expect(f.events.filter(event => event.accounting?.midRun && event.status === "skipped").every(event => event.accounting.splitTurn)).toBe(true);
     await controller.disarm();
     await f.compact("proactive"); // growth-paid threshold refusal also gates idle, despite a changed prefix
-    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect(f.completeSimple).toHaveBeenCalledTimes(4);
     expect(f.events.at(-1).reason).toBe("preservation_growth_required");
     expect((await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction")).toHaveLength(1);
   } finally { await controller.disarm(); unobserve(); await f.close(); }
@@ -655,4 +655,58 @@ it("keeps the whole carry when only the dispatch frame-only input fallback fits"
     expect(low.warnings).not.toContainEqual(expect.objectContaining({ warning_kind: "retained_summary_legacy_fallback" }));
     expect((await low.raw.getEntries()).at(-1).checkpoint.retainedSummaryCoverage.admissionId).toBe(low.raw.validator.retainedSummaryAdmission.id);
   } finally { await high.close(); await low.close(); }
+});
+
+it("corrects a missing occurrence with one summary-only request and commits the exact provider revision", async () => {
+  const predecessor = history.replace(tuple, `${tuple}\n${tuple}\n- Fictional independent event.`);
+  const draft = history.replace(tuple, `${tuple}\n- Fictional independent event.`);
+  const revised = `${predecessor}\n\n## Next Steps\n- Finish fictional review.`;
+  const f = await fixture(predecessor);
+  try {
+    await f.grow();
+    f.completeSimple.mockResolvedValueOnce(answer(draft)).mockResolvedValueOnce(answer(revised));
+    expect((await f.compact("proactive")).applied).toBe(true);
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    const [, context, options] = f.completeSimple.mock.calls[1]!;
+    const contents = context.messages[0].content;
+    expect(contents).toContain(JSON.stringify(draft));
+    expect(contents).toContain(protectedHistoricalInput([tuple]));
+    expect(contents).not.toContain("Fictional context.");
+    expect(context.tools ?? []).toEqual([]);
+    expect(options).toMatchObject({ maxRetries: 0, transport: "sse", cacheRetention: "none" });
+    expect(f.events.at(-1)).toMatchObject({ status: "succeeded", accounting: { requests: [
+      { requestOrdinal: 1, providerInvoked: true, status: "succeeded", output: 1 },
+      { requestOrdinal: 2, providerInvoked: true, status: "succeeded", recoveryReason: "protected_tuples_missing", output: 1 },
+    ], preservation: { missingTupleCount: 0, bypassReason: null, hostCarriedBytes: 0 } } });
+    const usage = createCompactionUsage();
+    usage.observe(f.events.at(-1));
+    expect(usage.slice()).toMatchObject({ input_tokens: 2, output_tokens: 2, cost_usd: 0 });
+    const checkpoints = (await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction");
+    expect(checkpoints).toHaveLength(2);
+    expect(checkpoints.at(-1).summary).toBe(revised);
+  } finally { await f.close(); }
+});
+
+it.each(["oversized", "provider error", "abort before correction", "abort during correction"])("retains the original refusal on %s", async failure => {
+  const f = await fixture();
+  const abort = new AbortController();
+  try {
+    await f.grow();
+    f.completeSimple.mockImplementationOnce(async () => {
+      if (failure === "abort before correction") abort.abort();
+      return answer("Fictional omission.");
+    }).mockImplementationOnce(async (_model, _context, options) => {
+      if (failure === "provider error") throw new Error("Fictional provider error");
+      if (failure === "abort during correction") {
+        abort.abort();
+        expect(options.signal.aborted).toBe(true);
+      }
+      return answer(failure === "oversized" ? history + "\n## Next Steps\n" + "x".repeat(3999) : history);
+    });
+    expect((await f.compact("proactive", abort.signal)).applied).toBe(false);
+    expect(f.completeSimple).toHaveBeenCalledTimes(failure === "abort before correction" ? 1 : 2);
+    expect(f.events.at(-1)).toMatchObject({ status: "skipped", reason: "protected_tuples_missing",
+      accounting: { preservation: { missingTupleCount: 1, refusalReason: "protected_tuples_missing" } } });
+    expect((await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction")).toHaveLength(1);
+  } finally { await f.close(); }
 });
