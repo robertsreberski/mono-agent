@@ -1,11 +1,8 @@
 // @ts-check
 
-// pi 0.80 moved the static catalog reads off the pi-ai root (`getModel` is now
-// deprecated/compat-only). `getBuiltinModel(provider, id)` from `providers/all`
-// is the non-deprecated replacement with the same signature and the same
-// undefined-on-miss behavior the pricing lookup below relies on.
+// Share the runtime catalog, including temporary gaps, for resolution and pricing.
 import { calculateCost as calculatePiCost } from "@earendil-works/pi-ai";
-import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
+import { getPiCatalogModel as getPiModel } from "../providers/pi/supplement.js";
 
 function finiteOrNull(value: any): number | null {
   if (value == null || value === "") return null;
@@ -92,7 +89,7 @@ export function pricingHasRates(pricing: PricingInputRow | undefined = {}): bool
 }
 
 /**
- * Live pricing from pi-ai's builtin catalog (getBuiltinModel). The parsed
+ * Live pricing from the runtime-owned Pi catalog (upstream rows win). The parsed
  * provider is already the Pi catalog provider id; the model remains opaque and
  * may contain additional colons or slashes.
  */

@@ -1,9 +1,6 @@
-// pi 0.80 moved the static catalog reads off the pi-ai root: `getModel` is now
-// deprecated/compat-only. `getBuiltinModel(provider, id)` from `providers/all`
-// is the non-deprecated replacement — same 2-arg signature, and it returns
-// `undefined` on an unknown provider/model exactly like the old `getModel`.
+// Resolve built-in chat models through the runtime-owned temporary catalog supplement.
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
+import { getPiCatalogModel as getPiModel } from "./supplement.js";
 import { withContext1M } from "./context-1m.js";
 import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
 

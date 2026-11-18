@@ -5,10 +5,9 @@
 import {
   builtinModels,
   builtinProviders,
-  getBuiltinModel,
-  getBuiltinModels,
   getBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
+import { getPiCatalogModel, listPiCatalogModels } from "./supplement.js";
 import { getPiOAuthAuth, resolveOAuthApiKey, toAuthInteraction } from "./oauth-compat.js";
 import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./models.js";
 
@@ -111,22 +110,14 @@ function cloneInteropValue<T>(value: T): T {
  * Callers cannot mutate the upstream catalog's shared state.
  */
 export function listPiBuiltinModels(providerId: string): PiBuiltinModelSnapshot[] {
-  return (cloneInteropValue(
-    getBuiltinModels((providerId) as any),
-  ));
+  return listPiCatalogModels(providerId);
 }
 
 /**
  * Read a defensive snapshot of one Pi built-in chat model.
  */
 export function getPiBuiltinModel(providerId: string, modelId: string): PiBuiltinModelSnapshot | undefined {
-  const model = getBuiltinModel(
- (providerId) as any,
- (modelId) as any,
-  );
-  return model === undefined
-    ? undefined
-    : cloneInteropValue(model);
+  return getPiCatalogModel(providerId, modelId);
 }
 
 let builtinProviderLabels: Map<string, string> | undefined;

@@ -8,6 +8,10 @@ import { resolveAdvertisedModelEffortForBuiltin } from "../providers/model-effor
 
 describe("provider-model-catalog", () => {
   it.each([
+    ["openai", "gpt-6.2-sol", ["low", "medium", "high", "xhigh", "max"], 272_000],
+    ["openai", "gpt-6.2-astra", ["low", "medium", "high", "xhigh", "max"], 272_000],
+    ["openai-codex", "gpt-6.2-sol", ["minimal", "low", "medium", "high", "xhigh", "max"], 500_000],
+    ["openai-codex", "gpt-6.2-astra", ["minimal", "low", "medium", "high", "xhigh", "max"], 272_000],
     ["anthropic", "claude-fable-5-2", ["minimal", "low", "medium", "high", "xhigh", "max"], 1_000_000],
     ["anthropic", "claude-haiku-5-5", ["none", "low", "medium", "high", "xhigh", "max"], 1_000_000],
     ["openai-codex", "gpt-6.1-terra", ["none", "minimal", "low", "medium", "high", "xhigh", "max"], 500_000],
@@ -20,6 +24,7 @@ describe("provider-model-catalog", () => {
     expect(row).toMatchObject({ id, effortLevels, contextWindow, reasoning: true });
     const route = parseMonoRuntimeModelReference(reference);
     expect(catalog.describe([route])[reference]).toMatchObject({ effortLevels, contextWindow });
+    if (id.startsWith("gpt-6.2-")) expect(row?.supportsContext1M).toBe(true);
     if (provider === "anthropic") expect(row?.supportsContext1M).not.toBe(true); // Already native 1M, not GPT opt-in.
   });
   it("selects the cheapest bounded check model deterministically", () => {
