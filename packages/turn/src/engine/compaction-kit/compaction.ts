@@ -4,7 +4,7 @@ import { contentText, retryAssistantCall, uuidv7, } from "@earendil-works/pi-ai"
 import { createBranchSummaryMessage, createCompactionSummaryMessage } from "./messages.js";
 import { buildContextEntries, sessionEntryToContextMessages } from "./context.js";
 import { CompactionError, err, ok } from "./result.js";
-import { carryOmittedHistoricalTuples, historicalTuples, missingHistoricalTuples, planSummaryBudget, planSummaryProtection, protectedHistoricalInput, type PreservationDiagnostics } from "./historical-preservation.js";
+import { historicalTuples, missingHistoricalTuples, planSummaryBudget, planSummaryProtection, protectedHistoricalInput, type PreservationDiagnostics } from "./historical-preservation.js";
 import { addUsage, sumKnownSummaryUsage } from "./usage.js";
 import { createFileOps, extractFileOpsFromMessage, serializeSummaryConversation, } from "./utils.js";
 function safeJsonStringify(value: any) {
@@ -625,16 +625,6 @@ export async function compactWithRequest(preparation: any, options: any, request
       diagnostics.missingTupleCount = missingHistoricalTuples(tuples, text);
       return diagnostics.missingTupleCount ? "protected_tuples_missing" : !budget.fits(text) ? "summary_budget_exceeded" : null;
     };
-    const repair = (text: string, suffix: string, reserve = 0) => {
-      if (!protecting || diagnostics.bypassReason) return text;
-      const carry = carryOmittedHistoricalTuples(tuples, text);
-      if (!carry) return text;
-      const repaired = text + carry.suffix;
-      if (!budget.fits(repaired + suffix, reserve) || missingHistoricalTuples(tuples, repaired + suffix)) return text;
-      diagnostics.hostCarriedBytes = Buffer.byteLength(carry.suffix);
-      diagnostics.omittedProtectedTupleCount = carry.count;
-      return repaired;
-    };
     let historyText = reusedHistory;
     const protection = planSummaryProtection(plan, model, preparation.preservationFallback);
     if (protection.bypassReason) bypass(protection.bypassReason);
@@ -659,10 +649,11 @@ export async function compactWithRequest(preparation: any, options: any, request
       historyText = historyResult.value.text;
       summaryUsage = historyResult.value.usage;
     }
-    if (generateHistory) historyText = repair(historyText, separator + metadata, split ? budget.minimum : 0);
     let summary = historyText;
     if (split) {
-      // Reject a history that cannot yield an acceptable composition before buying a second request.
+      // Validate the provider history before buying a second request. Native
+      // summary bytes must remain reconstructible from the authenticated
+      // provider receipts and the existing split/file framing.
       const reason = validate(`${historyText}${separator}${metadata}`);
       const splitReason = reason ?? (protecting && !budget.fits(`${historyText}${separator}${metadata}`, budget.minimum) ? "summary_budget_exceeded" : null);
       if (splitReason) {

@@ -45,7 +45,7 @@ async function fixture(summary = history, inherited = false, admitted: boolean |
   const models = createModels(); models.setProvider(faux.provider);
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional run continued.")])]);
   const model = faux.getModel();
-  const completeSimple = vi.fn(async (..._args: any[]): Promise<any> => answer("## Historical events and corrections\n- Fictional permit; m1; resolved; prior approval."));
+  const completeSimple = vi.fn(async (..._args: any[]): Promise<any> => answer("Legacy lossy summary."));
   const driver = createRunDriver(raw, { model, models, systemPrompt: "Fictional rules.", tools: [], ...(access ? { retainedSummaryAccess: access } : {}), ...(inherited ? { inheritedProjection } : {}) });
   if (admitted) {
     await driver.beginTurn("fictional-admission", "host", { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", handleId: raw.metadata.id, turnId: "fictional-admission", baseRevision: 0 });
@@ -78,22 +78,6 @@ it("the real checkpoint scheduler ignores pre-cut usage in its retained tail", a
     expect((await f.driver.prompt("Continue the fictional permit review.")).status).toBe("completed");
     expect(beforeCompact).not.toHaveBeenCalled();
   } finally { remove(); await f.close(); }
-});
-
-it("commits a paid summary with only omitted historical details repaired from the predecessor", async () => {
-  const f = await fixture();
-  try {
-    await f.grow();
-    f.completeSimple.mockResolvedValueOnce(answer("## Goal\nContinue the fictional permit review."));
-    expect((await f.compact("proactive")).applied).toBe(true);
-    expect(f.completeSimple).toHaveBeenCalledTimes(1);
-    const last = (await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction").at(-1);
-    expect(last.summary).toContain("Continue the fictional permit review.");
-    expect(historicalTuples(last.summary)).toEqual([tuple]);
-    expect(f.events.at(-1)).toMatchObject({ status: "succeeded", accounting: { preservation: {
-      missingTupleCount: 0, omittedProtectedTupleCount: 1, hostCarriedBytes: expect.any(Number), protectionActive: true,
-    } } });
-  } finally { await f.close(); }
 });
 
 it("a real journal/driver refusal never suppresses reactive overflow: bypass, commit, and continue the run", async () => {

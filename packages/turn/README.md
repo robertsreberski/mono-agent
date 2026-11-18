@@ -77,11 +77,11 @@ warning; unclosed fences or unparsed non-placeholder history produce content-fre
 
 With protected tuples, complete-result estimates share `summaryMaxTokens` and the
 1-MiB record bound; provider text caps use an 85% margin. With zero tuples, legacy
-caps, output acceptance and the savings preview are unchanged. When only literal
-omissions are detected, the host carries missing predecessor blocks in the
-existing historical section format, without another request. The repaired result
-must parse with every protected occurrence and fit the same budget. A missing
-block alongside a novel one can be a rewrite, so that case is not repaired. The public
+caps, output acceptance and the savings preview are unchanged. The host does
+not append missing protected tuples to a provider reply: checkpoint lineage
+verifies the summary against the original reply bytes and existing framing.
+Cold reseed carriage admits an authenticated predecessor as input; it is not
+an output repair. The public
 `compact`/`compactWithRequest` helpers can return `CompactionError.code` equal to
 `summary_refused` for a lossy/oversized/truncated protected candidate. Native
 proactive/threshold cuts refuse without changing history or poisoning the provider
@@ -107,8 +107,7 @@ manual compaction can recover from automatic refusal.
 
 Content-free `accounting.preservation` diagnostics (present only for protected or
 unavailable history) record sizes/counts, missing tuples, refusal/bypass reason and
-host-carried bytes, recovered omission counts, and final-summary size separately
-from provider usage, cost and
+final-summary size separately from provider usage, cost and
 `generatedSummaryTokens`, which account for the bounded truncation retry. Recovered
 cuts keep native `usage` defined: known parts are summed, with `usage.partial: true`
 when any part is missing. Numeric subtotals are not complete billing:

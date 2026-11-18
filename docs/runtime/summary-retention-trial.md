@@ -57,16 +57,8 @@ any request (`protected_template_unfits`). If the protected input frame alone
 exhausts input headroom, it is removed before any provider call and legacy policy
 is rechecked (`protected_input_unfits`).
 
-Literal omissions can be carried from the predecessor in a separate historical
-section within the existing summary text, at no extra request cost. This is
-allowed only if the generated historical blocks are an exact submultiset of the
-predecessor, the output is parseable, and all protected occurrences round-trip
-within the same budget. An omitted tuple plus a novel one is ambiguous (it may
-be a rewrite), so the host does not repair that case.
-
-Unrepaired missing tuples, oversized protected output and protected
-`stopReason: "length"` make proactive/mid-run threshold cuts return
-`summary_refused`, retaining history
+Missing tuples, oversized protected output and protected `stopReason: "length"`
+make proactive/mid-run threshold cuts return `summary_refused`, retaining history
 without a provider-failure cooldown. Refusal is not permission to pay repeatedly:
 threshold cuts keep their existing fresh-assistant and meaningful-growth vetoes.
 Idle and mid-run proactive cuts also share one paid-refusal baseline: retries wait
@@ -105,9 +97,12 @@ remediation: raise `summaryMaxTokens` or start a new session to restore protecti
 Manual compaction can recover a refused automatic cut. `accounting.preservation`
 appears only for protected or unavailable history and records sizes/counts,
 missing counts, active protection, refusal/bypass reason and complete final-summary bytes/estimate
-(null before a complete candidate), plus bytes and the number of omitted tuples
-when a candidate uses host-carried history. No tuple eviction or new durable
-carrier is added. Provider request
+(null before a complete candidate). The host does not append missing tuples to
+a model reply. Authenticated lineage reconstructs the durable output from the
+verified replies, known split and file framing, and the admitted whole
+predecessor when a split reuses history. Reseed carriage instead admits
+predecessor bytes as input when they cannot be quoted in the seed; it does not
+repair summaries. Provider request
 usage/cost and `generatedSummaryTokens` include a truncated request and its bounded
 legacy retry. A recovered cut keeps a defined native `usage` object, summing
 known numeric parts with `usage.partial: true` when any part is missing. These

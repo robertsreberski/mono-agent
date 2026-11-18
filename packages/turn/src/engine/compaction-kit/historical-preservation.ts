@@ -111,37 +111,16 @@ export function createSummaryBudget(limit: number, estimateTokens: (message: any
     } };
 }
 
-function unmatchedTuples(expected: readonly string[], available: readonly string[]): string[] {
-  const remaining = new Map<string, number>();
-  for (const tuple of available) remaining.set(tupleKey(tuple), (remaining.get(tupleKey(tuple)) ?? 0) + 1);
-  return expected.filter(tuple => {
-    const count = remaining.get(tupleKey(tuple)) ?? 0;
-    if (count === 0) return true;
-    remaining.set(tupleKey(tuple), count - 1);
-    return false;
-  });
-}
-
 export function missingHistoricalTuples(protectedTuples: readonly string[], summary: string): number {
-  return unmatchedTuples(protectedTuples, historicalTuples(summary)).length;
-}
-
-/** Repair literal omissions only. A novel block alongside an omission might be
- * a rewrite, not a new event. Never bless that ambiguity by appending a copy.
- */
-export function carryOmittedHistoricalTuples(tuples: readonly string[], text: string) {
-  if (summaryProse(text) !== text) return null; // Appending would reclassify a provider-authored file suffix.
-  const parsed = parseHistoricalTuples(text);
-  if (parsed.protectionUnavailable || unmatchedTuples(parsed.tuples, tuples).length) return null;
-  const omitted = unmatchedTuples(tuples, parsed.tuples);
-  // A verbatim copy elsewhere is not a historical block; don't duplicate it.
-  const present = new Set(parsed.tuples.map(tupleKey));
-  if (!omitted.length || omitted.some(tuple => !present.has(tupleKey(tuple)) && text.includes(tuple))) return null;
-  const suffix = `\n\n## Historical events and corrections\n${omitted.join("\n")}`;
-  const expected = [...parsed.tuples, ...omitted];
-  const repaired = historicalTuples(text + suffix);
-  if (expected.length !== repaired.length || expected.some((tuple, i) => tupleKey(tuple) !== tupleKey(repaired[i]!))) return null;
-  return { suffix, count: omitted.length };
+  const remaining = new Map<string, number>();
+  for (const tuple of historicalTuples(summary)) remaining.set(tupleKey(tuple), (remaining.get(tupleKey(tuple)) ?? 0) + 1);
+  let missing = 0;
+  for (const tuple of protectedTuples) {
+    const count = remaining.get(tupleKey(tuple)) ?? 0;
+    if (count === 0) missing++;
+    else remaining.set(tupleKey(tuple), count - 1);
+  }
+  return missing;
 }
 
 interface SummaryBudgetPreparation {

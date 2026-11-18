@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-- Keep automatic compaction moving after oversized split summaries and safe
-  omissions of protected history. Give overflow recovery one attempt even
-  during a proactive cooldown, and show the actual reason for skipped or
-  failed compaction in the console without exposing provider text. Ignore stale
-  provider usage after a successful cut and hide unpaid automatic no-op markers.
+- Keep split-turn compaction from starving the turn-prefix request when the
+  history summary exceeds its target. Give overflow recovery one attempt even
+  during a proactive cooldown, and show the actual reason for skipped or failed
+  compaction in the console without exposing provider text. Ignore stale provider
+  usage after a successful cut and hide unpaid automatic no-op markers.
 
 - Add GPT-6.2 Sol and Astra on `openai` and `openai-codex` to model
   resolution, pickers, guided setup and validation, with long-input pricing
