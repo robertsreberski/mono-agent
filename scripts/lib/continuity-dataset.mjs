@@ -376,7 +376,7 @@ export function estimateCost(plan, traces, prices) {
           case "compaction-2": return { input: Math.ceil(t.serialized * 0.5) + 2000 + 4000 + OVERHEAD_TOKENS, output: 2000 + ANSWER_OUTPUT_TOKENS, cacheable: Math.ceil(t.serialized * 0.5) };
           case "ceiling": return { input: t.serialized + 10880 + 20000 + OVERHEAD_TOKENS, output: 10880 + ANSWER_OUTPUT_TOKENS, cacheable: t.serialized };
           case "restart-switch-compact": return { input: t.cold * 2, output: 2000 + ANSWER_OUTPUT_TOKENS, cacheable: t.cold };
-          // Store arms: the cold or compacted context plus up to two ConversationHistory rounds.
+          // Store arms: the cold or compacted context plus up to two History rounds.
           case "continuity-store": return { input: t.cold * 3 + 4000, output: 3 * ANSWER_OUTPUT_TOKENS, cacheable: t.cold * 3 };
           // Same retrieval allowance, plus a full 16k-ceiling pack on each request; no upkeep call.
           case "continuity-ledger-cold":

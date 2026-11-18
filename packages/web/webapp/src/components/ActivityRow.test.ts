@@ -11,7 +11,8 @@ describe("toolVerb", () => {
   it("de-underscores an unlisted tool instead of renaming it", () => {
     expect(toolVerb("inspect_workspace")).toBe("Inspect workspace");
     expect(toolVerb("Bash")).toBe("Bash");
-    expect(toolVerb("SessionHistory")).toBe("SessionHistory");
+    // Persisted old-name calls render as recorded, never aliased to the current tool.
+    for (const name of ["History", "ConversationHistory", "SessionHistory", "RunHistory"]) expect(toolVerb(name)).toBe(name);
   });
 });
 

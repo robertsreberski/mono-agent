@@ -258,7 +258,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
     answer = response.text ?? response.content ?? "";
     if (typeof answer !== "string") answer = JSON.stringify(answer);
     safe &&= !answer.includes(CANARY) && !answer.includes(FOREIGN);
-    // Separate post-boundary probes have ConversationHistory only, even on cancel.
+    // Separate post-boundary probes have History only, even on cancel.
     mode = "probe";
     for (const [ordinal, { prompt, required }] of PROBES.entries()) {
       probeOrdinal = ordinal;

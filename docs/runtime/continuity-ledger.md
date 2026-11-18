@@ -4,7 +4,7 @@ description: "Opt-in bounded boundary upkeep, derived evidence, source validatio
 ---
 
 The first ledger slice is **off by default**. Deterministic cold packs and retained
-`ConversationHistory` remain the normal path, with no extraction call.
+`History` remain the normal path, with no extraction call.
 
 Retained-history relevance discovery works with upkeep **on or off**; it does not
 purchase an extraction, infer correction authority, or replace summary retention.
@@ -561,7 +561,7 @@ once, separately from normal pending work. All metadata writes use the secure
 journal transaction and busy deadline. Close skips queued jobs and bounds the in-flight export wait to at
 most one second (less if the host's remaining close budget requires it), leaving
 durable work for recovery before releasing ownership.
-`RunHistory` inspection surfaces applicable degraded artifact warnings too.
+`History` inspection surfaces applicable degraded artifact warnings too.
 Artifact retention removes companions with their origin run; late exports never
 recreate pruned runs. Readers expose this as
 separate, explicitly non-aggregate `upkeepAccounting` evidence. Raw summary

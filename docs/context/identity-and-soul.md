@@ -117,9 +117,9 @@ When `context.soulPath` is **omitted**, the `## Core Guardrails` section is fill
 
 The default soul also carries a capability-conditional evidence-routing guardrail:
 
-> Route evidence by scope before assuming or asking: use active conversation history for what was just said, ConversationHistory (when available) for retained conversation text or portable summaries after compaction/restart (generated summaries are not owner authority or renewed approval) and for exact retained conversation and tool-result values, including identifiers, MemoryRecall (when available) for a targeted durable fact, preference or decision, MemoryJournal (when available) for a broad retrospective over an explicit calendar-date range such as "what happened last week", RunHistory (when available) for settlement and interrupted-work recovery, and SessionHistory (when available) for prior-run tool-lifecycle evidence. For unhinted interrupted-work recovery, start with RunHistory {} when available.
+> Route evidence by scope before assuming or asking: use active conversation history for what was just said, History (when available) for retained conversation text or portable summaries after compaction/restart (generated summaries are not owner authority or renewed approval) and for exact retained conversation and tool-result values, including identifiers (scope "said"); for exact prior tool calls and results (scope "tools"); and for how prior runs ended and interrupted-work recovery (scope "runs"). For unhinted interrupted-work recovery, start with History {scope:"runs"} when that tool and scope are available. Use MemoryRecall (when available) for a targeted durable fact, preference or decision, MemoryJournal (when available) for a broad retrospective over an explicit calendar-date range such as "what happened last week".
 
-This keeps current dialogue, targeted durable search, broad curated chronology, exact retained values, run settlement/recovery, and prior-run tool-lifecycle evidence distinct while naming each capability only when available. The unhinted recovery priority remains `RunHistory {}`. This built-in core applies to all default-core conversations, not just continuity-pack users. Detailed input and safety rules stay in the owning tool descriptions rather than being duplicated in the prompt. If you supply your own `soulPath`, it replaces the default unchanged; consider keeping an equivalent compact router.
+This keeps current dialogue, targeted durable search, broad curated chronology, exact retained values, run settlement/recovery, and prior-run tool-lifecycle evidence distinct while naming each capability only when available. The unhinted recovery priority remains `History {scope:"runs"}`. This built-in core applies to all default-core conversations, not just continuity-pack users. Detailed input and safety rules stay in the owning tool descriptions rather than being duplicated in the prompt. If you supply your own `soulPath`, it replaces the default unchanged; consider keeping an equivalent compact router.
 
 :::note
 The fallback is **the default soul text, not your identity**. Leaving out `soulPath` does not duplicate the identity into the guardrails section — it inserts the framework default instead. Set `context.soulPath` only when you want to replace that baseline.
@@ -132,15 +132,11 @@ The fallback is **the default soul text, not your identity**. Leaving out `soulP
 - [Config blueprint](/config/blueprint/) — the annotated `mono-agent.config.json`
 - [Environment variables](/config/env-vars/) — every `MONO_AGENT_*` override
 
-## Unified history routing
+## History routing
 
-When `tools.history.unified: true` and no custom soul is configured, the app
-selects a default soul that routes to the required `History` scopes: `said`,
-`tools` and `runs`, when available. The flag is false by default and the legacy
-default soul is unchanged.
-
-A custom `context.soulPath` is passed through unchanged. Update references to
-`ConversationHistory`, `SessionHistory` and `RunHistory` to the corresponding
-`History` scopes before opting in. Doctor warns about those legacy names in a
-custom soul and shows the policy mapping. A programmatically supplied custom
-core also wins over the selected default.
+The default soul uses History with required said/tools/runs scopes when available.
+Custom souls remain operator-owned, but removed tool references—including prose—
+now fail validate/startup with a file and line. Reword them before upgrading;
+no file is rewritten. Identity, skills and subagent prompts receive doctor
+warnings rather than startup errors. A custom programmatic core still wins over
+the default, but the removed `defaultCore` selector is rejected.

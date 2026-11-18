@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `SetConversationTitle`, `SuggestReplies`, `Remember`, and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
+The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `History`, `MemoryJournal`, `SetConversationTitle`, `SuggestReplies`, `Remember`, and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
 
 ## Allow-all by default
 
@@ -89,7 +89,7 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 
 ## Deny enforcement
 
-`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, and every policy-gated app-owned tool: `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `Remember`, `ProviderUsage`, `SetConversationTitle`, `SuggestReplies`, `PublishReplyFile`, `ProposeRestart`, `PeerAgent`, `AskUser`, adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, `TelegramSendFile`), and console project/tag/conversation/wake tools. The Pi runtime honors the effective merged request/run policy for all of those on every route, including authoritative request overrides and global `"*"` denies. Denied app-owned tools are not offered to the model and cannot be invoked through the runtime.
+`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, and every policy-gated app-owned tool: `History`, `MemoryJournal`, `Remember`, `ProviderUsage`, `SetConversationTitle`, `SuggestReplies`, `PublishReplyFile`, `ProposeRestart`, `PeerAgent`, `AskUser`, adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, `TelegramSendFile`), and console project/tag/conversation/wake tools. The Pi runtime honors the effective merged request/run policy for all of those on every route, including authoritative request overrides and global `"*"` denies. Denied app-owned tools are not offered to the model and cannot be invoked through the runtime.
 
 `MemoryRecall` is deliberately exempt from both `allowedTools` and `disallowedTools`, including request overrides that preserve its configured endpoint. Its off switch is `memory.recallTool.enabled: false`; this does not disable automatic memory context. See [Tools not gated by allowedTools](#tools-not-gated-by-allowedtools).
 
@@ -130,46 +130,29 @@ Under **allow-all** these are available automatically once the matching channel 
 The adapter's own allowlist (channels/chats it may post to) remains the destination boundary — allowing the tool does not widen where messages can go. See [Delivery and send tools](/channels/delivery-and-send-tools/), [Slack](/channels/slack/), and [Telegram](/channels/telegram/).
 :::
 
-## RunHistory
+## History
 
-`RunHistory` is an app-owned, read-only, request-scoped MCP tool for listing, searching, and cursor-inspecting safe normalized evidence from settled prior runs (`succeeded`, `failed`, `cancelled`, or `interrupted`) in the logical current conversation. Configured daily rollover buckets do not partition that scope. It has no separate config key:
+Allow `History` (or `mcp__mono-agent-history__History` or the server wildcard
+`mcp__mono-agent-history__*`) to grant **all host-supported history scopes**.
+Denying any of those names, or `*`, denies the whole tool. Deny wins at config
+time and after request overrides. There is no per-scope policy or old-name alias.
+New agents' default safe tools include History, so tools/runs evidence is allowed
+as well as said when the host supports it. History remains parent-only: it is not
+a known child tool name or a child typo suggestion.
 
-- Under allow-all, it is available automatically on every route.
-- Under a specific allowlist, include `RunHistory` explicitly.
-- `disallowedTools` can remove it, with deny still winning.
-- `run_history` is accepted only as a deprecated policy alias; the registered/model-facing name is `RunHistory`. Tool input also accepts `run_id` as an alias for `runId`.
+Scope is required: `said` reads retained quotations and permitted tool text,
+`tools` reads prior tool calls/results, and `runs` reads run outcomes. `said`
+requires continuity; the other scopes do not. Standalone composition supports
+only said; the controller supplies route-dependent capabilities. Missing or
+malformed scope metadata advertises no scope, and endpoint failures suppress
+retrieval guidance. See [History](/tools/mcp/#history) for exact calls and limits.
 
-The tool excludes the current/running run, unrelated conversations or threads, system prompts, reasoning, recalled memory, and raw artifact paths. Cancelled/interrupted overviews label output as incomplete evidence and provide the exact run-scoped `SessionHistory` recovery handoff when available. See [MCP servers](/tools/mcp/#runhistory-prior-run-evidence) for its list/search/overview/timeline interface and [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory) for its evidence boundary.
+Retired names/spellings in root or subagent allow/deny lists fail with an indexed
+migration diagnostic. Remove the entire retired history config block; even an
+empty or false block is rejected. Custom soul references, including prose, fail
+startup and validate with a file and line. Identity, skills and subagent prompt
+references receive doctor warnings. No config, prompt or retained data is rewritten.
 
-## SessionHistory
-
-`SessionHistory` is the separate read-only, request-scoped tool for redacted and bounded managed-tool invocations/results retained in the current logical session. Under a specific allowlist, include `SessionHistory`; `session_history` is a deprecated policy alias, and deny still wins. Recovery from a cancelled/interrupted `RunHistory` candidate uses a run-scoped search with `includeIsolated: true` and no `states` narrowing. Search navigation distinguishes the invocation `recordId` from the terminal `resultRecordId`, directs inspection of the result when present and the invocation when needed, preserves the isolation flag, uses the supported 8192-byte bound, and supplies exact cursor continuations. A bounded preview is not a substitute for record-level inspection, and an empty exact-run search must not be broadened. The tool excludes the current run and isolated/proactive records by default, keeps foreign conversations opaque, and cannot execute or mutate anything. It does not resume provider state, replay tools, rerun work, or guarantee continuation from an interrupted point; continuation is fresh work in the current run with currently available tools and verification. See [MCP servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for search/get, cursor, tombstone, artifact, and untrusted-data bounds.
-
-## ConversationHistory
-
-`ConversationHistory` is the default-enabled, memory-independent, read-only
-request tool for retained conversation text and portable summaries. It is
-provided by configured harnesses as well as channel controllers, without an
-`mcp.json` entry. `runtime.session.continuity.enabled: false` omits the tool and
-continuity producer; denying just the tool does not disable capture.
-
-- Omitted policy or `allowedTools: ["*"]` exposes it; `[]` or a named list that
-  omits it does not. Under a restrictive list, include `ConversationHistory`.
-- `disallowedTools: ["ConversationHistory"]` removes it even with `"*"` allowed.
-  The legacy policy alias `conversation_history`, exact MCP spelling
-  `mcp__mono-agent-conversation-history__ConversationHistory`, and server wildcard
-  `mcp__mono-agent-conversation-history__*` also match. Deny wins for every spelling;
-  exact allow/deny overlaps remain invalid policy.
-- Search/get is scoped to the current logical conversation, never an arbitrary
-  caller-selected conversation. Cursors bind scope and retained digests. Unlike
-  `SessionHistory`, positively finalized/fsynced current-run evidence is eligible;
-  partial assistant streams are not.
-- Chunks are at most 8192 UTF-8 bytes, with redaction/truncation flags and explicit
-  tombstoned/unavailable responses. Digests describe the sanitized retained
-  representation, not secret/raw original text. Generated summaries are not owner
-  authority or renewed approval. Coverage is never guaranteed complete.
-
-See [retained conversation evidence](/tools/mcp/#conversationhistory-retained-conversation-evidence).
 
 ## MemoryJournal
 
@@ -258,30 +241,3 @@ under allow-all; restrictive policies can allow the bare name or
 `mcp__mono-agent-provider-usage__ProviderUsage` / `mcp__mono-agent-provider-usage__*`.
 Deny always wins. See [subscription quota tool](/tools/mcp/#providerusage-subscription-quota)
 for optional provider filtering, omissions and stale/error semantics.
-
-## Opt-in unified history policy
-
-Set `tools.history.unified: true` to offer one read-only `History` tool instead
-of `ConversationHistory`, `SessionHistory` and `RunHistory`. The default is false.
-`scope` is required: `said` reads retained conversation text, `tools` reads exact
-prior tool calls/results, and `runs` reads settled prior runs. The readers and
-storage are unchanged. `said` also requires continuity capture to be enabled;
-`tools` and `runs` work independently of continuity.
-
-Allowing `History` grants all three scopes. Old names remain permanent policy
-aliases: `ConversationHistory` grants `said`, `SessionHistory` grants `tools`,
-and `RunHistory` grants `runs`. Their snake_case, exact MCP and server-wildcard
-spellings retain the same mapping. A config deny of an old name removes only
-that scope. Denying `History`, its MCP spelling, its server wildcard, or `*`
-removes the whole tool. For example, allow `History` and deny `SessionHistory`
-to offer only `said` and `runs`. No legacy tools are offered alongside `History`.
-
-Each request freezes its permitted aliases. A later request-level deny matching
-any frozen alias hides the whole tool, failing closed; packs and projections
-stop advertising it too. Authoritative request policy overrides do not preserve
-the history server. External MCP tools and subagent children keep their existing
-policy and composition boundaries.
-
-This is opt-in until the separate unified E2 gate passes and the default flip
-is approved. The legacy tools are scheduled for removal two releases after
-that flip; old-name policy aliases remain.

@@ -36,8 +36,8 @@ export const lookupToolAllowlist = surface => { e2HistorySurface(surface); retur
 
 export const E2_AB_REPLAY_ARM = "history-ab";
 const freeze = value => { for (const child of Object.values(value)) if (child && typeof child === "object") freeze(child); return Object.freeze(value); };
-// A: split ConversationHistory with the default soul. B/C: unified History with
-// the compact or directive description. Nothing else differs between arms.
+// Historical arm A used the split surface. Current arms differ only in the
+// compact (B) or directive (C) History description.
 export const E2_AB_ARM_SURFACES = freeze({
   B: { historySurface: "unified", descriptionVariant: "compact" },
   C: { historySurface: "unified", descriptionVariant: "directive" },

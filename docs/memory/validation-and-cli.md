@@ -699,7 +699,7 @@ for an existing local agent, with one backend-specific branch in step 6.
    explicit period such as `What did we work on from 2026-09-01 through 2026-09-07 in
    CET?` to exercise `MemoryJournal`; treat its answer as a curated summary.
    Ask for exact commands/results or interrupted recovery separately and require
-   `RunHistory`/`SessionHistory`. These observations are provider behavior checks; prompt
+   `History`/`History`. These observations are provider behavior checks; prompt
    string tests alone do not prove autonomous routing.
 
 The strict audit deliberately includes live runtime telemetry. While the agent is stopped it reports

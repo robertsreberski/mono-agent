@@ -209,8 +209,9 @@ export function continuityStats(modules, work) {
     retainedBytes: continuity.retainedBytes, degraded: continuity.degraded === true, coverageGaps: continuity.coverageGaps };
 }
 
+// Historical observations may retain namespace-qualified split-era names.
 const HISTORY_TOOL = /(?:^|__)ConversationHistory$/u;
-/** Classify one ConversationHistory result from its model-visible text. */
+/** Classify one retained conversation history result from its model-visible text. */
 export function classifyHistoryResult(text, isError) {
   const body = String(text ?? "");
   const unavailable = body.includes('"status":"unavailable"') || body.includes('"available":false');
@@ -387,7 +388,7 @@ async function replayScriptedTurn({ harness, scripted, tools, turn, binding, con
 function liveRoute(modules, mode, refs, watch = null, lookup = null) {
   if (mode !== "offline") return (options) => { watch?.noteOffered(options); return {}; };
   const scripted = scriptedModels(modules.pi, refs);
-  // The offline contract reader calls ConversationHistory once when it is
+  // The offline contract reader calls History once when it is
   // offered, so CI exercises the real tool, store and recording path.
   const dispatcher = (context) => {
     // Summary requests carry Pi's summary focus in the system prompt or a system message.

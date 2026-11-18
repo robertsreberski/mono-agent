@@ -393,8 +393,8 @@ export async function relocateE2AbWork(work) {
 // the parenthesized shipping code only labels the report.
 const HISTORY_WARNING_CODE = /\(([a-z][a-z0-9_]{0,63})\)/u;
 // The explicit shipping result code for a store that cannot be read: the
-// catch-all of the said (ConversationHistory), tools (SessionHistory) and runs
-// (RunHistory) handlers and of the unified History server's dispatch.
+// catch-all of the said, tools and runs handlers and of the History server's
+// dispatch.
 export const E2_AB_STORE_UNAVAILABLE_CODES = Object.freeze(["history_unavailable"]);
 const LOOKUP_CODE = /^[a-z][a-z0-9_]{0,63}$/u;
 // The shipping handler's own structured result: MCP structuredContent as the

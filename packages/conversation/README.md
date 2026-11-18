@@ -151,13 +151,12 @@ absent evidence remains compatible with older completed-turn admissions.
 The built-in default soul adds only a compact evidence router: active dialogue
 for what was just said, `MemoryRecall` for a targeted durable fact or decision,
 `MemoryJournal` for a chronological retrospective over an explicit date range,
-`ConversationHistory` for exact retained conversation and captured plain-text
-tool-result values, including identifiers and pack `Tool evidence id` records,
-`SessionHistory` for prior-run managed-tool call/result lifecycles, and
-`RunHistory` for settlement and interrupted-work recovery. It names those
-tools "when available" because the harness itself does not own or assume any
-app MCP tool.
-Unhinted interrupted-work recovery retains the `RunHistory {}` first step.
+`History` with `scope: "said"` for exact retained conversation and captured
+plain-text tool results, including identifiers and pack `Tool evidence id` records;
+`scope: "tools"` for prior-run managed-tool calls/results; and `scope: "runs"` for
+settlement and interrupted-work recovery. It names tools "when available" because
+the harness does not own or assume any app MCP tool.
+Unhinted interrupted-work recovery retains the `History {scope:"runs"}` first step.
 
 Manual compaction optionally carries the conversation's boolean `context1M`
 selection through the host's model/context-policy hook, including explicit false
@@ -446,7 +445,7 @@ unlinking a newer intent; repeated requests reuse the deterministic base name.
 Under the canonical root transaction, the next marker write removes its secure
 same-key interrupted `.json.tmp` regardless of wall-clock changes; other keys
 retain an older-than-write mtime guard. Invalid markers block continuity only, not
-SessionHistory or lifecycle persistence; doctor reports pending/invalid counts.
+History or lifecycle persistence; doctor reports pending/invalid counts.
 After `PRAGMA quick_check` succeeds, privacy recovery may delete SQLite continuity
 rows and their content-free conflict incident keys before an artifact-root mismatch
 refuses startup, without following any stored artifact path.
@@ -455,7 +454,7 @@ do not remove them to recover a sidecar outage. A reset interrupted after intent
 publication may conservatively purge evidence even if the canonical reset fails.
 This is a privacy intent, never proof that a summary may be published.
 If doctor reports an invalid marker, continuity stays blocked for **every scope**
-until it is fixed; SessionHistory and lifecycle persistence remain available.
+until it is fixed; History and lifecycle persistence remain available.
 With retrieval traffic paused and canonical writers stopped, inspect
 `.continuity-purge-*.json` and `*.json.applying` under the configured history root.
 Check owner-only permissions and the scope/ID JSON; restore a valid intent if its
@@ -619,7 +618,7 @@ discloses transport-shortened windows (which may omit the hit). No migration or 
 including the explicitly unmet original 64-MiB heap target at extreme capacity.
 
 `searchContinuity` / `getContinuity` return scoped evidence, not instructions or
-new approval. The app-owned `ConversationHistory` NOTICE also requires specific
+new approval. The app-owned `History` NOTICE also requires specific
 distinguishing evidence for historical alternatives: nearby work is insufficient;
 if unfound, say so rather than choose or deny an alternative. Answer when evidence
 is sufficient. This bounded returned guidance survives tool withdrawal without
@@ -1149,7 +1148,6 @@ ToolHistoryWriterHandle
 ToolHistoryWriterOptions
 ToolPolicyError
 ToolPolicyInput
-UnifiedHistoryAvailability
 acquireToolHistoryWriter
 bindProcessJobLiveInput
 classifyContinuationMcpServerTransport
@@ -1366,7 +1364,7 @@ shutdown drains all accepted requests within its bounded graceful-close budget.
 `persisted` still means the transaction committed before publication, while
 `failed` is reserved for a definitive rejection known at publication. A
 deferred artifact is not proof of either final success or loss; after the run,
-`ToolHistoryReader`/`SessionHistory` is authoritative for committed rows. The
+`ToolHistoryReader`/`History` is authoritative for committed rows. The
 writer bounds its lock waits at 200 ms of elapsed time, leaving margin inside the
 foreground ceiling, instead of relying on SQLite's busy timeout, which sums
 requested sleeps and stretches under macOS timer coalescing;
@@ -1529,7 +1527,7 @@ No retention pins or copies are added.
 Old readers reject carrier-bearing journals; do not downgrade binaries against
 active admission journals without an explicitly approved reconstruction/reset.
 
-When `ConversationHistory` is available for the effective request, a nonempty
+When `History` is available for the effective request, a nonempty
 pack adds retrieval guidance: use the pack's `Tool evidence id` (`chr1_…`) as
 `recordId`, not `invocation_id`; get exact retained values before guessing or
 claiming absence, search without an id, and follow search/get cursors. This costs
@@ -1539,12 +1537,10 @@ emit no pack. Pack omission may be retrievable; source redaction/truncation is
 irreversible here, and omitted invocation arguments have no recovery promise.
 
 Tool projection ids (`sth1_…`) are lifecycle identities, **not** valid
-`ConversationHistory` get ids. Prepared projections contain serializable bounded
-blocks; the host resolves both history tools after request policy/overrides and
-tools-disabled handling, outside cloneable prepared data. Healthy header wording
-is unchanged: prefer `ConversationHistory`, otherwise retain `SessionHistory`
-routing when available. Neither-tool and manual-compaction routes omit tool
-routing. Boundary facts measure the resolved supplied projection, including
+`History` get ids. Prepared projections contain serializable bounded
+blocks; the host resolves History scope availability after request policy/overrides and
+tools-disabled handling, outside cloneable prepared data. Headers name only available History said/tools scopes. Hosts without the tool
+and manual-compaction routes omit tool routing. Boundary facts measure the resolved supplied projection, including
 post-pack exclusions, rather than the configured header.
 
 Rendered ledger entries expose stable cited host order, independently of derived

@@ -165,7 +165,7 @@ count observed persisted events, including excluded turns. Deduplication is
 turn-local; journal counts stay separate, and unique sidecar matches can expose
 lifecycle conflicts but cannot establish semantic retrieval success. Only
 structured availability results establish success. The exact tool-authored
-ConversationHistory text format is also recognized: only its final notice-framed
+History text format is also recognized: only its final notice-framed
 JSON body is parsed, with validated continuation sections, never navigation's
 `Exact arguments` JSON. Malformed, clipped or ambiguous text remains unknown.
 Pack reason enums distinguish coverage `gap` from `boundedSelection` (overflow,
@@ -586,14 +586,14 @@ Each branch generates one summary chain. At a registered completed-turn position
 the harness closes, durable workspace bytes are copied and digest-verified,
 then two fresh faux reader continuations serially restore the same snapshot at
 its original absolute root. Restore preserves directory identities required by
-the engine's ownership locks. Readers get only ConversationHistory and use a
+the engine's ownership locks. Readers get only History and use a
 fixed offline lookup/answer contract, not authored semantic answers. Each faux
-probe scripts exactly R ConversationHistory lookups and then an answer: **R+1
+probe scripts exactly R History lookups and then an answer: **R+1
 requests** (`probe`, then R `continuation` rows). R=1 preserves the former
 lookup/answer sequence; its final context now omits tool schemas, so that
 request's byte/token size intentionally changes. Real probes may answer early
 and settle only the requests actually sent. Requests 1..R offer exactly
-ConversationHistory; request R+1 offers **no tools**, in both faux and guarded
+History; request R+1 offers **no tools**, in both faux and guarded
 paid routes. An extra request is refused even if the checkpoint still has
 unused funding for other questions. The controller independently derives the
 per-probe ordinal from durable holds and enforces the final no-tools wire body.
@@ -760,7 +760,7 @@ ceiling, allowing eight or more tool rounds. Budget exhaustion is an expected,
 explicit mechanics outcome; the scripted answer is not semantic evaluation.
 
 Only `native-lookup` and `continuity-pack-cold` are admitted. Native lookup
-captures retained records and offers ConversationHistory, but injects no pack,
+captures retained records and offers History, but injects no pack,
 ledger or upkeep and never compacts. It uses the reader's native session, an
 **in-place** snapshot restore and a fresh probe child. Both arms must show
 retained records, an offered tool and a healthy store; native must also prove
@@ -776,7 +776,7 @@ This freezes the original core independently of later default-soul changes.
 ### Frozen sizing policy
 
 `scripts/continuity-lookup-budget.mjs` measures a content-free inventory using
-real retained stores, configured replay and real loopback ConversationHistory
+real retained stores, configured replay and real loopback History
 calls. The sizing corpus is the four original traces, hard and hard-distractor
 seeds 101–108, plus 27,600-byte UTF-8 and escaped-content regression records.
 The regression records also traverse the production handler and response
@@ -850,7 +850,7 @@ scripted mechanics reader also observes the planned call budget and stops
 voluntarily before dispatching an excess call, even during long cursor paths.
 The proxy uses an unguessable UUID path, an exact loopback Host check and SDK
 DNS-rebinding protection. Effective probe MCP endpoints are allowlisted to the
-metered ConversationHistory server only: **SessionHistory is not part of
+metered History server only: **History is not part of
 `lookup-allowed-v1`**, nor is any other history/tool-history alias or MCP server.
 Unexpected endpoints fail closed rather than exposing an unmetered route.
 
@@ -909,7 +909,7 @@ means the existing `continuity-pack-cold` arm, with no ledger upkeep:
 
 S0 is `scripts/fixtures/continuity-soul-v1.md`. S1 is the separately frozen
 `scripts/fixtures/continuity-soul-v2.md`, exactly the default core after the
-ConversationHistory routing change, without a final newline. Its raw and
+History routing change, without a final newline. Its raw and
 normalized-core SHA-256 are both
 `e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9`.
 Missing or incorrect soul bindings fail closed; no role follows a moving default.
@@ -1169,20 +1169,20 @@ provider-session identity, so they never run concurrently.
 | `compaction-2` (d) | A promptless manual compaction before the mid-trace turn, then a proactive one at the probe | `compactConversation()` on the same guarded summary driver, no live reply; same policy at the probe |
 | `ceiling` (e, hard only) | The merged default 200k `maxInputTokens` ceiling, reached by the long trace | Production default compaction policy |
 | `restart-switch-compact` (f) | Fresh process, then model-change reseed, then compaction, in that order | The probe runs in a child Node process over the forked durable roots, on the reader (reseed) with the smallest trigger (compaction of the reseeded context) |
-| `continuity-store` (g) | As (b): model-change reseed | `runtime.session.continuity: { enabled: true, packEnabled: false }` for replay and probe; the reader is offered only `ConversationHistory` (`tools.allowedTools: ["ConversationHistory"]`) |
-| `continuity-store-compaction` (h) | As (c): one proactive compaction | Recording on, packs off throughout, `ConversationHistory` offered |
-| `continuity-pack-cold` (i) / `continuity-pack-boundary` (alias) | As (b) and (g): cold `model_change`, no compaction | `runtime.session.continuity: { enabled: true, packEnabled: true }` throughout; deterministic bounded pack and `ConversationHistory`, no paid upkeep |
+| `continuity-store` (g) | As (b): model-change reseed | `runtime.session.continuity: { enabled: true, packEnabled: false }` for replay and probe; the reader is offered only `History` (`tools.allowedTools: ["History"]`) |
+| `continuity-store-compaction` (h) | As (c): one proactive compaction | Recording on, packs off throughout, `History` offered |
+| `continuity-pack-cold` (i) / `continuity-pack-boundary` (alias) | As (b) and (g): cold `model_change`, no compaction | `runtime.session.continuity: { enabled: true, packEnabled: true }` throughout; deterministic bounded pack and `History`, no paid upkeep |
 
 Retained conversation evidence (`runtime.session.continuity`) defaults to on.
 Every arm from (a) to (f) pins `runtime.session.continuity.enabled: false` in its
 replay, mid-trace and probe configs. Those arms therefore stay comparable with
 baselines recorded before the feature existed. The prepared-continuity arms (g) and (h) turn
 recording on but explicitly pin `packEnabled: false`; any gain there depends on
-the reader choosing to call `ConversationHistory`. The deterministic pack arm
+the reader choosing to call `History`. The deterministic pack arm
 pins `packEnabled: true` and uses the same cold boundary and tool offer as (g).
 Replay inputs are explicitly host-classified human turns, so provenance is captured
 by production code rather than guessed from a speaker name. The projection hint
-now names `ConversationHistory` when offered, so rerun the store-only control
+now names `History` when offered, so rerun the store-only control
 rather than attributing that hint correction to pack quality.
 
 The tool-history sidecar pins its absolute artifact root, and production correctly
@@ -1266,8 +1266,8 @@ A sample below its threshold is `pressure_unverified`.
 The store arms also record:
 
 - the checkpoint's retained-record statistics, as content-free counts;
-- whether `ConversationHistory` was offered;
-- every `ConversationHistory` call: search or get, and whether it succeeded, was unavailable or was invalid;
+- whether `History` was offered;
+- every `History` call: search or get, and whether it succeeded, was unavailable or was invalid;
 - any tool-history warnings the harness reported.
 
 A sample whose store is degraded is `store_degraded`: no retained records, a
@@ -1277,7 +1277,7 @@ invalid trial, never a scored miss.
 Unverified samples of every kind are excluded from accuracy and counted separately.
 
 Compaction counts refer to pre-turn compaction. In store arms with the smallest
-trigger, retrieved `ConversationHistory` text can push the context over 6,400
+trigger, retrieved `History` text can push the context over 6,400
 tokens again between tool rounds. The resulting mid-run compactions are
 reported but not counted as the arm's boundary. Read (h) as "store plus an
 aggressive trigger", not as the production default. A mid-trace
@@ -1346,7 +1346,7 @@ usage), and the aggregate `results.json` and `summary.md`:
   `abstained` (including false abstentions), `violation`, `fabricated` and
   `leaked`.
 - **Tool use** (store arms) reports how often the reader called
-  `ConversationHistory`, and accuracy with and without a call, overall and by
+  `History`, and accuracy with and without a call, overall and by
   category. This is observational: the reader chooses when to call.
 - **Excluded** counts boundary-unverified, pressure-unverified, store-degraded and failed samples;
   they are never scored as passes or failures.
@@ -1392,7 +1392,7 @@ pnpm benchmark:continuity --dry-run --suite hard --arms native,cold-rebuild,cont
 The offline contract test exercises all three through built configured harnesses,
 checks the cold `model_change` boundary, and inspects actual scripted-provider
 contexts: no packs for either control, exactly one pack on both requests when
-the pack arm calls `ConversationHistory`. Content-free pack receipts retain
+the pack arm calls `History`. Content-free pack receipts retain
 section counts, omissions, token estimates and uncertain overlap for inspection.
 Source or headroom failures invalidate the pack sample; expected budget overflow
 is recorded, not treated as a missing treatment. Ordinary request usage includes
@@ -1921,7 +1921,7 @@ The offline estimator uses exact decimal rational money arithmetic. It reports:
 
 The scenario was calibrated from counts of the first completed Sol pilot: 240
 admitted slots and 748 model requests. Measured means were 3.117 requests and
-2.329 `ConversationHistory` calls per slot, 116.8 output tokens per request,
+2.329 `History` calls per slot, 116.8 output tokens per request,
 7,362.5 input tokens per later request above that slot's first request, and
 67.5% cached input. Each quantity takes a 1.25 margin, rounded in the
 conservative direction: 4 requests, 150 output tokens, 9,216 increment tokens
@@ -2202,7 +2202,7 @@ operations: tool-context configuration, session synchronization, reconciliation,
 recovery, refresh, invalidation, retirement and disposal. Preparation,
 compaction, provider checks and unknown methods refuse rather than forwarding.
 The guarded route can install only its Models decorator and the registered
-ConversationHistory forwarding endpoint; it cannot replace native context. A
+History forwarding endpoint; it cannot replace native context. A
 length and content-digest snapshot also detects in-place transcript mutation.
 
 Auxiliary caller inventory (all paths below are scripts-local unless qualified):
@@ -2217,7 +2217,7 @@ Auxiliary caller inventory (all paths below are scripts-local unless qualified):
 - Provider-check rebuilt Models: no check method exposed or invoked.
 - Structured repair/finalization: no output schema; existing guarded method/finalization limits remain.
 - Router/provider/outage retry and fallback: empty fallback chain, one primary attempt, SSE, zero retries, no budget/profile; guarded one-send boundary.
-- Model/web/shell tools: no such tools exposed; only registered ConversationHistory forwarding is permitted.
+- Model/web/shell tools: no such tools exposed; only registered History forwarding is permitted.
 
 | Fixed refusal code | Meaning |
 | --- | --- |
@@ -2245,7 +2245,7 @@ Controller persistence/receipt stop codes are not child-settable.
 
 The actual configured-harness proof covers native checkpoint restoration and
 cold pack model-change replay, reasoning/tool replay and exact cache headers.
-Its ConversationHistory server is test-owned, bound to an ephemeral loopback
+Its History server is test-owned, bound to an ephemeral loopback
 port with fictional data. Socket destinations are restricted to that endpoint;
 other sockets, provider/global external fetches and WebSockets refuse. Rejected
 fetches are recorded too, so swallowed errors cannot hide auxiliary egress. Cleanup
@@ -2310,7 +2310,7 @@ settlement contract is unchanged. The credentialed-path proof enters the real
 configured live-turn construction, including the production config and route,
 a real probe-owned History forwarder and post-credential Models decorator, with
 an unexpired fictional OAuth file. The SDK's accepted request includes the actual
-ConversationHistory tool schema, with no fallbacks or model switching. The
+History tool schema, with no fallbacks or model switching. The
 installed SDK derives the account and exact cache
 payload/headers. Success and retryable-failure cases make one SDK fetch attempt;
 account mismatch makes no native attempt. Coverage counts actual credential
@@ -2351,7 +2351,7 @@ not describe this as an admitted-native topology. Skipping a row acquires no
 row-specific lease or claim; the faux controller still consumes its run-wide
 authorization before scheduling the eligible pack rows.
 
-Its provider listener belongs to the controller; production ConversationHistory
+Its provider listener belongs to the controller; production History
 and its forwarder stay probe-owned, with dynamically allowed loopback ports.
 Every arrival independently rereads the persisted consumed hold and both claims.
 Inherited per-process/thread API and egress canaries, restored native-journal
@@ -2583,7 +2583,7 @@ compaction at the unchanged shipping 200k trigger. Only **after** that summary
 commits does a separate scripted tool turn introduce `proof-evidence` and the
 protected record, followed by inert tails that move them outside pack previews.
 A faithful summary therefore cannot already contain the target. The fact remains
-in ConversationHistory, but a normal model-change projection carries fact-free
+in History, but a normal model-change projection carries fact-free
 canonical final replies and bounded continuity packs instead of native tools.
 The explicit ordering is:
 
@@ -2615,17 +2615,17 @@ summaries. Faithful mode and fault fixtures are programmatic offline test seams,
 not paid execution options. Paid entry rejects either injection.
 
 Every arm checks initial absence of the fictional fact, complete digest-verified
-ConversationHistory recovery, the pending next action, no protected-canary or
+History recovery, the pending next action, no protected-canary or
 foreign-conversation leak, and a single durable sentinel effect. Readers and the
-two follow-up probes have ConversationHistory only. The explicit exception is
-the resumed `cancel` continuation: ConversationHistory **and the sentinel remain
+two follow-up probes have History only. The explicit exception is
+the resumed `cancel` continuation: History **and the sentinel remain
 offered**, so a repeat is detected rather than prevented by removing the tool.
 That continuation checks model-level non-repeat mechanics; the other arms claim
 only harness-level non-reexecution. Every outgoing context uses the shipping
 soul pin and effective-core assertion. These are **faux mechanics checks, not
 semantic qualification**; the reader is scripted too.
 
-Only loopback MCP is permitted (inert fixtures and app-owned ConversationHistory).
+Only loopback MCP is permitted (inert fixtures and app-owned History).
 External sockets, fetch and WebSockets refuse; Unix sockets and UDP are denied
 too. Callback/promise DNS APIs and resolver instances reject non-literal names.
 Only literal loopback address queries are answered locally; unsupported DNS
@@ -2759,7 +2759,7 @@ continuity registrations and sizing records need no new field.
 
 The baseline sets `runtime.session.continuity.enabled=false`: no continuity
 capture, cold packs or packed summaries. Both tool policy and the routed MCP
-endpoint exclude `ConversationHistory`. Each probe repeat makes exactly one
+endpoint exclude `History`. Each probe repeat makes exactly one
 tool-free model request, with no lookup rounds or probe retries. The shared
 protocol's `probeLookupRounds` (including a frozen R=3 protocol) is unchanged;
 baseline checkpoint counts instead bind `requestsPerProbe: 1`. Offline sizing
@@ -2828,9 +2828,8 @@ authorization requires a disjoint output root.
 
 | Arm | Surface | Description |
 |---|---|---|
-| `A` | split `ConversationHistory`, default soul | shipping `ConversationHistory` text |
-| `B` | unified `History`, unified soul | `compact` |
-| `C` | unified `History`, unified soul | `directive` |
+| `B` | History, scoped default soul | `compact` |
+| `C` | History, scoped default soul | `directive` |
 
 The description variant is an internal harness option threaded to the shipping
 `History` server; there is no config key. Each arm's surface, soul digests,
@@ -2873,8 +2872,8 @@ retry exposure is reported separately. Paid entry must pass
 `--replay-arm history-ab`; no surface selector applies.
 
 Each phase writes `answers.json`, an informational frozen `score.json` and its
-probe receipts. A/B receipts cover every offered scope (`History` said, tools
-and runs, and `ConversationHistory`), name the tool and scope on each call, and
+probe receipts. A/B receipts cover every offered `History` scope (`said`, `tools`,
+and `runs`), name the tool and scope on each call, and
 close every probe with a `settled` receipt. A unified `History` call whose scope
 fails the shipping scope check (missing or typo'd) is receipted with scope
 `invalid`. It counts as a lookup attempt (`byScope.invalid`), never as "no
@@ -3231,7 +3230,7 @@ remain unobserved and retains the normal liability treatment.
 The scan covers complete recognized encodings in message text, instructions,
 `function_call_output.output`, reasoning text/summary parts and refusal parts.
 Tool outputs and reasoning signatures can be supplied by a child transcript;
-their shape alone is not proof of a durable ConversationHistory read, so they
+their shape alone is not proof of a durable History read, so they
 are not exempt from claim validation. Unexpected-role summary wrappers refuse;
 refusal parts also remain forbidden by the payload contract. Ordinary retrieval
 JSON and arbitrary substrings are not promoted to summary authority or fuzzy
@@ -3353,3 +3352,16 @@ fetch callbacks from starting admission/consumption/send. Such late callbacks
 are integrity refusals. Native/faux body-policy refusals issue a sticky stop
 with the exact integrity code; E2 budget/input-envelope admission refusals remain
 classified pre-send refusals with their original code and stop further admission.
+
+### History hard-cutover evaluation boundary
+
+New execution is History-only. Non-A/B registrations explicitly bind
+`historySurface:"unified"`; omitted or split bindings are refused. A/B
+registrations omit the top-level field and bind B/C surfaces per arm; arm A is
+retired. Frozen questions, answer keys and the E2 scorer are unchanged. Older
+benchmark claims above are historical observations, not current qualification.
+New lookup souls use v3/v4 and a History-only v3 allowlist. The v3 budget has only
+unmeasured safety ceilings, no inherited response measurements or executable
+paths. Fresh sizing, registration and separate authorization are required before
+any new paid evaluation. Public overlap inputs were re-frozen at cutover; external
+holdout custodians must independently re-freeze their own inputs.

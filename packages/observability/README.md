@@ -146,7 +146,7 @@ An invalid namespace does not add a row per boundary. Metadata-write failures
 back off exponentially from one second to 60 seconds and are reported once.
 Export I/O runs separately from admission replies and has a bounded close drain;
 all outbox writes use the host's secure journal transaction.
-These degradation diagnostics also appear as artifact warnings in `RunHistory`
+These degradation diagnostics also appear as artifact warnings in `History`
 inspection when the applicable run evidence is degraded.
 
 ### Recorder checkpoints and reads

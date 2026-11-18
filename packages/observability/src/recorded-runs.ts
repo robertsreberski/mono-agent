@@ -97,7 +97,7 @@ export async function listRecordedRuns(options: JsonlRunReaderOptions): Promise<
     .slice(0, normalized.maxRuns);
   const runs: RecordedRunListItem[] = new Array(selected.length);
   let next = 0;
-  // RunHistory can request every run. Bound event/companion file descriptors.
+  // History runs scope can request every run. Bound event/companion file descriptors.
   await Promise.all(Array.from({ length: Math.min(8, selected.length) }, async () => {
     while (next < selected.length) {
       const index = next++, entry = selected[index]!;

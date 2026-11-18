@@ -85,7 +85,13 @@ const retiredDemoDocReferences = [
   },
 ];
 
+const retiredHistoryDocReference = {
+  label: "removed conversation-history tools",
+  pattern: /\b(?:ConversationHistory|SessionHistory|RunHistory|conversation_history|session_history|run_history)\b/gu,
+};
+
 const retiredDocReferences = [
+  retiredHistoryDocReference,
   {
     label: "@mono-agent/agent-evals",
     pattern: /@mono-agent\/agent-evals|\bpackages\/agent-evals\b|\bagent-evals\b/iu,
@@ -134,6 +140,8 @@ const retiredDocReferences = [
     pattern: /\bNotifyConversation\b|\bnotify_conversation\b/iu,
   },
 ];
+
+const historyRetirementPayload = "> **Breaking: History replaces ConversationHistory, SessionHistory, and RunHistory without aliases or an opt-out.** Remove `tools.history` entirely, including `tools.history.unified`. Replace removed names and their former snake_case/MCP spellings in allowlists and denylists with `History`; allowing History grants all host-supported history scopes, while denying it blocks the whole tool. Update custom souls and prompts to call History with required scope `\"said\"` for retained conversation text, `\"tools\"` for prior tool calls/results, or `\"runs\"` for run outcomes. Use `search`/`get`; run inspection uses `get`, not `inspect`, and `run_id` is unsupported. Stale configuration and soul references fail validation. Run `mono-agent validate` before restarting. Stored history and historical tool names are not rewritten or deleted.";
 
 const deprecatedMemoryRecallAlias = "memory_recall";
 const deprecatedMemoryRecallAliasPattern = /\bmemory_recall\b/gu;
@@ -277,8 +285,8 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
     const shippedDocRecords = userDocRecords;
     userDocsChecked = shippedDocRecords.length + catalogDemoOnlyRecords.length;
     artifactContractSourcesChecked = artifactContractSourceRecords.length;
-    issues.push(...scanRetiredDocReferences(shippedDocRecords));
-    issues.push(...scanRetiredDocReferences(catalogDemoOnlyRecords, retiredDemoDocReferences));
+    issues.push(...scanRetiredDocReferences(shippedDocRecords, retiredDocReferences, repoRoot));
+    issues.push(...scanRetiredDocReferences(catalogDemoOnlyRecords, [...retiredDemoDocReferences, retiredHistoryDocReference], repoRoot));
     issues.push(...await scanRetiredDemoRepositorySurfaces(repoRoot));
     issues.push(...scanDeprecatedMemoryRecallAliases(shippedDocRecords, repoRoot));
     issues.push(...scanMisleadingArtifactDurabilityClaims([
@@ -304,7 +312,7 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
     }
 
     const consumerReadmeRecord = { path: readmePath, text: readme };
-    issues.push(...scanRetiredDocReferences([consumerReadmeRecord]));
+    issues.push(...scanRetiredDocReferences([consumerReadmeRecord], retiredDocReferences, consumerDir));
     issues.push(...scanDeprecatedMemoryRecallAliases([consumerReadmeRecord], consumerDir));
 
     const mcpTexts = await readConfiguredMcpTexts(consumerDir, config);
@@ -435,11 +443,13 @@ export function compareCodeUnits(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function scanRetiredDocReferences(records, references = retiredDocReferences) {
+function scanRetiredDocReferences(records, references = retiredDocReferences, repoRoot) {
   const issues = [];
   for (const record of records) {
+    const approved = repoRoot ? approvedHistoryAnnotationIndexes(record, repoRoot).approvedRetiredIndexes : new Set();
     for (const retiredReference of references) {
       for (const match of findPatternMatches(retiredReference.pattern, record.text)) {
+        if (retiredReference === retiredHistoryDocReference && approved.has(match.index)) continue;
         const location = lineAndColumn(record.text, match.index);
         issues.push(
           `${record.path}:${location.line}:${location.column}: references retired pre-v1 surface ` +
@@ -623,6 +633,7 @@ function scanDeprecatedMemoryRecallAliases(records, repoRoot) {
 
 function approvedHistoryAnnotationIndexes(record, repoRoot) {
   const approvedAliasIndexes = new Set();
+  const approvedRetiredIndexes = new Set();
   const issues = [];
   const relativePath = repoRelativePath(repoRoot, record.path);
   const lines = indexedLines(record.text);
@@ -663,6 +674,12 @@ function approvedHistoryAnnotationIndexes(record, repoRoot) {
       );
       continue;
     }
+    if (payloadLine.text === historyRetirementPayload) {
+      for (const match of findPatternMatches(retiredHistoryDocReference.pattern, payloadLine.text)) {
+        approvedRetiredIndexes.add(payloadLine.start + match.index);
+      }
+      continue;
+    }
     if (payloadLine.text !== deprecatedAliasHistoryPayload) {
       issues.push(
         annotationIssue(
@@ -678,7 +695,7 @@ function approvedHistoryAnnotationIndexes(record, repoRoot) {
     );
   }
 
-  return { approvedAliasIndexes, issues };
+  return { approvedAliasIndexes, approvedRetiredIndexes, issues };
 }
 
 function parseHistoryAnnotationMetadata(raw) {

@@ -12,6 +12,14 @@
   resolution, pickers, guided setup and validation, with long-input pricing
   and the same effort and `context1M` support as their sibling models.
 
+- Remove the split conversation-history tool surface.
+
+  **Breaking: History replaces ConversationHistory, SessionHistory, and RunHistory without aliases or an opt-out.** Remove `tools.history` entirely, including `tools.history.unified`. Replace removed names and their former snake_case/MCP spellings in allowlists and denylists with `History`; allowing History grants all host-supported history scopes, while denying it blocks the whole tool. Update custom souls and prompts to call History with required scope `"said"` for retained conversation text, `"tools"` for prior tool calls/results, or `"runs"` for run outcomes. Use `search`/`get`; run inspection uses `get`, not `inspect`, and `run_id` is unsupported. Stale configuration and soul references fail validation. Run `mono-agent validate` before restarting. Stored history and historical tool names are not rewritten or deleted.
+
+  **Programmatic API:** Remove `ConversationHarnessOptions.defaultCore`, `conversationHistoryAvailable`, `sessionHistoryAvailable`, the legacy `HistoryToolAvailability` shape and `ToolHistoryRunBinding.unifiedHistory`. Removed JavaScript options fail explicitly. Hosts report availability as `{said, tools, runs}` and pass positive `appOwnedHistory` ownership for app-tool capture. Custom hosts without the app History tool get no-tool guidance.
+
+  Any `tools.history` key is rejected, including `{}` and `{unified:false}`. Reword even prose mentions of retired tool names in custom souls before upgrading; identity, skills and subagent prompts receive doctor warnings. New agents default to History in the safe-tools list, granting tools and runs as well as said when supported by the host. Allowing History may broaden an old single-scope policy; no per-scope replacement policy exists. Rollback restores the complete previous binary/config/soul set, not a flag. There is no history-storage migration.
+
 - Add an opt-in, observational `--replay-arm history-ab` mode to the offline
   continuity E2 harness: probe-only runs from a frozen committed snapshot with
   the continuity pack withheld, comparing split `ConversationHistory` against

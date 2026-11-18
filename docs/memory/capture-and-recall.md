@@ -309,7 +309,7 @@ explicit-period question belongs to `MemoryJournal` when available.
 
 Interrupted-run recovery is also not a durable-memory query. For a request to
 pick up, continue, or recover interrupted work, the model-facing tool contract
-routes to `RunHistory {}` first when available. An empty `MemoryRecall` response
+routes to `History {scope:"runs"}` first when available. An empty `MemoryRecall` response
 repeats that conditional exact handoff so the agent does not keep rephrasing
 memory searches for evidence owned by run history.
 
@@ -454,7 +454,7 @@ Only an explicit `MemoryRecall` call uses the graph, and expansion is determinis
 `MemoryJournal` answers broad retrospectives over explicit calendar dates from
 the curated local index. It complements `MemoryRecall`; it is not another
 search index, does not copy or auto-inject journals, and is not exact execution
-evidence. Use `RunHistory`/`SessionHistory` to substantiate exact tool inputs,
+evidence. Use `History`/`History` to substantiate exact tool inputs,
 results, failures, or interrupted execution.
 
 The first call requires all three range fields:

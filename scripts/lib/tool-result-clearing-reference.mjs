@@ -1,4 +1,5 @@
-// Benchmark-only reference implementation. Never imported by runtime code.
+// Benchmark-only reference implementation for the historical split-surface
+// captures. Not used to construct current tool calls or by runtime code.
 import { createHash } from 'node:crypto';
 export const hash = text => createHash('sha256').update(text, 'utf8').digest('hex');
 export const bytes = text => Buffer.byteLength(text, 'utf8');

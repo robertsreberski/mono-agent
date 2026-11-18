@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-This page covers how mono-agent attaches [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to your agent through `tools.mcpConfigPath`, how the path is resolved and forwarded to the runtime, and the one rule that surprises people: **external MCP-server tools are not gated by `tools.allowedTools`**. App-owned MCP tools can define a narrower policy boundary; `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and the adapter send tools do. Coverage type: `config`.
+This page covers how mono-agent attaches [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to your agent through `tools.mcpConfigPath`, how the path is resolved and forwarded to the runtime, and the one rule that surprises people: **external MCP-server tools are not gated by `tools.allowedTools`**. App-owned MCP tools can define a narrower policy boundary; `History`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and the adapter send tools do. Coverage type: `config`.
 
 ## What `tools.mcpConfigPath` does
 
@@ -26,8 +26,8 @@ Point `tools.mcpConfigPath` at an `mcp.json` file describing one or more MCP ser
 | `tools.mcpConfigPath` | string | Path to an `mcp.json`. Resolved against the workspace, not the config file. |
 | `tools.mcpRequestContextServers` | string[] | Opt-in stdio server names that receive trusted per-run producing-conversation, run-id, output-directory, current-request attachment, and scoped progress context. HTTP/SSE and unlisted servers are unchanged. |
 | `tools.continuationServers` | string[] | Opt-in stdio or loopback-HTTP server names that receive a host-bound claim capability for durable asynchronous results. Remote HTTP, SSE, and unlisted servers fail closed or remain unchanged. |
-| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
-| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. On the engine-turn runtime it does **not** filter external MCP-server tools (see below). |
+| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `History`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
+| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `History`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. On the engine-turn runtime it does **not** filter external MCP-server tools (see below). |
 
 Configure MCP paths and server selections in the JSON `tools` block. Reserved runtime `MONO_AGENT_MCP_*` values used by child processes are protocol plumbing, not config.
 
@@ -160,11 +160,11 @@ Consequences:
 - Under allow-all (the default) MCP tools are available because their server is declared, not because of the wildcard. Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
 - On the **engine-turn runtime**, `disallowedTools` does **not** filter external MCP-server tools — declaring the server is the only lever. To hard-restrict an external MCP tool on pi, don't declare its server.
-- App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `RunHistory`, `SessionHistory`, `ConversationHistory`, `SetConversationTitle`, `Remember`, and adapter send tools are deliberately governed by the normal tool policy. `MemoryJournal` requires both memory-read enablement/capability and normal app-tool policy.
+- App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `History`, `SetConversationTitle`, `Remember`, and adapter send tools are deliberately governed by the normal tool policy. `MemoryJournal` requires both memory-read enablement/capability and normal app-tool policy.
 
 The `MemoryRecall` description directs proactive recall of intentionally captured
 durable facts, while explicitly routing requests to pick up, continue, or
-recover interrupted work to `RunHistory {}` first. Empty recall results repeat
+recover interrupted work to `History {scope:"runs"}` first. Empty recall results repeat
 that exact conditional handoff instead of inviting repeated query rewrites.
 This is behavioral guidance, not a gate — `MemoryRecall`'s availability is still
 governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
@@ -223,11 +223,10 @@ capability, and app-tool policy. Under a restrictive allowlist name `MemoryJourn
 `mcp__mono-agent-memory-journal__*`; exact/server/global deny wins. There is no legacy
 alias. Use active conversation history for the current exchange, `MemoryRecall` for a
 targeted durable fact, and this tool for broad date-bounded summaries. Use
-`ConversationHistory`, when available, for exact retained conversation values,
+`History` with `scope: "said"` for exact retained conversation values,
 including captured plain-text tool results and values referenced by pack
-`Tool evidence id` records—not all managed-tool outputs. Use `SessionHistory`
-for managed-tool call/result lifecycles, and `RunHistory` for run settlement and
-interrupted-work recovery.
+`Tool evidence id` records—not all managed-tool outputs. Use `scope: "tools"`
+for managed-tool calls/results, and `scope: "runs"` for settlement and recovery.
 
 ## `SetConversationTitle`: web conversation naming
 
@@ -322,188 +321,73 @@ from the next rebuild.
 Memory is append-only. There is no edit or delete through this tool; removal
 remains the explicit two-phase `mono-agent memory forget` workflow.
 
-## `RunHistory`: prior-run evidence
+## History
 
-`RunHistory` is an app-owned, read-only, request-scoped MCP tool over the existing local run artifacts. There is no new config key. Under allow-all it is exposed automatically on MCP-capable routes; under a restrictive policy, add the exact `RunHistory` name. The deprecated policy alias `run_history` is accepted in `tools.allowedTools` / `tools.disallowedTools`, but only `RunHistory` is registered and shown to the model.
+`History` is the only app-owned conversation-history tool. Its `scope` argument
+is required; the directive description guides exact retrieval before relying on
+summaries or memory. The request-scoped `mono-agent-history` server is composed
+by the app: never configure it in `mcp.json`.
 
-The compact shorthand is designed for agent exploration:
-
-| Call arguments | Result |
-| --- | --- |
-| `{}` | List recent settled runs (`succeeded`, `failed`, `cancelled`, or `interrupted`). Start here for an unhinted request to pick up, continue, or recover interrupted work. |
-| `{ "query": "north Spain flights" }` | Search safe trigger and summary metadata, ranked by how many Unicode-normalized, case-folded terms a run carries. A single match also carries that run's compact overview. |
-| `{ "runId": "..." }` | Return a compact overview: metadata and trigger, final visible output, warnings/failures, tool-name call/error counts, and a timeline cursor when detail exists. |
-| `{ "runId": "...", "cursor": "..." }` | Return the next timeline page (at most 10 entries and about 16 KiB). |
-
-`run_id` is accepted as an input alias for `runId`. Explicit
-`action: "list" | "search" | "inspect"` calls remain compatible. List and
-search accept an optional `limit` (default 5, range 1–10) and expose an opaque
-`nextCursor` when more matches remain. Tool-authored
-`navigation.guidance` and `navigation.nextActions[]` are separate from the
-untrusted evidence; each next action contains exact `arguments` the agent can
-submit to continue, narrow, or return to an overview. Candidate actions carry
-the run's terminal status so a cancelled/interrupted run is not mistaken for a
-successful one.
-
-After inspecting a `cancelled` or `interrupted` candidate, its overview labels
-the output as incomplete evidence and exposes a conditional exact run-scoped
-sibling-tool handoff in `navigation.relatedTools`. Follow it only when
-`SessionHistory` is available:
+| Scope | Evidence | Calls |
+| --- | --- | --- |
+| `said` | Retained user/assistant quotations, portable summaries and permitted tool text | `search` / `get` with `recordId` |
+| `tools` | Exact prior tool invocations/results in this logical conversation | `search` / `get` with returned IDs |
+| `runs` | Safe evidence from settled prior runs, including cancelled/interrupted work | `search` / `get` with `runId` or a timeline cursor |
 
 ```json
-{
-  "action": "search",
-  "runIds": ["cancelled-run-id"],
-  "includeIsolated": true
-}
+{ "scope": "said", "action": "search", "query": "fictional delivery identifier" }
 ```
-
-Keep that search free of a `states` filter so every retained terminal tool state
-is considered. If it is empty, do not broaden to another run or conversation.
-Each search result distinguishes the invocation `recordId` from its terminal
-`resultRecordId`. Follow the response's trusted navigation to inspect the
-result record when present and the invocation record when its arguments are
-needed. Those exact `get` calls retain `includeIsolated: true`, use the supported
-8192-byte chunk bound, and provide another exact `get` action whenever a cursor
-must be followed. A bounded search preview is not the full record and must not
-substitute for record-level inspection during interrupted-work recovery. This
-path recovers grounded evidence only: it does not resume provider state, replay
-a tool, rerun work, or guarantee continuation from the interrupted point.
-Continuation is fresh work in the current run, using currently available tools
-and fresh verification.
-
-List/search **matching** scans retained summaries once per call. It does not
-open event JSONL to decide what matches and only considers sanitized
-trigger/user input, run id, dates, status/failure kind, source/detail, model,
-and effort. It never searches system prompts, reasoning, memory, visible
-assistant output, or tool output.
-
-Search **ranks** rather than requiring every term, because a caller naming what
-it wants ("unsubscribe group A newsletters") usually says more than the trigger
-it is looking for did. Runs carrying every term win outright and are returned
-alone; ranked partial matches are offered only when no run carried the whole
-query, in which case `matchedAllTerms` is `false` and `navigation.guidance`
-names the terms the best candidate actually matched — from the same fields the
-scorer read, so a run that ranked on its model or date says so. A run matching
-no term is never returned. Because matching is substring matching, a lone ASCII
-letter or digit (the "A" of "group A") is dropped from scoring unless the whole
-query is made of them.
-
-When a search lands on exactly one run and no cursor was supplied, the result
-also carries that run's compact `overview` and offers the timeline cursor as the
-next action — the "which one?" round trip is skipped. This **overview
-hydration** is the one place a search touches event JSONL, and it is the same
-bounded read and same safe projection an explicit `{ "runId" }` performs: no
-wider read than the follow-up call it replaces, and no change to what a search
-*matches* on. An unreadable artifact for that run degrades to the plain search
-result rather than a tool error.
-
-The current or any running run is excluded, as are unrelated conversations and threads. When daily session rollover is configured, its `#YYYY-MM-DD` buckets are ignored for RunHistory scope, so rollover never partitions one logical conversation's recorded history. The safe projection never returns system prompts, reasoning/thinking, recalled memory or turn-context payloads, raw artifact paths, or provider-session metadata. Ordinary filesystem spans are sanitized in place to `[host-path]` plus a bounded non-sensitive suffix, so surrounding commands, tool results, and assistant diagnostics remain visible; credentials and private run-artifact content are still omitted. Absolute roots, account/home prefixes, artifact roots, and private run paths never survive. Structured and artifact-shaped opaque tool results are scrubbed or omitted; nested `RunHistory` result bodies are always replaced with an omission marker so inspection cannot recursively embed prior inspections. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer to object keys as well as string values, with deterministic collision-safe key disambiguation. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Per-string and per-page bounds still apply, and incomplete event input is announced. All historical content is labelled untrusted evidence, never instructions.
-
-Use active conversation history first for the current exchange. Use `MemoryRecall` for
-a targeted intentionally captured durable fact, `MemoryJournal` for a broad
-date-bounded curated summary, and `ConversationHistory`, when available, for exact
-retained conversation values, including captured plain-text tool results and values
-referenced by pack `Tool evidence id` records. Use `SessionHistory` for prior-run
-managed-tool call/result lifecycles and `RunHistory` for settlement and
-interrupted-work recovery. See
-[Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory).
-
-## `ConversationHistory`: retained conversation evidence
-
-Unattested user text has kind `user` with unknown speaker provenance, not
-`other-user`. Only host-attested foreign speakers may use `other-user`;
-context imports have kind `imported` and unknown provenance. None renews approval.
-
-Configured agents expose this read-only request-scoped tool by default under
-normal tool policy, independently of memory and durable provider sessions.
-`runtime.session.continuity.enabled: false` omits both its producer and tool;
-a policy deny removes retrieval without turning capture off. Global `"*"`,
-canonical/legacy names and the exact/server-wildcard MCP spellings follow
-[tool policy](/tools/policy/#conversationhistory), with deny winning.
 
 ```json
-{ "action": "search", "query": "cobalt", "limit": 5 }
+{ "scope": "tools", "action": "search", "runIds": ["fictional-prior-run"], "includeIsolated": true }
 ```
 
-Search returns at most ten bounded previews plus exact
-`navigation.nextActions[].arguments` for `get` and subsequent search pages.
-A latest portable-summary reference may also be returned. A preview is not a
-full record. Follow every get cursor until none remains; concatenate the
-retained UTF-8 chunks (4–8192 bytes requested per chunk) and compare their SHA-256
-with the record metadata. Cursors bind the request's logical/physical/run scope,
-filters, record generation and retained digest; a changed/removed anchor refuses
-continuation. They are navigation, not authority to select another conversation.
-Navigation is provided in model-visible text as well as structured content.
+```json
+{ "scope": "runs", "action": "get", "runId": "fictional-prior-run" }
+```
 
-In a continuity pack, `Tool evidence id` is the `chr1_…` `recordId` accepted by
-get. Do not substitute `invocation_id`: it and the cold tool projection's
-`sth1_…` lifecycle ids are rejected by `ConversationHistory` get, with no implicit
-identity conversion. Retrieve exact retained values before guessing or claiming
-absence; search when no pack record id is shown, then follow search/get cursors.
-Pack omission may be retrievable, but source redaction/truncation is irreversible
-here. Omitted invocation arguments are not promised to be retrievable.
+Follow exact `navigation.nextActions` arguments. Search previews are partial:
+read promising hits before reformulating, batch two useful gets, use 8192-byte
+chunks, finish get cursors, and page before declaring evidence insufficient.
+For `said` pack lookup, `Tool evidence id` is a `chr1_…` `recordId`, not an
+`invocation_id` or a `sth1_…` tool-lifecycle ID. After fetching all chunks,
+compare the concatenated retained UTF-8 bytes with the record’s SHA-256. Only
+committed or positively finalized current-run evidence can be read.
 
-Pack retrieval guidance is conditional on the effective request policy and live
-endpoint after overrides, startup and suppression. Tool projection headers retain
-the existing `SessionHistory` route when it alone is available; tools-disabled
-synthesis and manual compaction omit both routes.
+Timeline continuations need only `{scope:"runs",action:"get",cursor}`. An
+explicit conflicting `runId` fails; cursor contents never authorize a foreign,
+current or unsettled run. There is no `inspect` action or `run_id` argument.
 
-Only committed evidence or positively finalized/fsynced current-run evidence is
-readable. Prepared publications, partial assistant streams, reasoning and foreign
-conversations are unavailable. Metadata identifies provenance, source coordinates,
-redaction/truncation and original/retained sizes. Oversized text is replaced with
-an explicit omission representation, never clipped and called lossless. Removed
-payloads report tombstones or unavailability. Retained coverage gaps are reported;
-no result, empty search or gap count promises complete coverage. Nested history
-retrieval bodies are omitted from enabled capture and cold projections.
+The `said` scope requires continuity capture; standalone configured composition
+supports only `said`. The app controller adds `tools` and `runs` on supported
+routes, independently of continuity. Missing or failed endpoints and late policy
+denies remove advertised availability. Custom hosts with no History tool get
+no-tool guidance. See [History policy](/tools/policy/#history).
 
-Automatic tool-text capture requires the store's positive borrowed-owner
-capability. Successful, non-isolated plain-text results commit atomically with
-finalized lifecycle receipts, before the run ends and independently of the
-legacy JSON projection's smaller clipping limits. Multiple plain text blocks
-are joined with a single newline. Mixed/image/opaque/signed results, unfinished
-or interrupted results and nested history-tool bodies are not captured this
-way. Custom stores without that capability do not get an unowned fallback.
+For unhinted interrupted-work recovery, start with `{scope:"runs"}`, select a
+cancelled/interrupted candidate, then use the exact `tools` search for its run
+with `includeIsolated:true` and no terminal-state narrowing. Inspect each result
+and, when needed, invocation. An empty exact-run search is not permission to
+broaden to another run or conversation. All continuation is fresh work using
+current tools and fresh verification, never a provider-state resume or tool replay.
 
-This is historical evidence, not active-state maintenance. A generated summary
-cannot become an owner quotation or renew permission. Use `RunHistory` for run
-settlement/recovery, and `SessionHistory` for its unchanged prior-run tool-lifecycle
-contract. Reading evidence does not resume a provider session, replay tools,
-rerun work or authorize fresh effects. Reset/purge removes retained evidence.
+### Evidence and storage boundaries
 
-## `SessionHistory`: retained tool lifecycles
+These are read-only readers over the existing stores, not new storage. Retained
+records, tool names, IDs, hashes, cursor formats and schemas are not rewritten or
+deleted. Historical console rows retain their original names. Search ranking and
+capture order do not establish truth, dates or authority. Generated summaries
+are not owner quotations or renewed approval. Unknown/imported provenance stays
+unknown/imported. Redaction, truncation, tombstones, capture gaps and scan bounds
+mean absence of a match is not proof an event never happened.
 
-`SessionHistory` is the sibling read-only, request-scoped MCP tool over the canonical managed-tool sidecar, not an extension of `RunHistory`. It has no config key. Allow-all exposes it automatically on compatible routes; a restrictive policy must name `SessionHistory` (`session_history` is a deprecated policy alias), and `disallowedTools` can remove it. The endpoint is bound to a random per-request loopback capability path, requires the exact loopback Host header, creates a fresh stateless MCP server/transport for every HTTP request, and disappears at request cleanup.
-
-The event-side writer keeps a 250 ms foreground ceiling. An accepted write that
-has not answered by then is marked `deferred`, continues in the dedicated worker,
-and is drained before bounded run finalization; only a definitive rejection is
-marked `failed`. A deferred run event is not a final persistence claim. This
-tool reads only committed rows, so after the run its result is authoritative for
-retained lifecycle evidence, and every returned record remains untrusted data.
-
-| Call arguments | Result |
-| --- | --- |
-| `{}` or `{ "action": "search" }` | Up to five completed prior managed-tool calls in the current logical session. |
-| `{ "query": "needle", "tools": ["Read"], "states": ["error"], "runIds": ["..."], "fromMs": 0, "toMs": 9999999999999, "limit": 10 }` | AND-match redacted stored text and filter by exact tool/state/run/time; returns an opaque `nextCursor` when more remain. |
-| `{ "action": "get", "recordId": "sth1_...", "chunkBytes": 4096 }` | One invocation or result plus a bounded payload chunk, truncation/byte metadata, terminal classification, recovery flag, and opaque artifact availability. |
-| `{ "action": "get", "toolCallId": "..." }` | The newest completed record for that provider call id in scope. Prefer `recordId` when search returned one. |
-| `{ "action": "get", "cursor": "..." }` | Continue the same record in chunks of at most 8 KiB. |
-
-Search defaults to five and caps at ten results; tool/state/run filters cap at 20 values, queries at 512 UTF-8 bytes, previews at 1 KiB, and model-facing text blocks at 10,000 characters. Cursors are base64url structural tokens bound to the logical conversation, physical conversation, current run, and original filters; substitution, stale anchors, foreign records, and pruned anchors fail opaquely. Only the exact active `(conversationId, runId)` is blocked, so an older daily bucket that reused the same opaque run id remains visible. Daily rollover buckets share one configured logical-session scope, while a natural `#` in an id remains opaque when rollover is off. Isolated/proactive records require `includeIsolated: true` on both the originating call and any continuation.
-
-Search responses provide trusted, structured navigation separately from the
-untrusted previews. A search item uses `recordId` for the invocation and
-`resultRecordId` for the terminal result. Navigation points to the result first
-when it exists and to the invocation when its arguments are relevant, with
-exact `get` arguments that preserve isolation and use `chunkBytes: 8192`.
-Continue a paged `get` with the exact returned cursor action until the record is
-complete. An empty exact-run search explicitly offers no broader search action.
-
-Every returned preview/chunk is redacted, bounded, path-opaque, and marked `untrusted: true` with an explicit notice. Path opacity applies to object keys as well as string values: an opaque host-root token and at most two non-sensitive trailing components replace each filesystem path while useful command/result text, nested structure, punctuation, line/column suffixes, and web URLs remain. Safe keys retain their spelling, and deterministic bounded suffixes preserve distinct values when sanitized keys collide. Nested `SessionHistory` result bodies are replaced with an omission marker. A retained tombstone says that a known record was removed by age/count/byte retention without recreating its payload. Artifact references expose only an opaque id and availability. The host accepts and rechecks only regular files beneath the configured run-specific `tool-output` root; provider-supplied outside or symlinked paths are dropped without becoming filesystem probes. SessionHistory neither returns a path nor owns the artifact lifetime. Search/get never execute a tool, read an arbitrary path, mutate history, resume provider state, replay a tool, rerun work, or guarantee continuation from an interrupted point. Any continuation is fresh work in the current run with currently available tools and fresh verification.
-
-Compaction only changes the active prompt projection. Within sidecar retention, older calls remain searchable even after their message context disappears. Cold reseed retains the newest fitting suffix in chronological order and caps the complete UTF-8 projection, including its truncation marker, at 64 KiB. Use `SessionHistory` for exact retained managed-tool invocations/results, and `RunHistory` for broader settled-run context such as status, warnings, and final visible output.
+The `tools` reader excludes current-run and foreign-conversation records, with
+isolated/proactive evidence excluded unless requested. Tool invocation metadata
+stays visible when a nested retrieval body was suppressed. Pre-cutover third-party
+bare History bodies keep their ordinary retention; external MCP tools are not
+classified by a suffix guess. Runs omit system prompts, reasoning, recalled memory,
+raw artifact paths and unsafe private internals. A cold tool projection remains
+bounded to 64 KiB, including its header/truncation marker.
 
 :::note
 The **app-owned adapter tools** (`SlackSendMessage`, `TelegramSendMessage`,
@@ -527,7 +411,7 @@ allow/deny policy like other external servers.
 - [Tool policy](/tools/policy/) — the allow/deny model and app-owned MCP exceptions.
 - [Tools & guards](/runtime/tools-and-guards/) — built-in tool catalog and runtime guards.
 - [Capture & recall](/memory/capture-and-recall/) — `MemoryRecall` and local `MemoryJournal`, app-injected MCP tools.
-- [Artifacts and traces](/observability/artifacts-and-traces/) — the separate run records projected safely by `RunHistory` and the tool-lifecycle sidecar used by `SessionHistory`.
+- [Artifacts and traces](/observability/artifacts-and-traces/) — run records and retained tool lifecycles read by the `runs` and `tools` scopes.
 - [Durable continuations](/tools/durable-continuations/) — trusted asynchronous claim, result, synthesis, and delivery.
 - [Slack team bot with MCP tools](/playbooks/slack-team-bot-mcp-tools/) — end-to-end playbook wiring MCP servers into a channel agent.
 - Need to register MCP servers from code instead of config? See [Programmatic composition](/programmatic/composition/).
@@ -735,33 +619,3 @@ include `ProviderUsage`, `mcp__mono-agent-provider-usage__ProviderUsage`, or
 `mcp__mono-agent-provider-usage__*`. The same aliases and `*` work in
 `tools.disallowedTools`; deny wins. The request-scoped endpoint is removed at
 turn cleanup. No new config switch or external MCP declaration is needed.
-
-## Opt-in `History`: one scoped reader
-
-`tools.history.unified` defaults to false. Set it to true to register only
-`History` on the app-owned `mono-agent-history` MCP server. Do not add this
-request-scoped server to `mcp.json`. The three legacy history servers are not
-registered in this mode.
-
-`scope` is required. Use `said` for retained conversation search/get, `tools`
-for prior managed-tool lifecycle search/get, or `runs` for settled-run evidence.
-For `runs`, `search` without a query lists runs, `search` with a query searches,
-and `get` with `runId` inspects a run. Omitting `action` keeps the readers'
-shorthand behavior. `run_id` is not a unified argument. Other filters, limits,
-redaction, isolation checks, cursor binding and errors follow the legacy readers.
-Fields from another scope return `invalid_request`; missing or unavailable scopes
-return `invalid_scope` with the permitted scopes.
-
-Search, then get returned ids. Batch two useful records in a round and use
-8192-byte chunks; follow every returned navigation cursor. Previews are partial,
-and absence is not proof that something never happened. For interrupted work,
-start with `{ "scope": "runs" }`, inspect the candidate, then follow the exact
-`tools` handoff with `runIds` and `includeIsolated: true` when that scope is
-permitted. Do not add a terminal-state filter or broaden an empty run search.
-Reading evidence cannot resume provider state, replay tools or renew approval.
-
-[Unified history policy](/tools/policy/#opt-in-unified-history-policy) explains
-legacy-name grants and denies. MemoryRecall and MemoryJournal keep their own
-stores and tools; only their recovery routing text changes in unified mode.
-OpenAI-API and peer turns retain their authoritative request-policy boundary;
-subagent children do not inherit this new app-owned endpoint.

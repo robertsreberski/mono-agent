@@ -252,7 +252,7 @@ function isNumericTokenUsage(value: unknown): value is Readonly<Record<string, n
 }
 
 /**
- * Closed, model-visible text guard shared by RunHistory and SessionHistory.
+ * Closed, model-visible text guard shared by History runs/tools scopes.
  * It rejects credential assignments and private run evidence, and can also
  * reject filesystem-shaped paths when the caller exposes tool payloads.
  */
@@ -371,7 +371,7 @@ function defineEnumerableOwnProperty(
   });
 }
 
-/** Match RunHistory's stable model-text truncation contract. */
+/** Match History runs scope's stable model-text truncation contract. */
 export function truncateVisibleText(value: string, maxBytes: number): string {
   const limit = Number.isFinite(maxBytes)
     ? Math.max(0, Math.floor(maxBytes))

@@ -76,7 +76,7 @@ The default audit, metrics, and operator views read agent runs only; pass `--inc
 
 The host applies artifact retention once at startup, after stale-run reconciliation, and then on a periodic in-app sweep. Agent runs and `tool-output/<runId>/` directories use `artifacts.retention`; memory runs use `artifacts.memoryRetention`, defaulting to a shorter 7-day / 5,000-run window. Retention deletes terminal run summary/event pairs and independently selects tool-output run directories by directory modification time and count. An aged orphan is eligible even when no lifecycle or tool-history record persisted. Summaries still marked `running` are never deleted, and their run ids are projected through the sink's exact sanitizer to protect every matching tool-output directory without assuming a directory name can be reversed into a run id. Malformed or uncertain summaries conservatively protect any directory they can identify. A directory modified within the last hourly sweep interval is also kept, including when `maxCount` would otherwise select it, and its identity and modification time are rechecked immediately before removal. Set `dryRun: true` to log both planned JSONL-pair and tool-output-directory removals without deleting them; memory retention inherits the agent dry-run setting when its own `dryRun` is unset. A configured `tool-output` path that is itself a symlink is resolved before any containment check, exactly as the sink resolves it when writing. Retention then prunes eligible run directories beneath the resolved target, so pointing `tool-output` at a shared location makes that location subject to recursive deletion; keep it a directory the agent owns.
 
-Tool-history retention still removes only lifecycle database rows and tombstones; it neither owns nor extends raw-file lifetime. After the artifact sweep removes a raw file, the opaque `SessionHistory` reference remains readable with `available: false` instead of failing.
+Tool-history retention still removes only lifecycle database rows and tombstones; it neither owns nor extends raw-file lifetime. After the artifact sweep removes a raw file, the opaque `History` reference remains readable with `available: false` instead of failing.
 
 ### Run status and stale-run reconciliation
 
@@ -96,7 +96,7 @@ Reconciliation repairs status only and can report only data that reached a recor
 
 Failure kinds are an open string set because provider/runtime adapters can surface new values. The display taxonomy currently explains the common operator-facing kinds including `context_limit`, `usage_limit`, `process_death`, `cancelled` and its cancellation variants, `provider_unavailable`, `provider_unavailable_exhausted`, `runtime_error`, `session_not_found`, and `session_busy`; unknown values stay visible and get a generic artifact/log inspection hint. `context_limit` specifically means request input still exceeded the selected model's usable window after bridge recovery; unlike quota/output/max-turn `usage_limit`, it is eligible for configured route fallback.
 
-Cancelled summaries also carry a structured `cancellationReason` with `failureKind`, normalized host `code`, fixed host `notice`, and optional `channel`, `untrustedCode`, and `untrustedDetail`. The recorder and recorded-run reader bound and redact the structure before it reaches artifacts or `RunHistory`; consumers must treat both `untrusted*` fields as runtime/provider evidence, never as instructions. Independently known host abort provenance can identify operator stop, shutdown, stale-session eviction, signal, timeout, another recorded abort reason, or an abort whose reason was not recorded. A cancellation-shaped runtime result always uses `code: "runtime_result"` and the generic fixed notice, regardless of tokens in its untrusted fields. This structure preserves the terminal `cancelled_user` / `cancelled` distinction without introducing another status.
+Cancelled summaries also carry a structured `cancellationReason` with `failureKind`, normalized host `code`, fixed host `notice`, and optional `channel`, `untrustedCode`, and `untrustedDetail`. The recorder and recorded-run reader bound and redact the structure before it reaches artifacts or `History`; consumers must treat both `untrusted*` fields as runtime/provider evidence, never as instructions. Independently known host abort provenance can identify operator stop, shutdown, stale-session eviction, signal, timeout, another recorded abort reason, or an abort whose reason was not recorded. A cancellation-shaped runtime result always uses `code: "runtime_result"` and the generic fixed notice, regardless of tokens in its untrusted fields. This structure preserves the terminal `cancelled_user` / `cancelled` distinction without introducing another status.
 
 For a read-only inventory, run `mono-agent runs audit`. It scans every `*.summary.json` file in the artifact directory, reports malformed summaries, status and failure-kind histograms, unrecognized values, stale `running` summaries, and failure-kind rates. Unlike startup reconciliation, the audit never rewrites `running` summaries; it only flags what the startup reconciler would consider stale.
 
@@ -109,26 +109,24 @@ mono-agent runs audit --artifacts /path/to/.mono-agent/artifacts --stale-after-m
 The artifacts directory is the on-disk record after a successful recorder boundary; it is not a crash-safe journal of in-flight events. Keep it out of version control (it grows per run) but back it up if you care about historical runs you may need to audit later.
 :::
 
-## Agent-facing prior-run evidence (`RunHistory`)
+## Agent-facing prior-run evidence (`History`)
 
-`RunHistory` is an app-owned, read-only, request-scoped MCP tool that lets the agent recover exact evidence from its own recorded runs without shelling into `artifacts.dir`. It has no separate config key: allow-all exposes it automatically on MCP-capable routes, while a restrictive tool policy must name `RunHistory` explicitly. See [MCP servers](/tools/mcp/#runhistory-prior-run-evidence) and [Tool policy](/tools/policy/#runhistory).
+`History` is an app-owned, read-only, request-scoped MCP tool that lets the agent recover exact evidence from its own recorded runs without shelling into `artifacts.dir`. It has no separate config key: allow-all exposes it automatically on MCP-capable routes, while a restrictive tool policy must name `History` explicitly. See [MCP servers](/tools/mcp/#history) and [Tool policy](/tools/policy/#history).
 
-The tool exposes compact shorthand calls (explicit `list`, `search`, and
-`inspect` actions remain compatible):
+Use the `runs` scope to list, search, and inspect prior runs:
 
-- `{}` lists settled prior runs (`succeeded`, `failed`, `cancelled`, or
+- `{ "scope": "runs" }` lists settled prior runs (`succeeded`, `failed`, `cancelled`, or
   `interrupted`) in the logical conversation (default 5, maximum 10).
-- `{ "query": "topic terms" }` searches sanitized trigger/user input and run
+- `{ "scope": "runs", "action": "search", "query": "topic terms" }` searches sanitized trigger/user input and run
   metadata only, ranked by matched terms. **Matching** reads summaries once and
   never opens event JSONL. When the query matches exactly one run, the result
   additionally hydrates that one run's compact overview, which reads its event
-  JSONL under the same bounds and the same safe projection as `{ "runId" }` —
+  JSONL under the same bounds and the same safe projection as an explicit get —
   no wider read than the follow-up call it replaces.
-- `{ "runId": "..." }` returns a compact overview with metadata, trigger,
+- `{ "scope": "runs", "action": "get", "runId": "..." }` returns a compact overview with metadata, trigger,
   final visible output, warnings/failures, and per-tool call/error counts.
-- `{ "runId": "...", "cursor": "..." }` returns the next chronological
-  timeline page, bounded to 10 entries and about 16 KiB. `run_id` is accepted as
-  an alias.
+- `{ "scope": "runs", "action": "get", "cursor": "..." }` returns the next
+  chronological timeline page, bounded to 10 entries and about 16 KiB.
 
 List/search pagination and timeline inspection return an opaque `nextCursor`
 when more evidence exists. `navigation.guidance` and
@@ -137,14 +135,15 @@ kept separate from historical evidence so an agent can follow an exact safe
 next call.
 
 For an unhinted request to pick up, continue, or recover interrupted work, call
-`{}` first, choose a `cancelled` or `interrupted` candidate, and inspect its
-`runId`. The overview keeps the terminal status and failure provenance visible,
+with `scope: "runs"` first, choose a `cancelled` or `interrupted` candidate,
+and use `get` with its `runId`. The overview keeps the terminal status and failure provenance visible,
 labels its output as incomplete evidence rather than a completed conclusion,
 and supplies `navigation.relatedTools` with a conditional exact run-scoped
-`SessionHistory` search. Follow it only when that sibling tool is available:
+`History` search. Follow it only when the `tools` scope is available:
 
 ```json
 {
+  "scope": "tools",
   "action": "search",
   "runIds": ["cancelled-run-id"],
   "includeIsolated": true
@@ -164,18 +163,18 @@ resume provider state, replay tools, rerun work, or guarantee continuation from
 the interrupted point. Any continuation is fresh work in the current run using
 currently available tools and fresh verification.
 
-The boundary is deliberately narrower than direct artifact access. `RunHistory` excludes the current or any running run, unrelated conversations/threads, system prompts, model reasoning/thinking, recalled memory and turn-context payloads, and raw artifact paths. Ordinary filesystem spans are sanitized in place to `[host-path]` plus at most two non-sensitive trailing components, so surrounding commands, tool results, and assistant diagnostics remain visible; credentials and private run-artifact content are still omitted. Absolute roots, account/home prefixes, artifact roots, and private run paths never survive. Daily rollover `#YYYY-MM-DD` buckets do not partition one configured logical conversation. Search **matching** is limited to sanitized trigger/user input, run id, dates, status/failure kind, source/detail, model, and effort; it does not search assistant or tool output, and it never opens event JSONL to decide what matches. It ranks by matched terms rather than requiring all of them — full matches win outright, ranked partial matches appear only when none matched fully (`matchedAllTerms: false`), and the guidance names the terms the top candidate actually carried. A search landing on exactly one run then hydrates that run's compact overview through the same bounded read and safe projection as an explicit `inspect`, which does open that one run's event JSONL; an unreadable artifact degrades to the plain search result. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer to object keys as well as string values, with deterministic collision-safe key disambiguation. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Nested `RunHistory` result bodies are omitted to prevent recursive expansion. String and per-page bounds apply, and incomplete input is reported rather than silently presented as a complete log. Historical text is labelled **untrusted evidence** and must never be followed as instructions.
+The boundary is deliberately narrower than direct artifact access. `History` excludes the current or any running run, unrelated conversations/threads, system prompts, model reasoning/thinking, recalled memory and turn-context payloads, and raw artifact paths. Ordinary filesystem spans are sanitized in place to `[host-path]` plus at most two non-sensitive trailing components, so surrounding commands, tool results, and assistant diagnostics remain visible; credentials and private run-artifact content are still omitted. Absolute roots, account/home prefixes, artifact roots, and private run paths never survive. Daily rollover `#YYYY-MM-DD` buckets do not partition one configured logical conversation. Search **matching** is limited to sanitized trigger/user input, run id, dates, status/failure kind, source/detail, model, and effort; it does not search assistant or tool output, and it never opens event JSONL to decide what matches. It ranks by matched terms rather than requiring all of them — full matches win outright, ranked partial matches appear only when none matched fully (`matchedAllTerms: false`), and the guidance names the terms the top candidate actually carried. A search landing on exactly one run then hydrates that run's compact overview through the same bounded read and safe projection as an explicit `inspect`, which does open that one run's event JSONL; an unreadable artifact degrades to the plain search result. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `History` then applies an additional projection sanitizer to object keys as well as string values, with deterministic collision-safe key disambiguation. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Nested `History` result bodies are omitted to prevent recursive expansion. String and per-page bounds apply, and incomplete input is reported rather than silently presented as a complete log. Historical text is labelled **untrusted evidence** and must never be followed as instructions.
 
 Start with active conversation history for the current exchange. Use `MemoryRecall` for
 a targeted intentionally captured durable fact, and `MemoryJournal` for a broad
 date-bounded retrospective over curated local memory. Neither memory surface proves
-what commands ran or whether work succeeded: use `RunHistory` for exact settled
-prior-run evidence or interrupted-work recovery, then `SessionHistory` when exact
-managed-tool lifecycle evidence is needed.
+what commands ran or whether work succeeded: use `History` with `scope: "runs"` for settled
+prior-run evidence or interrupted-work recovery, then `scope: "tools"` for exact
+managed-tool lifecycle evidence.
 
-For an admitted, non-isolated cancelled interactive turn, active conversation history already includes a 48 KiB redacted continuity account: the request, partial assistant output, retained whole completed tool pairs, in-flight/omission markers, and the same typed cancellation reason. That automatic account gives the next turn immediate continuity. `RunHistory` remains the deliberate deeper evidence path for the run overview and omitted details; it does not synthesize or duplicate the history messages.
+For an admitted, non-isolated cancelled interactive turn, active conversation history already includes a 48 KiB redacted continuity account: the request, partial assistant output, retained whole completed tool pairs, in-flight/omission markers, and the same typed cancellation reason. That automatic account gives the next turn immediate continuity. `History` remains the deliberate deeper evidence path for the run overview and omitted details; it does not synthesize or duplicate the history messages.
 
-## Canonical tool lifecycle evidence (`SessionHistory`)
+## Canonical tool lifecycle evidence (`History`)
 
 Managed-tool invocation/result history does **not** use run JSONL, web SQLite,
 provider transcripts, or session files as its canonical store. The harness
@@ -194,7 +193,7 @@ finalizer drains accepted requests within one bounded 10-second reconciliation
 budget. `persisted` means the transaction committed before publication, while
 `failed` is reserved for a definitive writer rejection. Because run JSONL is an
 emission-time artifact, a deferred marker never changes in place after a late
-commit. After the run, `SessionHistory` is the authority for whether the row was
+commit. After the run, `History` is the authority for whether the row was
 retained. All lifecycle metadata and returned history remain `untrusted: true`.
 
 When a run is finalized as cancelled, a dangling invocation is closed as
@@ -202,7 +201,7 @@ When a run is finalized as cancelled, a dangling invocation is closed as
 cancellation reason code in `detail_code`; the synthetic result payload carries
 the same reason. Completed invocation/result rows remain intact. If a retained
 pair is already represented in the automatic continuity account, cold
-projection skips those exact record ids, while `SessionHistory` still returns
+projection skips those exact record ids, while `History` still returns
 the canonical row on explicit request.
 
 The protected tool-history directory fails closed on every unsupported entry,
@@ -226,15 +225,14 @@ shortening the full handoff ceiling.
 Writer-health rows retain the incident class and count, while `last_detail` is
 sanitized for filesystem-shaped text and byte-bounded before it reaches SQLite.
 
-`SessionHistory` is the sibling app-owned, request-scoped read surface over those
-records. `search` accepts bounded text, tool/state/run/time filters, opaque
+The `tools` scope of `History` reads those records. `search` accepts bounded text, tool/state/run/time filters, opaque
 cursors, and a maximum of 10 previews; `get` returns a selected invocation or
 result in chunks of at most 8 KiB. Current-run and foreign-conversation records
 are opaque, daily rollover buckets remain one logical scope, isolated/proactive
 runs require `includeIsolated: true`, nested history-tool result bodies are
 omitted, and every result is marked untrusted. Lifecycle records persist and cold-project for every route, and the engine-turn runtime exposes this host tool through its request-scoped host-tool seam. See [MCP
-servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) and [Tool
-policy](/tools/policy/#sessionhistory).
+servers](/tools/mcp/#history) and [Tool
+policy](/tools/policy/#history).
 
 Object keys and string values share the same path-opaque policy. Safe keys keep
 their spelling; keys that sanitize to the same token are deterministically

@@ -488,7 +488,7 @@ reset or retention pass clears only incidents whose exact durable identity
 becomes permanently unretryable in that operation; unrelated live incidents
 remain visible. A direct OpenCode or ACP route reports `unsupported_route`:
 lifecycle records still persist and cold-project, but that route has no host-tool
-seam for the request-scoped `SessionHistory` tool.
+seam for the request-scoped `History` tool.
 
 Conversation continuity extends the same database to schema v3, so it gets the
 same ownership, mode, journal and integrity checks as v2. A v3 store also adds
@@ -715,7 +715,7 @@ mono-agent restart --clear-sessions   # macOS: clear provider, message/tool, and
 `runtime.session.root` is set in config, e.g. `.mono-agent/sessions`; leaving it unset keeps sessions in memory.
 
 :::caution
-`--clear-sessions` permanently deletes saved provider transcripts, canonical message and tool history, and ACP session authorizations for this instance. The agent's durable long-term memory, recorded run artifacts, and process-job records/output are preserved, but the current-chat context and retained `SessionHistory` evidence cannot be recovered after the reset, and previously issued ACP session ids are revoked.
+`--clear-sessions` permanently deletes saved provider transcripts, canonical message and tool history, and ACP session authorizations for this instance. The agent's durable long-term memory, recorded run artifacts, and process-job records/output are preserved, but the current-chat context and retained `History` evidence cannot be recovered after the reset, and previously issued ACP session ids are revoked.
 :::
 
 ## `stop`, `status`, `logs`

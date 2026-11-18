@@ -109,7 +109,7 @@ app.
 First-party Phoenix/OTLP export, the `@mono-agent/observability/run-export`
 subpath, `observability.exporters`, `MONO_AGENT_OBSERVABILITY_EXPORTERS`, exporter
 status/probing, and `mono-agent backfill` are removed. The local JSONL recorder,
-`mono-agent runs`, `runs audit`, `runs report`, `RunHistory`, trace-source
+`mono-agent runs`, `runs audit`, `runs report`, `History`, trace-source
 discovery, failover details, and provider-neutral `RunExporter` /
 `createCompositeRunRecorder` contracts remain.
 
@@ -161,3 +161,12 @@ compatibility identifiers. Validate the updated consumer before restarting it.
 The shared Node client transport is available at `@mono-agent/channel-operator/client`. Web and ACP clients reuse its stream parsing and long-lived fetch implementation while retaining their own endpoint/authentication rules and frame ceilings. Multipart terminal replies and bounded final frames without a trailing newline are handled consistently.
 
 Browser wire types use canonical type-only imports. UI-only types stay in the frontend, and server runtime code is not imported into browser bundles. Notification previews and channel log sanitizers share their respective generic implementations while preserving channel-specific credential handling.
+
+## History hard cutover
+
+<!-- mono-agent-doc-history:v1 {"path":"docs/reference/framework-simplification-migration.md","line":168} -->
+> **Breaking: History replaces ConversationHistory, SessionHistory, and RunHistory without aliases or an opt-out.** Remove `tools.history` entirely, including `tools.history.unified`. Replace removed names and their former snake_case/MCP spellings in allowlists and denylists with `History`; allowing History grants all host-supported history scopes, while denying it blocks the whole tool. Update custom souls and prompts to call History with required scope `"said"` for retained conversation text, `"tools"` for prior tool calls/results, or `"runs"` for run outcomes. Use `search`/`get`; run inspection uses `get`, not `inspect`, and `run_id` is unsupported. Stale configuration and soul references fail validation. Run `mono-agent validate` before restarting. Stored history and historical tool names are not rewritten or deleted.
+
+**Programmatic API:** Remove `ConversationHarnessOptions.defaultCore`, `conversationHistoryAvailable`, `sessionHistoryAvailable`, the legacy `HistoryToolAvailability` shape and `ToolHistoryRunBinding.unifiedHistory`. Removed JavaScript options fail explicitly. Hosts report availability as `{said, tools, runs}` and pass positive `appOwnedHistory` ownership for app-tool capture. Custom hosts without the app History tool get no-tool guidance.
+
+Any `tools.history` key is rejected, including `{}` and `{unified:false}`. Reword even prose mentions of retired tool names in custom souls before upgrading; identity, skills and subagent prompts receive doctor warnings. New agents default to History in the safe-tools list, granting tools and runs as well as said when supported by the host. Allowing History may broaden an old single-scope policy; no per-scope replacement policy exists. Rollback restores the complete previous binary/config/soul set, not a flag. There is no history-storage migration.
