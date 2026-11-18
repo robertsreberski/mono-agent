@@ -90,10 +90,11 @@ function getAssistantUsage(msg: any) {
     }
     return undefined;
 }
-/** Return usage from the last valid assistant message in session entries. */
+/** Return the last valid assistant usage since the newest compaction. */
 export function getLastAssistantUsage(entries: any) {
     for (let i = entries.length - 1; i >= 0; i--) {
         const entry = entries[i];
+        if (entry.type === "compaction") break;
         if (entry.type === "message") {
             const usage = getAssistantUsage(entry.message);
             if (usage)
@@ -137,6 +138,19 @@ export function estimateContextTokens(messages: any): { tokens: any; usageTokens
         trailingTokens,
         lastUsageIndex: usageInfo.index,
     };
+}
+/** Projected context includes the retained tail, but its assistant usage was
+ * recorded on the larger, pre-cut request. Use the journal boundary, not
+ * timestamps or the position of the projected summary, to select fresh usage.
+ */
+export function estimateProjectedContextTokens(messages: any[], pathEntries: any[]): Pick<ReturnType<typeof estimateContextTokens>, "tokens" | "usageTokens"> {
+    let checkpoint = pathEntries.length - 1;
+    while (checkpoint >= 0 && pathEntries[checkpoint].type !== "compaction") checkpoint--;
+    if (checkpoint === -1) return estimateContextTokens(messages);
+    const fresh = estimateContextTokens(pathEntries.slice(checkpoint + 1).flatMap(entry => sessionEntryToContextMessages(entry) ?? []));
+    if (fresh.usageTokens > 0) return fresh;
+    const estimated = messages.reduce((total, message) => total + estimateTokens(message), 0);
+    return { tokens: estimated, usageTokens: 0 };
 }
 /** Return whether context usage exceeds the configured compaction threshold. */
 export function shouldCompact(contextTokens: any, contextWindow: any, settings: any) {
@@ -471,7 +485,7 @@ export function prepareCompaction(pathEntries: any, settings: any, { nonRetainab
         compactableEntries = [...pathEntries.slice(0, nonRetainablePrefixLength), ...virtualRetainedEntries, ...pathEntries.slice(prevCompactionIndex + 1)];
     }
     const boundaryEnd = compactableEntries.length;
-    const tokensBefore = estimateContextTokens(buildContextEntries(pathEntries).flatMap(sessionEntryToContextMessages)).tokens;
+    const tokensBefore = estimateProjectedContextTokens(buildContextEntries(pathEntries).flatMap(sessionEntryToContextMessages), pathEntries).tokens;
     // Inherited envelopes are immutable predecessor evidence, not a retainable
     // current tail. Clamp BEFORE producer preparation/dispatch, including the
     // split-turn start; a small current delta must not retain the inherited prefix.
@@ -637,14 +651,21 @@ export async function compactWithRequest(preparation: any, options: any, request
     }
     let summary = historyText;
     if (split) {
-      // Validate history before buying a second request. No repair or retry.
+      // Validate the provider history before buying a second request. Native
+      // summary bytes must remain reconstructible from the authenticated
+      // provider receipts and the existing split/file framing.
       const reason = validate(`${historyText}${separator}${metadata}`);
       const splitReason = reason ?? (protecting && !budget.fits(`${historyText}${separator}${metadata}`, budget.minimum) ? "summary_budget_exceeded" : null);
       if (splitReason) {
         if (!preparation.preservationFallback) return refuse(splitReason);
         bypass(splitReason); // Reuse the already generated history; never buy a replacement.
       }
-      const prefixTarget = protecting ? Math.min(targets.prefix, budget.limit - budget.estimate(`${historyText}${separator}${metadata}`)) : targets.prefix;
+      // Provider output caps and our projected text estimate are not the same
+      // units. Rebalance within the plan, but don't shrink the provider request
+      // below the useful floor promised at preflight. The complete candidate
+      // still has to fit the original budget; a target isn't text.
+      const prefixTarget = protecting ? Math.max(plan.minimumAnswerTokens,
+        Math.min(targets.prefix, budget.limit - budget.estimate(`${historyText}${separator}${metadata}`))) : targets.prefix;
       const turnPrefixResult = await generate(
         () => generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context, prefixTarget, protecting),
         () => generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, thinkingLevel, request, context, targets.prefix, false));

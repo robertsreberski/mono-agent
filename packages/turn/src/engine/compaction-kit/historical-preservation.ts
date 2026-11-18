@@ -1,3 +1,4 @@
+import { MIN_ANSWER_TOKENS } from "@earendil-works/pi-ai/api/simple-options";
 import { computeFileLists, formatFileOperations } from "./utils.js";
 import { convertToLlm, createCompactionSummaryMessage } from "./messages.js";
 
@@ -156,8 +157,8 @@ export function planSummaryBudget(preparation: SummaryBudgetPreparation, estimat
   const protecting = tuples.length > 0 && protectedFits;
   const requestTargets = protecting ? { history: Math.floor(targets.history * 0.85), prefix: Math.floor(targets.prefix * 0.85) }
     : { history: generateHistory ? originalHistory : 0, prefix: originalPrefix };
-  const minimumTextTarget = Math.min(...[generateHistory ? requestTargets.history : Infinity, split ? requestTargets.prefix : Infinity]);
-  return { budget, split, generateHistory, tuples, protectedText, readFiles, modifiedFiles, metadata, historyText, separator, targets: requestTargets, originalHistory, originalPrefix, protecting, protectedFits, parsed, minimumTextTarget };
+  const minimumAnswerTokens = Math.min(MIN_ANSWER_TOKENS, generateHistory ? requestTargets.history : Infinity, split ? requestTargets.prefix : Infinity);
+  return { budget, split, generateHistory, tuples, protectedText, readFiles, modifiedFiles, metadata, historyText, separator, targets: requestTargets, originalHistory, originalPrefix, protecting, protectedFits, parsed, minimumAnswerTokens };
 }
 
 /** Deterministic pre-request bypass state shared by generation and fit preflight. */

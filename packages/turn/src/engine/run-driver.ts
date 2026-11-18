@@ -10,7 +10,7 @@ import { projectContext, projectInheritedContext } from "./request-projection.js
 import { evidenceDigest } from "./evidence-view.js";
 import { checkHandoffDispatch, estimateHandoffTokens } from "./handoff.js";
 import { convertToLlm } from "./compaction-kit/messages.js";
-import { estimateContextTokens, shouldCompact } from "./compaction-kit/compaction.js";
+import { estimateProjectedContextTokens, shouldCompact } from "./compaction-kit/compaction.js";
 import { recordInterruption, repairInterruptedSession, isExecutableAssistant } from "./interruption.js";
 import { validateSessionTurn } from "./journal-schema.js";
 import { compactionEvidence } from "./compaction-evidence.js";
@@ -430,8 +430,9 @@ export function createRunDriver(store: any, options: any): {
           getFollowUpMessages: async () => [],
           prepareRequest: async () => {
             if (!dispatchBudget && compactionArmed && settings.enabled) {
-              const messages = project(await store.getEntries()).messages;
-              if (shouldCompact(estimateContextTokens(messages).tokens, options.model.contextWindow, settings)) await performCompaction("threshold");
+              const entries = await store.getEntries();
+              const messages = project(entries).messages;
+              if (shouldCompact(estimateProjectedContextTokens(messages, entries).tokens, options.model.contextWindow, settings)) await performCompaction("threshold");
             }
             return { context: await requestContext() };
           },

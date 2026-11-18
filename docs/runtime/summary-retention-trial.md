@@ -40,7 +40,9 @@ reused history, split separator and file metadata included), plus the 1-MiB text
 bound. Known composition is reserved before allocating the history:prefix targets;
 provider caps use `floor(target * 0.85)` to leave estimate margin. Provider
 reasoning/headroom policy stays separate. The first split output is checked before
-the second call, then the complete candidate is checked. With zero protected
+the second call. History estimate overruns cannot reduce the prefix request
+below the planned useful-answer floor. That floor governs dispatch, not final
+text: the complete candidate still has to fit the original bound. With zero protected
 tuples, legacy caps/output acceptance and savings guards remain unchanged.
 
 Liveness takes precedence over preservation. If protected history plus
@@ -80,8 +82,9 @@ generated output through legacy composition without another call. Protected
 truncation instead retries only the truncated part once with legacy caps and no
 protected frame: at most one extra call per cut, never a new whole-cut retry.
 Later parts are unprotected. Legacy-cap truncation (zero tuples or the retry
-after bypass) still fails and is cached by provider failureGuard, exactly as
-before this guard; only protecting truncation is a non-cached refusal.
+after bypass) still fails and is cached by the provider failure guard for
+proactive checks. The single reactive attempt per overflowing run ignores that
+cooldown. Protecting truncation is a non-cached refusal.
 Thus ordinary/split-generated/split-reused cuts use 1/2/1 calls normally, at most
 2/3/2 after protected truncation; automatic first-history refusal uses one call,
 or two if only the split prefix fails. Actual inherited-prefix compaction runs
@@ -94,7 +97,12 @@ remediation: raise `summaryMaxTokens` or start a new session to restore protecti
 Manual compaction can recover a refused automatic cut. `accounting.preservation`
 appears only for protected or unavailable history and records sizes/counts,
 missing counts, active protection, refusal/bypass reason and complete final-summary bytes/estimate
-(null before a complete candidate). No host repair, tuple eviction or new carrier is added. Provider request
+(null before a complete candidate). The host does not append missing tuples to
+a model reply. Authenticated lineage reconstructs the durable output from the
+verified replies, known split and file framing, and the admitted whole
+predecessor when a split reuses history. Reseed carriage instead admits
+predecessor bytes as input when they cannot be quoted in the seed; it does not
+repair summaries. Provider request
 usage/cost and `generatedSummaryTokens` include a truncated request and its bounded
 legacy retry. A recovered cut keeps a defined native `usage` object, summing
 known numeric parts with `usage.partial: true` when any part is missing. These

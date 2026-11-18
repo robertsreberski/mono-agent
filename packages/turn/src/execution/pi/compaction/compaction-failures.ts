@@ -19,8 +19,12 @@ export function compactionFailureGuard({ scope, model, policy, tokens, trigger, 
   const cooldown = policy.failureCooldownMs ?? 900000;
   const previous = failures.get(key);
   const growth = previous ? Math.max(8192, Math.ceil(previous.tokens * 0.1)) : 0;
-  const suppressed = trigger !== "manual" && previous && now - previous.at < cooldown && tokens - previous.tokens < growth;
-  if (!suppressed) failures.delete(key);
+  // The caller allows one reactive compaction attempt per overflowing run.
+  // A speculative failure must not prevent that recovery; an unattempted
+  // reactive cut, however, should not clear the proactive cooldown.
+  const reactive = trigger === "reactive_overflow";
+  const suppressed = trigger !== "manual" && !reactive && previous && now - previous.at < cooldown && tokens - previous.tokens < growth;
+  if (!suppressed && !reactive) failures.delete(key);
   return {
     suppressed: Boolean(suppressed),
     warn: Boolean(suppressed && !previous.warned),

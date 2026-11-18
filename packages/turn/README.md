@@ -77,7 +77,11 @@ warning; unclosed fences or unparsed non-placeholder history produce content-fre
 
 With protected tuples, complete-result estimates share `summaryMaxTokens` and the
 1-MiB record bound; provider text caps use an 85% margin. With zero tuples, legacy
-caps, output acceptance and the savings preview are unchanged. The public
+caps, output acceptance and the savings preview are unchanged. The host does
+not append missing protected tuples to a provider reply: checkpoint lineage
+verifies the summary against the original reply bytes and existing framing.
+Cold reseed carriage admits an authenticated predecessor as input; it is not
+an output repair. The public
 `compact`/`compactWithRequest` helpers can return `CompactionError.code` equal to
 `summary_refused` for a lossy/oversized/truncated protected candidate. Native
 proactive/threshold cuts refuse without changing history or poisoning the provider
@@ -1740,7 +1744,8 @@ answer-room adjustment. Low adaptive effort is not a hard hidden-token cap.
 Unchanged paid summary failures are suppressed for `failureCooldownMs` (default
 900,000; zero disables). A 10% input increase (at least 8,192 tokens), summary
 policy/model change, successful compaction or new session permits another attempt.
-Manual actions bypass suppression. The bounded process-local cache clears on
+Manual actions and the single reactive attempt per overflowing run bypass
+suppression. The bounded process-local cache clears on
 restart; one suppression warning explains why automatic compaction was skipped.
 Overflow remains a real failure and may continue through the fallback chain.
 
@@ -1748,6 +1753,10 @@ A summary that cannot retain a useful answer after context/model and reasoning
 reserves is rejected **before invoking the provider**, with
 `insufficient_summary_headroom` accounting and a runtime warning. The useful
 minimum is Pi's 1024 tokens, or the intentionally smaller split/text budget.
+An overrunning split history cannot shrink the prefix request below that planned
+minimum. A request cap is not a projected text estimate: the protected composed
+summary still has to fit `summaryMaxTokens`, and an already oversized history is
+rejected before paying for a prefix.
 Known local non-dispatch has zero cost; missing provider usage remains unknown.
 Cheap headroom failures also enter suppression until growth, cooldown or policy/
 model-ceiling changes permit retry.
@@ -1804,6 +1813,11 @@ persistence. If a turn still overflows, guarded reactive recovery compacts and
 re-prompts at most once, only after a preview proves positive reduction. A fresh
 compaction suppresses recovery, but meaningful transcript growth after a mid-run
 compaction makes recovery eligible again.
+
+Pre-turn and checkpoint estimates ignore provider usage recorded before the
+latest checkpoint, including usage on assistant messages in its retained tail.
+Until a new assistant reports usage, the trigger uses the raw projected transcript
+size plus applicable fixed request overhead.
 
 The context window auto-tracks the model actually serving the request
 (`harness.getModel()`). Numeric provider limits become learned ceilings; generic

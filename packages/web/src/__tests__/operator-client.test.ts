@@ -81,6 +81,16 @@ describe("OperatorClient", () => {
     await expect(client.compactConversation("fictional")).rejects.toMatchObject({ code: "invalid_compaction_response" });
   });
 
+  it("keeps a future manual compaction reason neutral without leaking provider text", async () => {
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234", fetchImpl: async () => Response.json({
+      status: "failed", trigger: "manual", operationId: "fictional", reason: "unknown_future_code",
+      httpStatus: 502, message: "Fictional unsafe provider text",
+    }) });
+    await expect(client.compactConversation("fictional")).resolves.toEqual({
+      status: "failed", trigger: "manual", operationId: "fictional", tokenCountsExact: false,
+    });
+  });
+
   it("feature-detects v1 manual compaction and posts only the exact conversation", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
     const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "fixture", fetchImpl: (async (input, init) => {

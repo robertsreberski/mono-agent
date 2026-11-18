@@ -6,6 +6,10 @@ export const manualCompactionReasons = [
   "agent_offline", "internal_error", "session_unavailable", "commit_failed",
   "summary_failed", "not_reducible", "insufficient_savings", "headroom_unavailable",
   "failure_cooldown", "historical_preservation_refused",
+  "insufficient_summary_headroom", "recent_identical_failure", "preservation_growth_required",
+  "protected_tuples_missing", "summary_budget_exceeded", "output_truncated",
+  "inherited_prefix_not_reducible", "guarded", "aborted", "attempt_in_flight",
+  "below_trigger", "no_new_assistant", "insufficient_growth", "projected_savings",
 ] as const;
 export type AgentManualCompactionReason = typeof manualCompactionReasons[number];
 export type AgentManualCompactionDiagnostic = {

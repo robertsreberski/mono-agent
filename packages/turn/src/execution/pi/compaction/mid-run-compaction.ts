@@ -408,7 +408,7 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
       // The compaction we handed Pi was not committed (cancelled run or a
       // durable failure). Report it and leave the run's accounting untouched.
       reportGuardedCompactionOutcome({
-        decision: { kind: "failed", error: Object.assign(new Error("Mid-run compaction was not committed"), { code: event.status === "declined" ? "aborted" : "compaction" }) },
+        decision: { kind: "failed", diagnostic: { reason: event.status === "declined" ? "cancelled" : "commit_failed" }, error: new Error("Mid-run compaction was not committed") },
         error: undefined,
         trigger: MID_RUN_TRIGGER,
         model: reference,

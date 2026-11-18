@@ -7,7 +7,8 @@ export function classifyCompactionFailure(error: unknown): AgentManualCompaction
   const code = [data.code, data.name, data._tag].filter(Boolean).join(" ").toLowerCase();
   const status = data.status ?? data.statusCode ?? /\b(?:http[ :]*|status[ :]*)([45]\d\d)\b/i.exec(message)?.[1];
   const httpStatus = Number(status);
-  const reason = /timeout|timed out/.test(code + " " + message) ? "timeout"
+  const reason = data.code === "invalid_cut" ? "internal_error"
+    : /timeout|timed out/.test(code + " " + message) ? "timeout"
     : /abort|cancel/.test(code) ? "cancelled"
     : httpStatus === 429 || /rate.limit|rate_limited/.test(message) ? "rate_limited"
     : httpStatus === 529 || httpStatus === 503 || /overload/.test(message) ? "provider_overloaded"

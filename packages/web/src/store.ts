@@ -1,4 +1,3 @@
-import { manualCompactionDiagnostic } from "@mono-agent/contracts";
 import { PDF_LIMITS, pdfTooLarge } from "./pdf-model.js";
 import { browserCostWire, normalizeBrowserCosts, costAmount, knownCostAmount } from "./cost-wire.js";
 import type { ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
@@ -95,7 +94,7 @@ import {
   type ExternalConversationObservation,
 } from "./external-conversations.js";
 import { withProjectContext, formatQuotedTurn, type ProjectContextSource } from "./project-context.js";
-import { isConversationMarker } from "./conversation-markers.js";
+import { compactionMarkerDiagnostic, isBenignAutomaticCompactionSkip, isConversationMarker } from "./conversation-markers.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
@@ -1053,7 +1052,7 @@ export class WebStore {
     // Keep telemetry as content-free as the marker, even for older callers.
     result = {
       status: result.status, trigger: "manual", operationId: result.operationId,
-      ...(result.status !== "succeeded" && (result.reason !== undefined || result.status === "failed") ? manualCompactionDiagnostic(result) : {}),
+      ...compactionMarkerDiagnostic(result),
       ...(result.tokensBefore === undefined ? {} : { tokensBefore: result.tokensBefore }),
       ...(result.tokensAfter === undefined ? {} : { tokensAfter: result.tokensAfter }),
       ...(result.tokenCountsExact === undefined ? {} : { tokenCountsExact: result.tokenCountsExact }),
@@ -4107,6 +4106,7 @@ export class WebStore {
   private insertCompactionMarker(threadId: string, at: string, data: unknown): void {
     if (data === null || typeof data !== "object" || Array.isArray(data)) return;
     const value = data as Record<string, unknown>;
+    if (isBenignAutomaticCompactionSkip(value)) return;
     const marker: unknown = {
       type: "conversation-marker", kind: "compaction", at,
       operationId: value.operationId,
@@ -4115,8 +4115,7 @@ export class WebStore {
       ...(value.tokensBefore === undefined ? {} : { tokensBefore: value.tokensBefore }),
       ...(value.tokensAfter === undefined ? {} : { tokensAfter: value.tokensAfter }),
       ...(value.tokenCountsExact === undefined ? {} : { tokenCountsExact: value.tokenCountsExact }),
-      ...(value.status !== "succeeded" && (value.reason !== undefined || value.status === "failed")
-        ? manualCompactionDiagnostic(value) : {}),
+      ...compactionMarkerDiagnostic({ status: value.status, reason: value.reason, httpStatus: value.httpStatus }),
     };
     if (!isConversationMarker(marker) || marker.kind !== "compaction") return; // Untrusted stream data never enters marker storage.
     const existing = this.database.prepare(`SELECT 1 FROM messages WHERE thread_id = ?
@@ -8814,14 +8813,22 @@ function upsertContextCompaction(
   event: Extract<AgentStreamEvent, { type: "runtime_telemetry" }>,
 ): void {
   const operationId = contextCompactionOperationId(event);
-  const next: WebMessagePart = { type: "telemetry", event: event.type, data: event };
-  if (operationId === undefined) {
-    parts.push(next);
-    return;
-  }
-  const index = parts.findIndex(
-    (part) => part.type === "telemetry" && contextCompactionOperationId(part.data) === operationId,
+  const index = operationId === undefined ? -1 : parts.findIndex(
+    part => part.type === "telemetry" && contextCompactionOperationId(part.data) === operationId,
   );
+  // This is also the legacy inline presentation path. Keep its diagnostics
+  // as content-free as the persisted divider (but retain usage accounting).
+  let safeEvent = event;
+  if (event.data !== null && typeof event.data === "object" && !Array.isArray(event.data)) {
+    const value = event.data as Record<string, unknown>;
+    if (isBenignAutomaticCompactionSkip(value)) {
+      if (index >= 0) parts.splice(index, 1); // Clear the transient inline row too.
+      return;
+    }
+    const { message: _message, reason, httpStatus, ...data } = value;
+    safeEvent = { ...event, data: { ...data, ...compactionMarkerDiagnostic({ status: data.status, reason, httpStatus }) } };
+  }
+  const next: WebMessagePart = { type: "telemetry", event: event.type, data: safeEvent };
   if (index < 0) parts.push(next);
   else parts[index] = next;
 }
