@@ -35,12 +35,12 @@ export async function e2AbArmContract(letter) {
   const soul = await shippingSoul(spec.historySurface);
   let description;
   try {
-    if (spec.historySurface === "unified") {
+    {
       const { historyDescription } = await import(new URL("../../packages/app/dist/request-tools/history.js", import.meta.url).href);
       const { resolveHistoryScopes } = await import(new URL("../../packages/app/dist/request-tools/history-policy.js", import.meta.url).href);
       // The E2 composition offers every scope: said follows continuity, tools/runs are always on.
       description = historyDescription(resolveHistoryScopes({ allowedTools: ["History"] }, { said: true, tools: true, runs: true }), { variant: spec.descriptionVariant });
-    } else description = (await import(new URL("../../packages/app/dist/request-tools/conversation-history.js", import.meta.url).href)).CONVERSATION_HISTORY_DESCRIPTION;
+    }
   } catch { fail("E2_ESTIMATOR_BUILD_REQUIRED"); }
   need(typeof description === "string" && description.length > 0, "E2_ESTIMATOR_BUILD_REQUIRED");
   return { arm: letter, historySurface: spec.historySurface, ...(spec.descriptionVariant ? { descriptionVariant: spec.descriptionVariant } : {}),
@@ -198,7 +198,7 @@ export function estimateE2HistoryAb({ protocol, roles, historyAb, records, catal
     retryExposure: { policy: E2_RETRY_POLICY, maximumAdditionalRequests: E2_RETRY_POLICY.maxPerRun,
       maximumAdditionalUnits: (BigInt(all.largestReservationUnits) * BigInt(E2_RETRY_POLICY.maxPerRun)).toString(), includedInMinimum: false } };
 }
-/** One registration, one paid run: one replay-kind slot per registered arm, in A, B, C order. */
+/** One registration, one paid run: one replay-kind slot per registered arm, in B, C order. */
 export function e2AbPhaseSchedule(protocol, historyAb, records) {
   const funded = fundedArmRequests(protocol, historyAb, records), checkpoint = e2AbProbeCounts(protocol, historyAb).find(c => c.questions > 0).checkpoint;
   const phases = funded.map(({ arm, requests }) => ({ kind: "replay", arm: e2AbSlotArm(arm), variant: "registered", phase: "whole",

@@ -17,7 +17,7 @@ import { LOOKUP_PILOT_PROTOCOL_FILES } from "./continuity-lookup-roles.mjs";
 import { BUILD_POLICY, sourceState, verifyRealBuild } from "./memory-e2e-build.mjs";
 import { E2_AB_REPLAY_ARM, E2_AB_TOOL_POLICIES, assertE2HistoryAbBinding, assertE2AbArmContracts, assertE2AbSnapshot, e2AbFrozenCheckpoint, e2AbQuestions, e2AbProbeCounts, normalizeE2AbSizing, estimateE2HistoryAb, e2AbPhaseSchedule } from "./continuity-e2-ab.mjs";
 const E2_HISTORY_SOURCE_FILES = Object.freeze(["packages/app/src/request-tools/history.ts", "packages/app/src/request-tools/history-policy.ts", "packages/app/src/request-tools/history-presentation.ts",
-  "packages/app/src/request-tools/conversation-history.ts", "scripts/lib/continuity-runner.mjs",
+  "packages/app/src/request-tools/history-said.ts", "packages/app/src/request-tools/history-tools.ts", "packages/app/src/request-tools/history-runs.ts", "scripts/lib/continuity-runner.mjs",
   "scripts/lib/continuity-e2-ab.mjs", "scripts/lib/continuity-e2-ab-score.mjs"]);
 export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROTOCOL_FILES, ...E2_HISTORY_SOURCE_FILES,
   "scripts/continuity-e2.mjs", "pnpm-lock.yaml", "package.json",
@@ -34,7 +34,7 @@ export const E2_PROTOCOL_FILES = Object.freeze([...new Set([...LOOKUP_PILOT_PROT
   "scripts/lib/continuity-e2-sizing-process.mjs", "scripts/lib/continuity-e2-sizing-child.mjs",
   "scripts/lib/continuity-e2-cause.mjs", "scripts/lib/continuity-e2-retry.mjs", "scripts/lib/continuity-e2-progress.mjs", "scripts/lib/continuity-e2-probe-receipts.mjs",
   "scripts/lib/continuity-e2-phase-child.mjs", "scripts/lib/continuity-e2-history.mjs",
-  "packages/conversation/src/context/unified-soul.ts",
+  "packages/conversation/src/context/default-soul.ts",
   "scripts/lib/continuity-e2-paid-entry.mjs",
 ])].sort());
 const need = ok => { if (!ok) throw Object.assign(Error("e2_registration_invalid"), { code: "e2_registration_invalid" }); };
@@ -128,7 +128,7 @@ export function e2PhaseSchedule(protocol, records, probeCounts, replayArm) {
   return phases.map((p, index) => ({ ...p, index, slotId: digest([E2_PHASE_DOMAIN, index, p]), eligible: true,
     roleId: "e2-validation-phase", code: "E2", suite: "e2-validation", traceId: String(index), probeId: String(index) }));
 }
-export const E2_TOOL_POLICIES = Object.freeze({ summary: Object.freeze([]), replay: Object.freeze(["ConversationHistory"]), replayFinal: Object.freeze([]), proof: Object.freeze(["ConversationHistory"]), cancelContinuation: Object.freeze(["ConversationHistory", "ProofSentinel"]) });
+export const E2_TOOL_POLICIES = Object.freeze({ summary: Object.freeze([]), replay: Object.freeze(["History"]), replayFinal: Object.freeze([]), proof: Object.freeze(["History"]), cancelContinuation: Object.freeze(["History", "ProofSentinel"]) });
 export const e2ToolPolicies = (arm, historySurface) => {
   if (e2ReplayArm(arm) === E2_AB_REPLAY_ARM) { need(historySurface === undefined); return structuredClone(E2_AB_TOOL_POLICIES); }
   const policies = e2HistorySurface(historySurface) === "unified"
@@ -144,7 +144,9 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     if (r?.replayArm === E2_AB_REPLAY_ARM) return await validateE2HistoryAbRegistration(pilot, { safeRead, safeDirectory });
     need(fields(r, ["code", "build", "catalog", "protocol", "source", "probes", "keys", "soul", "roles", "schedule", "toolPolicies", "sizing", "probeCounts", ...(Object.hasOwn(r, "replayArm") ? ["replayArm"] : []), ...(Object.hasOwn(r, "historySurface") ? ["historySurface"] : [])])
       && fields(d, ["schema", "assumptions", "capUnits", "deadlines", "retryPolicy"]) && d.schema === E2_PLAN_SCHEMA && same(d.assumptions, E2_ASSUMPTIONS) && same(d.retryPolicy, E2_RETRY_POLICY));
-    const replayArm = e2ReplayArm(r.replayArm), historySurface = e2HistorySurface(r.historySurface);
+    const replayArm = e2ReplayArm(r.replayArm);
+    need(replayArm === E2_AB_REPLAY_ARM ? !Object.hasOwn(r,"historySurface") : r.historySurface === "unified");
+    const historySurface = e2HistorySurface(r.historySurface);
     e2CapUnits(d.capUnits); validateE2Deadlines(d.deadlines);
     await safeDirectory(ROOT, "e2_registration_invalid"); await verifyE2Code(r.code, r.build);
     need(same(r.catalog, await loadE2Catalog()));
@@ -157,7 +159,7 @@ export async function validateE2Registration(pilot, { safeRead, safeDirectory })
     };
     const source = await json(r.source, E2_INPUT_LIMITS.sourceBytes); validateSource(source);
     const protocol = validateProtocol(await json(r.protocol), source), questions = await json(r.probes), evaluator = await json(r.keys);
-    const probeCounts = e2ProbeCounts(protocol, questions, evaluator, source, replayArm); need(same(r.probeCounts, probeCounts) && same(r.toolPolicies, e2ToolPolicies(replayArm, historySurface)));
+    const probeCounts = e2ProbeCounts(protocol, questions, evaluator, source, replayArm); need(same(r.probeCounts, probeCounts) && same(r.toolPolicies, e2ToolPolicies(replayArm, replayArm === E2_AB_REPLAY_ARM ? undefined : historySurface)));
     need(Array.isArray(r.sizing) && r.sizing.length > 0 && r.sizing.length <= E2_INPUT_LIMITS.sizingFiles);
     const records = []; for (const binding of r.sizing) records.push(await json(binding));
     for (const record of records) assertHistorySurfaceBinding(r, record);

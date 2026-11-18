@@ -40,7 +40,7 @@ const runtime = (patch) => Object.freeze({ runtime: Object.freeze(patch) });
 export const CONTINUITY_OFF = runtime({ session: { continuity: { enabled: false } } });
 export const CONTINUITY_ON = runtime({ session: { continuity: { enabled: true, packEnabled: false } } });
 export const CONTINUITY_PACK_ON = runtime({ session: { continuity: { enabled: true, packEnabled: true } } });
-export const CONVERSATION_HISTORY_TOOL = "ConversationHistory";
+export const CONVERSATION_HISTORY_TOOL = "History";
 /** The reader may call only ConversationHistory: no built-in tools, as in every other probe. */
 const HISTORY_TOOL_ONLY = Object.freeze({ tools: Object.freeze({ allowedTools: Object.freeze([CONVERSATION_HISTORY_TOOL]) }) });
 
@@ -222,7 +222,7 @@ export function assertRunnableArms(ids, families) {
  * provider session identity and are therefore never run concurrently.
  */
 export function checkpointKey(arm, repeat, probeMode) {
-  if (probeMode === "lookup-allowed-v1") return `lookup-v1-${checkpointKey(arm, repeat)}`;
+  if (probeMode === "lookup-allowed-v3") return `lookup-v3-${checkpointKey(arm, repeat)}`;
   return arm.ledgerUpkeep ? `ledger-${arm.id}-r${repeat}` : arm.midCheckpoint === null ? `scripted-${arm.id}` : `mid-${arm.id}-r${repeat}`;
 }
 

@@ -55,8 +55,8 @@ export async function fullConfiguredFixture(root, base) {
     if (!/^export const PACK_RETRIEVAL_GUIDANCE = .*;$/mu.test(original)) throw Error("proof_guidance_baseline_changed");
     await fs.writeFile(join(f.repo, render), original.replace(/^export const PACK_RETRIEVAL_GUIDANCE = .*;\n/mu, ""));
     const source = await fs.readFile(join(f.repo, implementation), "utf8");
-    if (!source.includes('const guidance = conversationHistoryAvailable ? PACK_RETRIEVAL_GUIDANCE : "";')) throw Error("proof_guidance_baseline_changed");
-    await fs.writeFile(join(f.repo, implementation), source.replace(", PACK_RETRIEVAL_GUIDANCE }", " }").replace("conversationHistoryAvailable = false): ContinuityPack", "_conversationHistoryAvailable = false): ContinuityPack").replace('const guidance = conversationHistoryAvailable ? PACK_RETRIEVAL_GUIDANCE : "";', 'const guidance = "";'));
+    if (!source.includes('const guidance = historyScopes?.said ? PACK_RETRIEVAL_GUIDANCE : "";')) throw Error("proof_guidance_baseline_changed");
+    await fs.writeFile(join(f.repo, implementation), source.replace("historyScopes?: HistoryToolAvailability): ContinuityPack", "_historyScopes?: HistoryToolAvailability): ContinuityPack").replace('const guidance = historyScopes?.said ? PACK_RETRIEVAL_GUIDANCE : "";', 'const guidance = "";'));
     for (const path of [f.repo, pack]) {
       // The real app closure includes web. Its explicit install step is not
       // permitted in a shared-dependency proof; retain the actual build only.

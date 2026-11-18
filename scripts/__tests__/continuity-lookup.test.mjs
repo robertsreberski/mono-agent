@@ -27,7 +27,7 @@ describe("recall-only byte compatibility", () => {
   it.each([
     ["original", "57a020b13fee82fdf562424b8961ce8d2ec5237790cbbad5efa8bd1483a2c27d", "47be8b5ac34262c16d3cf38cb6e751da5b0e76f4902aaed4dd5f3c9799d4d560"],
     ["hard", "d5ba902171e4a38063b5713df78dc7b58581847a993da4f0c7107bba1bbe4dc9", "f3daaefaf9caa549595a6a7585305b5bef117b733636a8d35f70e477f46f426e"],
-    ["hard-distractors", "81e4dc058ee3fc0c9f1b7187d59a50620b191006ef589374ecaf9fa92439f356", "f3daaefaf9caa549595a6a7585305b5bef117b733636a8d35f70e477f46f426e"],
+    ["hard-distractors", "778004197763ace454b145d841e073d7db56b781dd77b6db22966cc3f6df22c8", "f3daaefaf9caa549595a6a7585305b5bef117b733636a8d35f70e477f46f426e"],
   ])("pins %s prompts, full plans, selected arms and confirmations at the base revision", async (suite, planDigest, promptsDigest) => {
     // Recorded before implementation at f9dcd55; not regenerated from modified expectations.
     const loaded = await loadTraces({ suite }), plan = makePlan({ ...loaded, codeRevision: "f9dcd55e945bb411697e0c3f2a37b9ce5ce8d8f9" });
@@ -59,10 +59,10 @@ describe("lookup registration and native fairness", () => {
     expect(() => makePlan({ ...loaded, arms: ["native", "native-lookup"] })).toThrow("native_lookup_requires_lookup_mode");
     expect(() => makePlan({ ...loaded, probeMode: LOOKUP_MODE, arms: ["native-lookup", "continuity-ledger-cold"] })).toThrow("lookup_arm_not_supported");
     const arm = armById("native-lookup");
-    expect(arm).toMatchObject({ fork: "in-place", replayBinding: "reader", sessionConfig: { runtime: { session: { continuity: { enabled: true, packEnabled: false } } } }, probeConfig: { tools: { allowedTools: ["ConversationHistory"] }, runtime: { compaction: { enabled: false } } } });
-    expect(checkpointKey(arm, 1, LOOKUP_MODE)).toBe("lookup-v1-scripted-native-lookup");
+    expect(arm).toMatchObject({ fork: "in-place", replayBinding: "reader", sessionConfig: { runtime: { session: { continuity: { enabled: true, packEnabled: false } } } }, probeConfig: { tools: { allowedTools: ["History"] }, runtime: { compaction: { enabled: false } } } });
+    expect(checkpointKey(arm, 1, LOOKUP_MODE)).toBe("lookup-v3-scripted-native-lookup");
     expect(checkpointKey(armById("continuity-pack-cold"), 1, LOOKUP_MODE)).not.toBe(checkpointKey(armById("continuity-pack-cold"), 1));
-    const evidence = { checkpointContinuity: { records: 3, degraded: false }, observed: { toolsOffered: ["ConversationHistory"], historyWarnings: 0, continuityPacks: [] } };
+    const evidence = { checkpointContinuity: { records: 3, degraded: false }, observed: { toolsOffered: ["History"], historyWarnings: 0, continuityPacks: [] } };
     expect(verifyStore(arm, evidence).healthy).toBe(true);
     expect(verifyStore(arm, { ...evidence, observed: { ...evidence.observed, continuityPacks: [{ tokens: 1 }] } }).reasons).toContain("unexpected_pack_injected");
     expect(verifyStore(arm, { ...evidence, checkpointContinuity: null }).healthy).toBe(false);
@@ -70,7 +70,7 @@ describe("lookup registration and native fairness", () => {
   });
 
   it("binds frozen soul raw bytes and the production-normalized core; refuses changes rather than fallback", async () => {
-    const bytes = await readFile(join(root, "scripts/fixtures/continuity-soul-v1.md"));
+    const bytes = await readFile(join(root, "scripts/fixtures/continuity-soul-v3.md"));
     const { loadContextFromFiles } = await import("../../packages/conversation/dist/context/file-loader.js");
     const plan = await planFor();
     expect(plan.lookup.soul).toEqual(LOOKUP_BUDGET.soul);
@@ -91,16 +91,12 @@ describe("lookup registration and native fairness", () => {
 });
 
 describe("measured frozen budgets and two independent feasibility constraints", () => {
-  it("pins the measured inventory and derives its call cap from maxTurns", () => {
-    expect(MAX_TURNS).toBe(100); expect(CALL_CAP).toBe(Math.min(96, MAX_TURNS - 2));
-    expect(LOOKUP_BUDGET.callBudget + 2).toBeLessThanOrEqual(100);
-    expect(LOOKUP_BUDGET).toMatchObject({ callBudget: 8, byteBudget: 126976, inventorySha256: "6c45a457f926af1d259c4b53bc3b45821b939ca3fdfd1a830b38b538f415a6b9", measurement: { paths: 112, largestResponse: 32608, maxPathBytes: 61718, maxPathCalls: 6 } });
-    expect(LOOKUP_BUDGET.byteBudget).toBe(Math.ceil((61718 + 2 * 32608) / 1024) * 1024);
-    expect(LOOKUP_BUDGET.paths).toHaveLength(112);
-    expect(new Set(LOOKUP_BUDGET.paths.map(row => row.arm))).toEqual(new Set(["native-lookup", "continuity-pack-cold"]));
-    expect(LOOKUP_BUDGET.paths.filter(row => row.feasibility.classification === "feasible")).toHaveLength(64);
-    expect(LOOKUP_BUDGET.paths.filter(row => row.feasibility.classification === "budget-infeasible")).toHaveLength(48);
-    expect(LOOKUP_BUDGET.paths.filter(row => row.feasibility.classification === "budget-infeasible").every(row => row.arm === "native-lookup" && row.feasibility.reasons.includes("reader_context"))).toBe(true);
+  it("uses versioned unmeasured safety caps, never old measurements", () => {
+    expect(MAX_TURNS).toBe(100); expect(CALL_CAP).toBe(96);
+    expect(LOOKUP_BUDGET).toMatchObject({schema:"continuity-lookup-budget-v3",status:"configured-unmeasured",measurement:null});
+    expect(LOOKUP_BUDGET.callBudget+2).toBeLessThanOrEqual(MAX_TURNS);
+    expect(LOOKUP_BUDGET).not.toHaveProperty("paths");
+    expect(LOOKUP_BUDGET).not.toHaveProperty("inventorySha256");
   });
 
   it("freezes before trials, never silently widens caps, and classes reference infeasibility separately", () => {
@@ -136,8 +132,8 @@ describe("real-loopback URL-only forwarding and admission", () => {
     expect({ ...f.rewritten.mcpServers[HISTORY_SERVER], url: f.options.mcpServers[HISTORY_SERVER].url }).toEqual(f.options.mcpServers[HISTORY_SERVER]);
     expect(f.options.mcpServers[HISTORY_SERVER].url).toBe(f.tools.url);
     expect((await f.client.listTools()).tools).toEqual(TOOL_DEFINITIONS);
-    f.tools.expect("mail_read", { id: 1 }, "Fictional 🔷 evidence");
-    const result = await f.client.callTool({ name: "mail_read", arguments: { id: 1 } });
+    f.tools.expect("History", { id: 1 }, "Fictional 🔷 evidence");
+    const result = await f.client.callTool({ name: "History", arguments: { id: 1 } });
     expect(result.content).toEqual([{ type: "text", text: "Fictional 🔷 evidence" }]);
     expect(f.meter.state).toMatchObject({ calls: 1, bytes: Buffer.byteLength(JSON.stringify(result.content)), responses: 1, exhausted: null });
     const meter = lookupMeter({ callBudget: 1, byteBudget: 1000 }); meter.dispatch();
@@ -147,12 +143,12 @@ describe("real-loopback URL-only forwarding and admission", () => {
 
   it("rejects calls before dispatch and oversized results before delivery; never clips", async () => {
     const f = await forwarding({ callBudget: 1 });
-    f.tools.expect("mail_read", {}, "unchanged");
-    await f.client.callTool({ name: "mail_read", arguments: {} });
-    await expect(f.client.callTool({ name: "mail_read", arguments: {} })).rejects.toThrow("lookup_budget_calls"); expect(f.tools.served()).toBe(1); expect(f.meter.state.exhausted).toBe("calls");
+    f.tools.expect("History", {}, "unchanged");
+    await f.client.callTool({ name: "History", arguments: {} });
+    await expect(f.client.callTool({ name: "History", arguments: {} })).rejects.toThrow("lookup_budget_calls"); expect(f.tools.served()).toBe(1); expect(f.meter.state.exhausted).toBe("calls");
     const g = await forwarding({ byteBudget: 50 });
-    g.tools.expect("mail_read", {}, "🔷".repeat(100));
-    await expect(g.client.callTool({ name: "mail_read", arguments: {} })).rejects.toThrow("lookup_budget_bytes");
+    g.tools.expect("History", {}, "🔷".repeat(100));
+    await expect(g.client.callTool({ name: "History", arguments: {} })).rejects.toThrow("lookup_budget_bytes");
     expect(g.meter.state).toMatchObject({ calls: 1, bytes: 0, responses: 0, exhausted: "bytes" });
     expect(g.tools.served()).toBe(1);
   });
@@ -344,16 +340,10 @@ it("excludes completed-infeasible slots from exact accuracy but retains their st
   expect(report.slots.filter(row => row.status === "completed")).toHaveLength(2);
 });
 
-it("derives uncapped measured maxima, recomputes every frozen feasibility result and pins the entire fixture", async () => {
-  const inventory = { corpus: {}, retained: [], paths: [{ traceId: "fiction", probeId: "p01", arm: "native-lookup", calls: 6, bytes: 61718,
-    cumulativeBytes: 100000, responseBytes: [32608], discovered: true, initialTokens: 150000, admissionCap: 6000000 }] };
-  const derived = freezeBudget(inventory);
-  expect(derived).toMatchObject({ callBudget: 8, byteBudget: 126976 });
-  for (const path of LOOKUP_BUDGET.paths) {
-    expect(referenceFeasibility(path, LOOKUP_BUDGET, path), `${path.traceId}/${path.probeId}/${path.arm}`).toEqual(path.feasibility);
-  }
-  const bytes = await readFile(join(root, "scripts/fixtures/continuity-lookup-budget-v1.json"));
-  expect(sha256(bytes)).toBe("34260285a54202c7cf6f93dc546b122c6c9b570480bbab36324665cb3b51b865");
+it("preserves historical measured budgets as inert evidence", async () => {
+  const old = JSON.parse(await readFile(join(root,"scripts/fixtures/continuity-lookup-budget-v1.json")));
+  expect(old.measurement.paths).toBe(112);
+  expect(LOOKUP_BUDGET.measurement).toBeNull();
 });
 
 it("surfaces failed-child codes and nonzero meter/witness receipts without confusing hard watchdogs", () => {
@@ -372,12 +362,12 @@ it("atomically admits only one concurrent in-flight call at the budget edge", as
   const seen = new Promise(resolve => { entered = resolve; });
   const gate = new Promise(resolve => { release = resolve; });
   const f = await forwarding({ callBudget: 1, beforeResult: async () => { entered(); await gate; } });
-  f.tools.expect("mail_read", {}, "fictional result");
-  const first = f.client.callTool({ name: "mail_read", arguments: {} });
+  f.tools.expect("History", {}, "fictional result");
+  const first = f.client.callTool({ name: "History", arguments: {} });
   const firstOutcome = first.catch(error => error);
   try {
     await seen;
-    await expect(f.client.callTool({ name: "mail_read", arguments: {} })).rejects.toThrow("lookup_budget_calls");
+    await expect(f.client.callTool({ name: "History", arguments: {} })).rejects.toThrow("lookup_budget_calls");
     expect(f.tools.served()).toBe(1); expect(f.meter.state.calls).toBe(1);
   } finally { release(); }
   expect((await firstOutcome).message).toContain("lookup_budget_calls");
@@ -402,7 +392,7 @@ it("retries a failed upstream handshake rather than caching a poisoned forwardin
 });
 
 it("requires an explicit soul binding on assertions and installation", async () => {
-  const bytes = await readFile(join(root, "scripts/fixtures/continuity-soul-v1.md"));
+  const bytes = await readFile(join(root, "scripts/fixtures/continuity-soul-v3.md"));
   for (const binding of [undefined, null, {}]) {
     let error; try { assertSoul(bytes, binding); } catch (caught) { error = caught; }
     expect(error.code).toBe("lookup_soul_binding_missing");
@@ -439,10 +429,10 @@ it("reserves an identical fixture result before awaiting the concurrency barrier
   const gate = new Promise(resolve => { release = resolve; });
   let invocations = 0;
   const f = await forwarding({ callBudget: 2, beforeResult: async () => { if (++invocations === 1) entered(); else secondHook(); await gate; } });
-  f.tools.expect("mail_read", {}, "reserved fictional result");
-  const first = f.client.callTool({ name: "mail_read", arguments: {} });
+  f.tools.expect("History", {}, "reserved fictional result");
+  const first = f.client.callTool({ name: "History", arguments: {} });
   await seen;
-  const second = f.client.callTool({ name: "mail_read", arguments: {} });
+  const second = f.client.callTool({ name: "History", arguments: {} });
   try {
     // Old code could let the second call reach the same non-empty queue before either shifted.
     await Promise.race([second, seenSecond]);
@@ -463,7 +453,7 @@ it("gives a non-frozen lookup corpus a stable refusal code, including at the CLI
 it("refuses a policy without an external source in the planner itself", async () => {
   const { loadTraces, makePlan } = await import("../lib/continuity-dataset.mjs");
   const loadedForPolicyGuard = await loadTraces();
-  expect(() => makePlan({ ...loadedForPolicyGuard, probeMode: "lookup-allowed-v1", lookupPolicy: {} })).toThrow("lookup_policy_requires_external_source");
+  expect(() => makePlan({ ...loadedForPolicyGuard, probeMode: "lookup-allowed-v3", lookupPolicy: {} })).toThrow("lookup_policy_requires_external_source");
 });
 
 it("pinned forwarding exposes only local HTTP transport metadata without copying upstream headers", async () => {

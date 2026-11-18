@@ -33,7 +33,7 @@ async function fixture() {
   const probes = await bind("probes", { schema: "continuity-recorded-questions-v1", questions: [] }), keys = await bind("keys", { schema: "continuity-recorded-evaluator-keys-v1", keys: [] });
   const sizing = [await bind("sizing", component.sizing)], catalog = await loadE2Catalog(), soul = await shippingSoul();
   const probeCounts = trace.protocol.branches.flatMap(b => b.checkpoints).map((_, checkpoint) => ({ checkpoint, questions: 0, lookupRounds: trace.protocol.probeLookupRounds }));
-  const pilot = { schema: E2_REGISTRATION_SCHEMA, registration: {
+  const pilot = { schema: E2_REGISTRATION_SCHEMA, registration: { historySurface: "unified",
     code: { path: ROOT, revision: "b".repeat(40), sha256: await e2CodeDigest() },
     build: { policy: "fresh-clean-head-agent-app-closure-v1", sourceHead: "b".repeat(40), command: ["pnpm", "--filter", "@mono-agent/app...", "run", "build"], packages: ["packages/app", "packages/turn"], outputRoots: ["packages/app/dist", "packages/turn/dist"], outputSha256: "a".repeat(64), node: process.version },
     catalog, source, protocol, probes, keys, soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest }, roles: component.roles,
@@ -278,7 +278,7 @@ it("validates a fictional registration with only the Sol summary envelope raised
   await expect(guardedAuthorization("e2-validation").validate(f.args)).resolves.toBeDefined();
   expect(roles.filter(r => r !== summary)).toEqual(others);
 });
-it.each(["split", "unified"])("binds a %s registration through authorization and rejects mixed sizing", async historySurface => {
+it.each(["unified"])("binds a %s registration through authorization and rejects mixed sizing", async historySurface => {
   const r = f.pilot.registration;
   r.historySurface = historySurface;
   const soul = await shippingSoul(historySurface);
@@ -288,7 +288,7 @@ it.each(["split", "unified"])("binds a %s registration through authorization and
   if (historySurface === "unified") sizing.historySurface = historySurface;
   let raw = JSON.stringify(sizing); await writeFile(binding.path, raw); binding.sha256 = hash(raw); await f.persist();
   await expect(guardedAuthorization("e2-validation").validate(f.args)).resolves.toBeDefined();
-  sizing.historySurface = historySurface === "unified" ? "split" : "unified";
+  sizing.historySurface = "split";
   raw = JSON.stringify(sizing); await writeFile(binding.path, raw); binding.sha256 = hash(raw); await f.persist();
   await expect(guardedAuthorization("e2-validation").validate(f.args)).rejects.toMatchObject({ code: "e2_registration_invalid" });
 });

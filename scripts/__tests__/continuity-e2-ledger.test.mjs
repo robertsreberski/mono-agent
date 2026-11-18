@@ -24,7 +24,7 @@ beforeEach(async () => {
   vi.stubEnv("HOME", root); vi.stubEnv("XDG_STATE_HOME", join(root, "state")); seq = 0; journal = undefined; worker = undefined;
   pilot = { schema: E2_REGISTRATION_SCHEMA, registration: { code: { path: ROOT }, catalog: await loadE2Catalog(),
     roles: ["summary", "probe", "continuation"].map(role => ({ role, model: SOL, maxInputTokens: 272000, maxOutputTokens: 128000, expectedOutputTokens: 512 })),
-    toolPolicies: { summary: [], proof: ["ConversationHistory"], replay: ["ConversationHistory"], cancelContinuation: ["ConversationHistory", "ProofSentinel"] },
+    toolPolicies: { summary: [], proof: ["History"], replay: ["History"], cancelContinuation: ["History", "ProofSentinel"] },
     schedule: [{ slotId: "b".repeat(64), eligible: true, kind: "proof", arm: "switch", budgets: ["summary", "probe", "continuation"].map(paidRole => ({ checkpoint: 0, paidRole, model: SOL, maxRequests: 2 })) }] },
     descriptor: { schema: E2_PLAN_SCHEMA, retryPolicy: E2_RETRY_POLICY, assumptions: E2_ASSUMPTIONS, capUnits: "10000000000", deadlines: { requestDeadlineMs: 30000, phaseDeadlineMs: 30000, childWatchdogMs: 30000, runDeadlineMs: 60000 } },
     privateFixtureCanary: "FICTIONAL-PRIVATE-REGISTRATION-CANARY" };

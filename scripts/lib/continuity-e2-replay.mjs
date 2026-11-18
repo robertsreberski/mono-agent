@@ -206,7 +206,7 @@ export function e2ProbeMeasurement(historySurface) {
       const saidCalls = new Set(context.messages.flatMap(m => Array.isArray(m.content) ? m.content : [])
         .filter(p => p.type === "toolCall" && historyCallScope(p.name, p.arguments) === "said").map(p => p.id));
       this.witness ||= context.messages.some(m => m.role === "toolResult" && m.isError !== true
-        && (m.toolName === "ConversationHistory" || saidCalls.has(m.toolCallId)));
+        && (m.toolName === "History" || saidCalls.has(m.toolCallId)));
     },
   };
 }

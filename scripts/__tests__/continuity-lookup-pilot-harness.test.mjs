@@ -40,9 +40,9 @@ async function historyFixture() {
   ]);
   let calls = 0;
   const server = createServer(async (req, res) => {
-    const mcp = new Server({ name: "mono-agent-conversation-history", version: "1.0.0" }, { capabilities: { tools: {} } });
-    mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "ConversationHistory", description: "Fictional retained evidence.", inputSchema: { type: "object", properties: { query: { type: "string" } } } }] }));
-    mcp.setRequestHandler(CallToolRequestSchema, async request => { expect(request.params.name).toBe("ConversationHistory"); calls++; return { content: [{ type: "text", text: "Fictional retained tool evidence." }] }; });
+    const mcp = new Server({ name: "mono-agent-history", version: "1.0.0" }, { capabilities: { tools: {} } });
+    mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "History", description: "Fictional retained evidence.", inputSchema: { type: "object", properties: { query: { type: "string" } } } }] }));
+    mcp.setRequestHandler(CallToolRequestSchema, async request => { expect(request.params.name).toBe("History"); calls++; return { content: [{ type: "text", text: "Fictional retained tool evidence." }] }; });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => { void transport.close(); void mcp.close(); });
     try { let body = ""; for await (const chunk of req) body += chunk; await mcp.connect(transport); await transport.handleRequest(req, res, body ? JSON.parse(body) : undefined); }
@@ -76,7 +76,7 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
   modules.app = { ...app, ...Object.fromEntries(["createConfiguredAgentRuntime", "createConfiguredConversationHarness"].map(name => [name, input => {
     expect(input.config.providers.piAuthPath).toBe(join(work, ".lookup-no-credentials/absent.json")); return app[name](input);
   }])) };
-  const configPatch = mergePatch(selected.sessionConfig ?? {}, { runtime: { compaction: { enabled: false }, retry: { primaryAttempts: 1 }, session: { rollover: "none" } }, providers: { piAuthPath: authPath, piNative: { transport: "sse", piMaxRetries: 0 } }, tools: { allowedTools: ["ConversationHistory"] } });
+  const configPatch = mergePatch(selected.sessionConfig ?? {}, { runtime: { compaction: { enabled: false }, retry: { primaryAttempts: 1 }, session: { rollover: "none" } }, providers: { piAuthPath: authPath, piNative: { transport: "sse", piMaxRetries: 0 } }, tools: { allowedTools: ["History"] } });
   let run = 0, sends = 0; const outer = [], consumed = [], boundaries = [];
   const request = { conversationId: "fictional-conversation", captureSpeakerKind: "human-turn", metadata: { source: "web" }, onEvent: e => { if (e.type === "session_boundary") boundaries.push({ kind: e.kind, reason: e.reason, context: e.context }); } };
   const pilot = { authorization: { schema: "continuity-lookup-faux-authorization-v1" }, plan, arm: selected, historyEndpoint: fixture.url };
@@ -88,11 +88,11 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
       const headers = new Headers(init.headers), bytes = headers.get("content-encoding") === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body), body = JSON.parse(bytes);
       for (const name of ["session-id", "x-client-request-id"]) expect(headers.get(name)).toBe(key);
       expect(body.prompt_cache_key).toBe(key); expect(options.sessionId).toBe(outer[index].sessionId); expect(options.nativeSessionAuthority).toBe(outer[index].nativeAuthority); expect(options.sessionId).not.toBe(key);
-      expect(codexWireTools(body).every(t => t.name.endsWith("ConversationHistory"))).toBe(true);
+      expect(codexWireTools(body).every(t => t.name.endsWith("History"))).toBe(true);
       if (id === "native-lookup" && index === 0) return response([message("Fictional checkpoint material.")]);
       if (round === 1) {
         expect(JSON.stringify(body.input)).toContain("Fictional checkpoint material.");
-        const tool = codexWireTools(body).find(t => t.name.endsWith("ConversationHistory")); expect(tool).toBeTruthy();
+        const tool = codexWireTools(body).find(t => t.name.endsWith("History")); expect(tool).toBeTruthy();
         return response([reasoning, { type: "function_call", id: "fc_fictional", call_id: "call_fictional", name: tool.name, arguments: JSON.stringify({ query: "fictional" }), status: "completed" }]);
       }
       expect(round).toBe(2); expect(body.input.find(item => item.type === "reasoning")).toEqual(reasoning);
@@ -100,7 +100,7 @@ it.each(["native-lookup", "continuity-pack-cold"])("configured %s preserves nati
       return response([message("Fictional final answer.")]);
     };
     consumed.push(permit.events);
-    return { mcpServers: { "mono-agent-conversation-history": { type: "http", url: fixture.url } },
+    return { mcpServers: { "mono-agent-history": { type: "http", url: fixture.url } },
       piModelsDecorator: await createFauxLookupDecorator({ contract: { ...C, runId: "fictional-harness", slotId: `slot-${index}`, promptCacheKey: key }, permit, send, resolvedSafety: { ...pilot, config: opened.config } }) };
   };
   let opened;
@@ -280,13 +280,13 @@ it("pins history at forwarder setup and refuses changed output before forwarding
   const forwarder = await lookupForwarder({ meter: {}, pinEndpoint: true }); cleanups.push(() => forwarder.close());
   const endpoint = forwarder.historyEndpoint; expect(endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp\//u);
   const offered = vi.fn(), pilot = { send: { decorator() {} } };
-  const rewrite = vi.spyOn(forwarder, "rewrite").mockResolvedValue({ mcpServers: { "mono-agent-conversation-history": { type: "http", url: endpoint } } });
+  const rewrite = vi.spyOn(forwarder, "rewrite").mockResolvedValue({ mcpServers: { "mono-agent-history": { type: "http", url: endpoint } } });
   const route = createLookupPilotRoute({ pilot, forwarder, noteOffered: offered });
-  expect((await route({})).mcpServers["mono-agent-conversation-history"].url).toBe(endpoint);
+  expect((await route({})).mcpServers["mono-agent-history"].url).toBe(endpoint);
   const changed = endpoint + "-changed"; forwarder.historyEndpoint = changed;
-  rewrite.mockResolvedValue({ mcpServers: { "mono-agent-conversation-history": { type: "http", url: changed } } });
+  rewrite.mockResolvedValue({ mcpServers: { "mono-agent-history": { type: "http", url: changed } } });
   await expect(route({})).rejects.toMatchObject({ code: "lookup_tools_forbidden" });
-  rewrite.mockResolvedValue({ mcpServers: { "mono-agent-conversation-history": null } });
+  rewrite.mockResolvedValue({ mcpServers: { "mono-agent-history": null } });
   await expect(route({})).rejects.toMatchObject({ code: "lookup_tools_forbidden" });
   expect(pilot.historyEndpoint).toBe(endpoint); expect(offered).toHaveBeenCalledTimes(1);
 });

@@ -37,10 +37,9 @@ export function assertE2BaselineContext(context, { kind = "probe", sourceTools, 
   const messages = context.messages ?? context.input ?? [];
   const tools = [...(context.tools ?? []), ...messages.flatMap(m => m.toolsAdded ?? [])];
   if (kind !== "source" && tools.length) fail("E2_PROBE_TOOLS_REFUSED");
-  const unified = e2HistorySurface(historySurface) === "unified";
-  const servers = unified ? ["mono-agent-conversation-history", "mono-agent-history"] : ["mono-agent-conversation-history"];
-  const history = name => ["ConversationHistory", "mono-agent-conversation-history",
-    ...(unified ? ["SessionHistory", "RunHistory", "History", "mcp__mono-agent-history__History", "mono-agent-history"] : [])].includes(name);
+  const servers = ["mono-agent-conversation-history","mono-agent-session-history","mono-agent-run-history","mono-agent-history"];
+  // Retirement safety boundary: both historical and current names are forbidden.
+  const history = name => /^(?:(?:mcp__[^_]+__)?)?(?:ConversationHistory|SessionHistory|RunHistory|conversation_history|session_history|run_history|History)$/u.test(name ?? "") || servers.includes(name);
   if (tools.some(t => history(t.name) || history(t.serverName))
     || servers.some(name => Object.hasOwn(context.mcpServers ?? {}, name))
     || messages.some(m => history(m.toolName) || m.type === "function_call" && history(m.name)

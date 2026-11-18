@@ -203,7 +203,7 @@ describe("continuity arms and plan", () => {
     expect(CONTINUITY_OFF).toEqual({ runtime: { session: { continuity: { enabled: false } } } });
     const store = armById("continuity-store");
     expect(store).toMatchObject({ available: true, replayBinding: "alternate", fork: "in-place", expect: { probeBoundary: "model_change", probeCompactions: 0 } });
-    expect(store.probeConfig).toEqual({ tools: { allowedTools: ["ConversationHistory"] } });
+    expect(store.probeConfig).toEqual({ tools: { allowedTools: ["History"] } });
     expect(CONTINUITY_ON.runtime.session.continuity).toEqual({ enabled: true, packEnabled: false });
     for (const id of ["continuity-pack-cold", "continuity-pack-boundary", "continuity-pack-per-turn"]) {
       const pack = armById(id);
@@ -211,12 +211,12 @@ describe("continuity arms and plan", () => {
       expect(pack.sessionConfig.runtime.session.continuity).toEqual({ enabled: true, packEnabled: true });
       expect(pack).toMatchObject({ replayBinding: "alternate", expect: { probeBoundary: "model_change", probeCompactions: 0 } });
     }
-    expect(armById("continuity-store-compaction").probeConfig).toEqual({ tools: { allowedTools: ["ConversationHistory"] }, runtime: { compaction: SMALL_PROACTIVE_COMPACTION } });
+    expect(armById("continuity-store-compaction").probeConfig).toEqual({ tools: { allowedTools: ["History"] }, runtime: { compaction: SMALL_PROACTIVE_COMPACTION } });
   });
 
   it("requires actual cold pack receipts without turning expected overflow into a missing treatment", () => {
     const arm = armById("continuity-pack-cold"), checkpointContinuity = { records: 10, degraded: false };
-    const observed = { toolsOffered: ["ConversationHistory"], historyWarnings: 0, continuityPacks: [] };
+    const observed = { toolsOffered: ["History"], historyWarnings: 0, continuityPacks: [] };
     expect(verifyStore(arm, { checkpointContinuity, observed }).reasons).toContain("continuity_pack_not_injected");
     observed.continuityPacks.push({ reason: "model_change", tokens: 8000, ownerEntries: 3, toolEntries: 2, summaryEntries: 0, evidenceEntries: 0, degradedReason: "overflow" });
     expect(verifyStore(arm, { checkpointContinuity, observed }).healthy).toBe(true);
@@ -226,7 +226,7 @@ describe("continuity arms and plan", () => {
 
   it("treats a degraded store as an invalid trial and classifies ConversationHistory results", () => {
     const store = armById("continuity-store");
-    const healthy = { toolsOffered: ["ConversationHistory"], historyWarnings: 0, conversationHistory: { unavailable: 0 } };
+    const healthy = { toolsOffered: ["History"], historyWarnings: 0, conversationHistory: { unavailable: 0 } };
     expect(verifyStore(store, { checkpointContinuity: { records: 10, degraded: false }, observed: healthy }).healthy).toBe(true);
     expect(verifyStore(store, { checkpointContinuity: { records: 0, degraded: false }, observed: healthy }).reasons).toContain("no_retained_records");
     expect(verifyStore(store, { checkpointContinuity: { records: 5, degraded: true }, observed: healthy }).reasons).toContain("checkpoint_store_degraded");
@@ -367,7 +367,7 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(store.checkpoint.continuity.records).toBeGreaterThan(0);
     const storeTrial = store.trials[0];
     expect(storeTrial.store).toEqual({ applicable: true, healthy: true, reasons: [] });
-    expect(storeTrial.boundary.observed).toMatchObject({ toolsOffered: ["ConversationHistory"], historyWarnings: 0,
+    expect(storeTrial.boundary.observed).toMatchObject({ toolsOffered: ["History"], historyWarnings: 0,
       conversationHistory: { calls: 1, search: 1, success: 1, unavailable: 0, error: 0 } });
     expect(storeTrial.boundary.observed.boundaries[0]).toMatchObject({ kind: "resume_replay", reason: "model_change" });
     expect(units["cold-rebuild"].trials[0].boundary.observed.toolsOffered).toEqual([]);
@@ -543,7 +543,7 @@ it.each(["harness", "ledger", "skip", "read_only", "overrun", "output_overrun", 
   const work = await scratch(); let ledgerReads = 0;
   const receipt = { type: "continuity_upkeep", reason: point === "skip" ? "input_budget" : point === "read_only" ? "read_only" : point === "overrun" ? "input_overrun" : point === "output_overrun" ? "output_overrun" : "provider_output", providerInvoked: !["skip", "read_only"].includes(point), status: ["skip", "read_only"].includes(point) ? "skipped" : "invalid", costUsd: null, inputTokens: null, outputTokens: null, estimatedInputCostUsd: 0.02, estimatedInputTokens: 15000, outputOverrun: point === "output_flag" };
   const modules = {
-    config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {} } }) },
+    config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {}, session: {} }, artifacts: {dir:work}, tools:{} }) },
     coordinator: { acquireAgentRootOwnership: async () => ({}), releaseAgentRootOwnershipWhenIdle: async () => {} },
     app: { createConfiguredAgentRuntime: () => ({}), createConfiguredConversationHarness: async () => ({ run: async ({ onEvent }) => { onEvent(receipt); if (point === "harness") throw new Error("fictional"); return {}; } }) },
     host: { parseMonoRuntimeModelReference: reference => ({ reference }) },
@@ -778,7 +778,7 @@ it.each(["released", "reserved"])("reconciles native journal rows after a %s pre
   db.exec("CREATE TABLE continuity_upkeep_operations(operation_id TEXT,reservation TEXT,state TEXT); CREATE TABLE continuity_upkeep_progress(logical_id TEXT,conversation_id TEXT,cursor TEXT); CREATE TABLE continuity_upkeep_offers(offer_count INTEGER,state TEXT); CREATE TABLE continuity_upkeep_retired(data BLOB)");
   let stage = 0;
   const modules = {
-    config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {} } }) },
+    config: { resolveJsonMonoAgentConfig: () => ({ runtime: { model: {}, session: {} }, artifacts: {dir:work}, tools:{} }) },
     coordinator: { acquireAgentRootOwnership: async () => ({}), releaseAgentRootOwnershipWhenIdle: async () => {} },
     host: { parseMonoRuntimeModelReference: reference => ({ reference }) },
     conversation: { ToolHistoryReader: class { databasePath = path; ledger() {} } },
@@ -949,7 +949,7 @@ it.each(["ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries"])("a
   const arm = armById("continuity-ledger-cold"), upkeep = { valid: true, expectedEntries: 0 };
   const checkpointContinuity = { records: 10, degraded: false };
   const empty = { reason: "model_change", tokens: 100, degradedReason: "none", ledgerEntries: 0, ownerEntries: 0, toolEntries: 0, summaryEntries: 0, evidenceEntries: 0 };
-  const observed = pack => ({ toolsOffered: ["ConversationHistory"], historyWarnings: 0,
+  const observed = pack => ({ toolsOffered: ["History"], historyWarnings: 0,
     continuityPacks: pack === undefined ? [] : [pack], upkeep: [{ providerInvoked: false, reason: "read_only" }] });
   const injected = observed({ ...empty, [section]: 1 });
   expect(verifyLedgerTreatment(upkeep, injected)).toBe(true);
@@ -968,12 +968,12 @@ it.each(["ownerEntries", "toolEntries", "summaryEntries", "evidenceEntries"])("a
 
 it("accepts external lookup transport without legacy registration, but never uses its repeat default", async () => {
   const { profileFrom } = await import("../continuity-benchmark.mjs");
-  const flags = { suite: "holdout", "probe-mode": "lookup-allowed-v1", "corpus-manifest": "/fictional/manifest.json",
+  const flags = { suite: "holdout", "probe-mode": "lookup-allowed-v3", "corpus-manifest": "/fictional/manifest.json",
     "manifest-sha256": "a".repeat(64), "statistical-spec": "/fictional/spec.json" };
   expect(profileFrom(flags).repeats).toBe(1);
   expect(profileFrom(flags).arms).toEqual(["native-lookup", "continuity-pack-cold"]);
   expect(() => profileFrom({ ...flags, shard: "1" })).toThrow("lookup_not_legacy_holdout");
-  expect(() => profileFrom({ suite: "holdout", "probe-mode": "lookup-allowed-v1" })).toThrow("lookup_not_legacy_holdout");
+  expect(() => profileFrom({ suite: "holdout", "probe-mode": "lookup-allowed-v3" })).toThrow("lookup_not_legacy_holdout");
   expect(() => profileFrom({ ...flags, "statistical-spec": undefined })).toThrow("holdout_registration_required");
 });
 
@@ -982,7 +982,7 @@ it("binds explicit benchmark roots canonically to policy and role-request roots"
   for (const root of [r0, rpack, other]) await mkdir(root);
   await symlink(r0, alias);
   expect(await resolveLookupInputRoots({ explicit: [alias, rpack], role: [r0, rpack], policy: [r0, rpack] })).toEqual([r0, rpack]);
-  const source = ["--suite", "holdout", "--probe-mode", "lookup-allowed-v1", "--corpus-manifest", "/fictional/manifest.json",
+  const source = ["--suite", "holdout", "--probe-mode", "lookup-allowed-v3", "--corpus-manifest", "/fictional/manifest.json",
     "--manifest-sha256", "a".repeat(64), "--statistical-spec", "/fictional/spec.json", "--selection-seed", "42"];
   for (const flag of ["--r0", "--rpack"]) await expect(main([...source, flag, r0, "--dry-run"])).rejects.toThrow("lookup_input_roots_required");
   const policyPath = join(dir, "policy.json"), bytes = JSON.stringify({ codes: { R0: { path: r0 }, Rpack: { path: rpack } } });

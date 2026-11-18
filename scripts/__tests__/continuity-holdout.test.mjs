@@ -250,7 +250,7 @@ it("freezes external canonical bytes and detects artifact, manifest, allowlist a
   await expect(datasetModule.loadTraces({ suite: "holdout", lookupSource: { ...lookupSource, manifestSha256: "0".repeat(64) }, selectionSeed: 42, perGroup: 1 })).rejects.toThrow("manifest_hash_mismatch");
   const lookupCli = await import(/* @vite-ignore */ pathToFileURL(join(repo, "scripts/continuity-benchmark.mjs")).href);
   let lookupDry;
-  const lookupArgs = ["--suite", "holdout", "--probe-mode", "lookup-allowed-v1", "--corpus-manifest", lookupSource.manifestPath,
+  const lookupArgs = ["--suite", "holdout", "--probe-mode", "lookup-allowed-v3", "--corpus-manifest", lookupSource.manifestPath,
     "--manifest-sha256", lookupSource.manifestSha256, "--statistical-spec", specPath, "--selection-seed", "42", "--per-group", "1", "--r0", repo, "--rpack", repo, "--dry-run"];
   expect(await lookupCli.main(lookupArgs, { stdout: text => { lookupDry = JSON.parse(text); } })).toBe(0);
   expect(lookupDry.repeats).toBe(1); expect(lookupDry.holdout).toBeUndefined(); expect(lookupDry.corpus.traces).toHaveLength(2);
@@ -352,7 +352,7 @@ it("keeps required freeze/overlap arguments mandatory when optional statistical 
 });
 it("indexes pack guidance and both soul texts separately from semantic independence review", async () => {
   const sources = await overlapSources();
-  for (const name of ["packages/conversation/src/continuity/render-fit.ts", "packages/conversation/src/continuity/pack.ts", "scripts/fixtures/continuity-soul-v1.md", "scripts/fixtures/continuity-soul-v2.md"]) {
+  for (const name of ["packages/conversation/src/continuity/render-fit.ts", "packages/conversation/src/continuity/pack.ts", "scripts/fixtures/continuity-soul-v3.md", "scripts/fixtures/continuity-soul-v4.md"]) {
     const source = sources.find(s => s.name === name); expect(source).toBeTruthy();
     const text = (source.values ?? literals(source.text)).find(t => wordRuns(t, 7, false).length);
     expect(text).toBeTruthy(); const matcher = overlapMatcher(sources, emptyAllowlist); matcher.add(text, "fixture");

@@ -153,7 +153,6 @@ export async function openHarness({ modules, work, authPath, model, effort, tool
   if (pilot?.routeKind === "real") json.providers.piAuthPath = authPath;
   const config = modules.config.resolveJsonMonoAgentConfig({ json, cwd: work });
   if (e2) { (await import("./continuity-e2-runtime.mjs")).assertE2PhaseAdapter(e2); e2.assertConfig(config); }
-  if (historyDescriptionVariant !== undefined && config.tools?.history?.unified !== true) variantRefused();
   const check = pilot ? (options, forwarded = false) => assertResolvedLookupSafety({ ...pilot, config, options, forwarded }) : null;
   if (check) { check(); if (Object.keys(hostOptions).length) throw new ContinuityError("lookup_auxiliary_callers_forbidden"); }
   // Existing reentrant ownership seam: establish the isolated physical lease
@@ -177,7 +176,7 @@ export async function openHarness({ modules, work, authPath, model, effort, tool
     // Tool-history/continuity outages are fail-open in production (warnings only);
     // the benchmark counts them so a degraded store invalidates the sample.
     let historyHostOptions = hostOptions;
-    if (config.tools?.history?.unified === true) {
+    if (e2 || historyDescriptionVariant !== undefined) {
       // The standalone harness intentionally owns only said. E2 validates the
       // shipping controller surface: compose its real all-scope extension last,
       // using the existing request-extension seam (and its owned disposal).
@@ -265,7 +264,6 @@ function observer() {
     observed,
     noteOffered(options) {
       const offered = new Set(observed.toolsOffered);
-      if (Object.keys(options?.mcpServers ?? {}).includes("mono-agent-conversation-history")) offered.add("ConversationHistory");
       if (Object.hasOwn(options?.mcpServers ?? {}, "mono-agent-history")) offered.add("History");
       observed.toolsOffered = [...offered];
     },
@@ -396,8 +394,7 @@ function liveRoute(modules, mode, refs, watch = null, lookup = null) {
     const system = [context.systemPrompt, ...(context.messages ?? []).filter((message) => message.role === "system").map((message) => textOfContent(message.content))].join("\n");
     if (system.includes(SUMMARY_MARKER)) return modules.pi.fauxAssistantMessage(OFFLINE_SUMMARY);
     watch?.noteOfflineContext(context);
-    const unified = (context.tools ?? []).some(t => t.name === "History") || watch?.observed.toolsOffered.includes("History");
-    const historyTool = unified ? "History" : "ConversationHistory", surface = unified ? "unified" : "split";
+    const historyTool = "History", surface = "unified";
     if (lookup) {
       lookup.witness.initial(context);
       const args = lookup.reader.next(context, lookup.lastBody);

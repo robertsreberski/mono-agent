@@ -200,7 +200,7 @@ it("prints fixed usage/refusal codes and never echoes private arguments", async 
   expect(() => parseE2Args(["size", "--source", "a", "--protocol", "p", "--output", "b", "--summary", "real"])).toThrow("E2_ARGUMENTS_INVALID");
 });
 
-it.each([["faux-short", undefined], ["faux-max", "split"], ["faux-short", "unified"]])("replays configured shipping compaction with %s/%s, registered boundaries and two uncontaminated snapshot probes", async (summary, historySurface) => {
+it.each([["faux-short", undefined], ["faux-max", "unified"], ["faux-short", "unified"]])("replays configured shipping compaction with %s/%s, registered boundaries and two uncontaminated snapshot probes", async (summary, historySurface) => {
   const { source, protocol, dir } = await trace({ padding: true, steer: true });
   protocol.probeLookupRounds = summary === "faux-max" ? 3 : 1;
   for (const key of ["HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"]) vi.stubEnv(key, dir);
@@ -267,7 +267,7 @@ it.each([["faux-short", undefined], ["faux-max", "split"], ["faux-short", "unifi
   expect(probeContexts).toHaveLength(4 * 2 * (protocol.probeLookupRounds + 1));
   for (let i = 0; i < probeContexts.length; i++) {
     const context = probeContexts[i].context, tools = context.tools ?? context.messages.flatMap(m => m.toolsAdded ?? []);
-    expect(tools.map(t => t.name)).toEqual(i % (protocol.probeLookupRounds + 1) === protocol.probeLookupRounds ? [] : [historySurface === "unified" ? "History" : "ConversationHistory"]);
+    expect(tools.map(t => t.name)).toEqual(i % (protocol.probeLookupRounds + 1) === protocol.probeLookupRounds ? [] : [historySurface === "unified" ? "History" : "History"]);
   }
   // Main B4 and prefix B3 are genuine cold model boundaries. Restored
   // probes must retain the same complete summary line, not an excerpt. Under
@@ -568,7 +568,7 @@ const E2_DYNAMIC_SHAPES = {
   "scripts/lib/continuity-e2-ab.mjs": {
     'new URL("../../packages/app/dist/request-tools/history.js", import.meta.url).href': ["{historyDescription}"],
     'new URL("../../packages/app/dist/request-tools/history-policy.js", import.meta.url).href': ["{resolveHistoryScopes}"],
-    'new URL("../../packages/app/dist/request-tools/conversation-history.js", import.meta.url).href': [".CONVERSATION_HISTORY_DESCRIPTION"],
+    'new URL("../../packages/app/dist/request-tools/history-said.js", import.meta.url).href': [".CONVERSATION_HISTORY_DESCRIPTION"],
     "./continuity-e2-replay.mjs": ["{treeReceipt}", "{restoreCheckpoint,treeReceipt,e2ProbeMeasurement,privateModes}"],
     "./continuity-runner.mjs": ["{openHarness,productionModules}"],
     "./continuity-e2-probe-receipts.mjs": ["{createE2ProbeReceipts}"],
@@ -1183,9 +1183,9 @@ it("matches forbidden strings across collapsed whitespace and folded quotes", ()
   expect(scored([key("forbid", { kind: "free_text", forbidden: ["“old cedar”"] })], [answer("forbid", '"Old  Cedar" again')]).report.totals.blocking).toBe(1);
   expect(scored([key("forbid", { kind: "free_text", forbidden: ["old cedar"] })], [answer("forbid", "Oldcedar is unrelated")]).report.totals.blocking).toBe(0);
 });
-it.each([undefined, "split", "unified"])("refuses a final funded probe request whose harness offered unexpected tools for %s", async historySurface => {
+it.each([undefined, "unified"])("refuses a final funded probe request whose harness offered unexpected tools for %s", async historySurface => {
   const a = await adapter({}, { probeLookupRounds: 1, historySurface });
-  const historyTool = historySurface === "unified" ? "History" : "ConversationHistory";
+  const historyTool = historySurface === "unified" ? "History" : "History";
   const base = { systemPrompt: `## Core Guardrails\n\n${a.soul.text}`, messages: [{ role: "user", content: "Fictional request." }] };
   a.route.setPosition({ model: LUNA, turn: 0, message: 0, probe: true, paidRole: "probe" });
   for await (const _event of a.models.streamSimple(a.model, { ...base, tools: [{ name: historyTool }] })) { /* drain */ }
@@ -1240,7 +1240,7 @@ it("folds forbidden apostrophes and quotes without fuzzy or semantic matching", 
 it.each([1, 3, 4])("caps each probe at R+1 even with unused branch capacity: R=%s", async rounds => {
   const offered = [], a = await adapter({}, { probeLookupRounds: rounds, sourceContext: context => offered.push(context) });
   a.route.setPosition({ model: LUNA, turn: 0, message: 0, probe: true });
-  const tools = [{ name: "ConversationHistory", description: "Fictional", parameters: { type: "object", properties: {} } }];
+  const tools = [{ name: "History", description: "Fictional", parameters: { type: "object", properties: {} } }];
   const context = { systemPrompt: `## Core Guardrails\n\n${a.soul.text}`, messages: [{ role: "system", content: "Fictional", toolsAdded: tools }, { role: "user", content: "Fictional" }], tools };
   const before = JSON.stringify(context);
   for (let i = 0; i <= rounds; i++) await a.models.streamSimple(a.model, context, {}).result();

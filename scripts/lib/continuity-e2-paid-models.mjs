@@ -118,7 +118,7 @@ export async function createE2PaidModels(a, safety) {
         need(!Object.hasOwn(part, key), "e2_retry_profile_forbidden");
       if (baseline) need(a.slot.kind === "replay" && a.slot.arm === "baseline" && value.runtime.session.continuity.enabled === false
         && value.runtime.compaction?.enabled === true && (value.tools?.allowedTools ?? []).length === 0, "e2_preparation_invalid");
-      need((value.tools?.history?.unified === true) === (historySurface === "unified"), "e2_preparation_invalid");
+      need(!Object.hasOwn(value.tools ?? {}, "history"), "e2_preparation_invalid");
       config = value;
     },
     assertCurrentConfig() { if (send) { need(config, "e2_auxiliary_callers_forbidden"); actor.assertConfig(config); } },
@@ -138,8 +138,8 @@ export async function createE2PaidModels(a, safety) {
           need(change && Object.keys(change).every(name => ["piModelsDecorator", "mcpServers", "observers", "allowedTools", "skills"].includes(name))
             && isE2PaidDecorator(change.piModelsDecorator) && change.skills?.length === 0, "e2_unguarded_dispatch");
           need((change.allowedTools ?? []).every(name => [historyTool, "ProofRead", "ProofSentinel"].includes(name)), "e2_preparation_invalid");
-          need(!Object.hasOwn(change.mcpServers ?? {}, historyServerName(historySurface === "unified" ? "split" : "unified")), "e2_preparation_invalid");
-          if (baseline) need(change.allowedTools?.length === 0 && !Object.hasOwn(change.mcpServers ?? {}, "mono-agent-conversation-history"), "e2_preparation_invalid");
+          need(!["mono-agent-conversation-history","mono-agent-session-history","mono-agent-run-history"].some(name => Object.hasOwn(change.mcpServers ?? {},name)), "e2_preparation_invalid");
+          if (baseline) need(change.allowedTools?.length === 0 && !Object.hasOwn(change.mcpServers ?? {}, "mono-agent-history"), "e2_preparation_invalid");
           // The conversation harness owns this recorder. With its preparation
           // callback present, native compaction_end awaits it before resuming an
           // already-produced tool batch (not merely the next paid model call).

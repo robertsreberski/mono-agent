@@ -9,7 +9,7 @@ let raw = "";
 for await (const chunk of process.stdin) raw += chunk;
 try {
   const input = JSON.parse(raw);
-  if (input.plan?.probeMode === "lookup-allowed-v1" && (input.mode !== "offline" || input.type !== "probe"
+  if (input.plan?.probeMode === "lookup-allowed-v3" && (input.mode !== "offline" || input.type !== "probe"
     || input.plan.lookup?.maxTurns !== input.plan.lookup?.budget?.callBudget + 2 || input.plan.lookup.maxTurns > 100
     || input.plan.lookup.deadlineMs !== 600000 || input.plan.limits.perLiveTurnTimeoutMs !== 690000 || input.plan.lookup.childWatchdogMs !== 720000)) {
     throw Object.assign(new Error("invalid_lookup_child_contract"), { code: "invalid_lookup_child_contract" });

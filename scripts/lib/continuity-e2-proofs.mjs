@@ -1,4 +1,4 @@
-import { historySurfaceBinding, historyToolName, historyServerName, historyConfig, historyArguments, assertHistorySurfaceBinding } from "./continuity-e2-history.mjs";
+import { e2HistorySurface, historySurfaceBinding, historyToolName, historyServerName, historyConfig, historyArguments, assertHistorySurfaceBinding } from "./continuity-e2-history.mjs";
 // Live-path proofs: faux by default, or bound paid phase actor under one controller.
 // Production owns context, sessions, packs, compaction and effect containment.
 import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
@@ -85,7 +85,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   const pressureArm = E2_PROOF_PRESSURE_ARMS.find(row => row.restart === (variant === "restart"));
   const seedReceipt = resumed ? JSON.parse(await readFile(join(base, "seed.json"), "utf8")) : null;
   if (resumed) {
-    assertHistorySurfaceBinding({ historySurface }, seedReceipt);
+    assertHistorySurfaceBinding({ historySurface: e2HistorySurface(historySurface) }, seedReceipt);
     requireProof(seedReceipt.pid !== process.pid && seedReceipt.sentinel.completed && !seedReceipt.sentinel.repeated, "E2_PROOF_RESTART_MISSING");
     if (fault !== "legacy-evidence") requireProof(seedReceipt.absenceEstablished === true, "E2_PROOF_INITIAL_PRESENT");
     if (arm === "cancel") requireProof(seedReceipt.forwarded === true, "E2_PROOF_CANCEL_NOT_FORWARDED");

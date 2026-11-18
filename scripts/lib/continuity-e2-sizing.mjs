@@ -1,4 +1,4 @@
-import { assertHistorySurfaceBinding, historySurfaceBinding } from "./continuity-e2-history.mjs";
+import { e2HistorySurface, assertHistorySurfaceBinding, historySurfaceBinding } from "./continuity-e2-history.mjs";
 // Offline sizing normalization. No authorization/credential/registry imports or access.
 import { E2_PROTECTED_SIZING, E2_REPLAY_SCENARIOS } from "./continuity-e2-protected.mjs";
 import { PROTOCOL_SCHEMA, protocolDigest, assertE2CheckpointOrder, assertE2ProbeLookupRounds, SOL, LUNA, e2ReplayArm } from "./continuity-e2-protocol.mjs";
@@ -147,7 +147,7 @@ export function estimateE2SizingSet({ protocol, roles, records, catalog, probeCo
   const questionCount = [...counts.values()].reduce((n, q) => n + q, 0); need(questionCount <= 48);
   let offset = hasReplay ? replayCheckpoints : 0;
   for (const record of records) {
-    assertHistorySurfaceBinding({ historySurface }, record);
+    assertHistorySurfaceBinding({ historySurface: e2HistorySurface(historySurface) }, record);
     const normalized = normalizeE2Sizing(protocol, record, isE2ReplaySizing(record) ? 0 : offset, replayArm);
     if (normalized.kind === "replay") {
       need(!scenarios.has(normalized.scenario) && (sourceDigest === undefined || sourceDigest === record.sourceDigest));

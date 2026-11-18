@@ -1,0 +1,23 @@
+{
+  "protocol": "query-first-packed-id-otherwise-one-source-query-10-and-8192-get-v1",
+  "callBudget": 8,
+  "byteBudget": 126976,
+  "contextWindowTokens": 272000,
+  "contextMarginTokens": 16000,
+  "feasibilityTokenBound": "observed-initial-context-json-bytes/3-or-trace-estimate; one-token-per-response-byte-plus-300-per-round; native-at-least-150000-every-round",
+  "corpus": {
+    "original": "e7933cf60ac1b8f51b966b4bda4fcdfadc1123fa2ac5c700d0705d287fdebea3",
+    "hard": "97500ece21a64e90397c9ad22d0b040b3d48a3603a342b9af97139bd2b331e51",
+    "hard-distractors": "7036689f9e72deb3b360b918f9ad0560976265f146d0183cf58273a72a7a1ea1",
+    "regressions": "12ab57193794ee3b9f22c3ebc231e7d7311fe5b7dd2f72da89332f6eb97992b4"
+  },
+  "schema": "continuity-lookup-budget-v3",
+  "status": "configured-unmeasured",
+  "soul": {
+    "file": "continuity-soul-v3.md",
+    "rawSha256": "0695808249c686a53f89001236d3da9443fdcc70f852dbdf6cae964debc136df",
+    "coreSha256": "fd497ba64ae25edbeb9c0bafb7c4ee6225433754f5c6f973d63fc568c96212ae"
+  },
+  "measurement": null,
+  "notice": "Safety ceilings only, not measured current response sizes. Fresh sizing and registration are required before any paid run."
+}

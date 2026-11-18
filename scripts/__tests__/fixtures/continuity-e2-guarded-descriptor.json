@@ -533,11 +533,13 @@
   },
   "protocolFiles": [
     "package.json",
-    "packages/app/src/request-tools/conversation-history.ts",
     "packages/app/src/request-tools/history-policy.ts",
     "packages/app/src/request-tools/history-presentation.ts",
+    "packages/app/src/request-tools/history-runs.ts",
+    "packages/app/src/request-tools/history-said.ts",
+    "packages/app/src/request-tools/history-tools.ts",
     "packages/app/src/request-tools/history.ts",
-    "packages/conversation/src/context/unified-soul.ts",
+    "packages/conversation/src/context/default-soul.ts",
     "pnpm-lock.yaml",
     "scripts/continuity-e2.mjs",
     "scripts/continuity-holdout-freeze.mjs",
@@ -642,14 +644,14 @@
   "toolPolicies": {
     "summary": [],
     "replay": [
-      "ConversationHistory"
+      "History"
     ],
     "replayFinal": [],
     "proof": [
-      "ConversationHistory"
+      "History"
     ],
     "cancelContinuation": [
-      "ConversationHistory",
+      "History",
       "ProofSentinel"
     ]
   },

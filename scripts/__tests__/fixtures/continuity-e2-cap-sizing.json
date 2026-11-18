@@ -127,7 +127,8 @@
           }
         ]
       }
-    ]
+    ],
+    "historySurface": "unified"
   },
   "protocol": {
     "schema": "continuity-e2-protocol-v1",

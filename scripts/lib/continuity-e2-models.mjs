@@ -37,19 +37,17 @@ export function sizeContext(context, estimators) {
     maximum: Math.max(Math.ceil(serializedBytes / 3), engineFullRequest), usage: "engine-estimate-not-provider-measurement" };
 }
 export async function shippingSoul(historySurface) {
-  const unified = e2HistorySurface(historySurface) === "unified";
-  const raw = await readFile(new URL(`../../packages/conversation/src/context/${unified ? "unified" : "default"}-soul.ts`, import.meta.url), "utf8");
-  const match = unified ? /export const UNIFIED_SOUL_TEXT = `([^`]*)`;\s*$/s.exec(raw) : /^export const DEFAULT_SOUL_TEXT = `([^`]*)`;\s*$/s.exec(raw);
+  e2HistorySurface(historySurface);
+  const raw = await readFile(new URL("../../packages/conversation/src/context/default-soul.ts", import.meta.url), "utf8");
+  const match = /export const DEFAULT_SOUL_TEXT = `([^`]*)`;\s*$/s.exec(raw);
   if (!match) fail("E2_SOUL_MISMATCH");
   const text = match[1], normalized = text.replace(/\r\n/g, "\n").trim();
   // Deliberate pin: updating shipping guidance requires explicitly reviewing E2.
-  if (digest(raw) !== (unified ? UNIFIED_SOUL_RAW : SHIPPING_SOUL_RAW) || digest(normalized) !== (unified ? UNIFIED_SOUL_NORMALIZED : SHIPPING_SOUL_NORMALIZED)) fail("E2_SOUL_MISMATCH");
+  if (digest(raw) !== SHIPPING_SOUL_RAW || digest(normalized) !== SHIPPING_SOUL_NORMALIZED) fail("E2_SOUL_MISMATCH");
   return { text, rawDigest: digest(raw), normalizedDigest: digest(normalized) };
 }
-export const SHIPPING_SOUL_RAW = "a1050836c51d4492977078f95bc96c297c9b5c48a2f1867037c158d73e7f9270";
-export const SHIPPING_SOUL_NORMALIZED = "e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9";
-export const UNIFIED_SOUL_RAW = "1577a140373376db1e97b2e67628db5651a7ebe7ede8a6a6755dee6c55430864";
-export const UNIFIED_SOUL_NORMALIZED = "dcb38ea993bd22cb9495d7ece1fd80891571985cbb165a35befbc02f9cbdc177";
+export const SHIPPING_SOUL_RAW = "514b7b0630e3b272dcd236efa130ed1a160e04a131b6298fe55011d1125da91b";
+export const SHIPPING_SOUL_NORMALIZED = "dcb38ea993bd22cb9495d7ece1fd80891571985cbb165a35befbc02f9cbdc177";
 export function assertEffectiveSoul(context, soul) {
   const header = "## Core Guardrails\n\n";
   const candidates = [context.systemPrompt, ...(context.messages ?? []).filter(m => m.role === "system").map(m => m.content)]
@@ -81,9 +79,8 @@ export function createE2Models({ pi, estimators, models, limits, summary = "faux
   else if (paidAdapter !== undefined) fail("E2_SUMMARY_ROUTE_INVALID");
   if (![...E2_REPLAY_SCENARIOS, "faux-faithful", "real"].includes(summary)) fail("E2_SUMMARY_ROUTE_INVALID");
   const baseline = e2ReplayArm(replayArm) === "baseline", protectedMode = summary.startsWith("protected-");
-  const unified = e2HistorySurface(historySurface) === "unified";
-  if (unified && (soul?.rawDigest !== UNIFIED_SOUL_RAW || soul?.normalizedDigest !== UNIFIED_SOUL_NORMALIZED)
-    || !unified && soul?.rawDigest === UNIFIED_SOUL_RAW) fail("E2_SOUL_MISMATCH");
+  e2HistorySurface(historySurface);
+  if (soul?.rawDigest !== SHIPPING_SOUL_RAW || soul?.normalizedDigest !== SHIPPING_SOUL_NORMALIZED) fail("E2_SOUL_MISMATCH");
   if (baseline && protectedMode) fail("E2_SUMMARY_ROUTE_INVALID");
   // Pack-withheld A/B: probe-only, arm-bound surface, pinned description bytes.
   const ab = e2ReplayArm(replayArm) === "history-ab";
