@@ -1,3 +1,4 @@
+import { historyToolAvailabilityForRuntime } from "../request-tools/history-policy.js";
 import { createContinuityParticipant, acquireToolHistoryWriter, ToolHistoryReader, toolHistoryLogicalConversationId } from "@mono-agent/conversation";
 import type { ContinuityPublicationWriter, ConversationHistoryContinuityParticipant, ConversationHarnessToolHistoryOptions, ToolHistoryWriterHandle } from "@mono-agent/conversation";
 
@@ -8,8 +9,7 @@ interface LazyConfiguredToolHistoryOptions {
   readonly packEnabled?: boolean;
   readonly ledgerEnabled?: boolean;
   readonly upkeep?: ConversationHarnessToolHistoryOptions["upkeep"];
-  readonly conversationHistoryAvailable?: boolean;
-  readonly unifiedHistory?: boolean;
+  readonly appOwnedHistory?: boolean;
   readonly historyToolAvailabilityForRuntime?: ConversationHarnessToolHistoryOptions["historyToolAvailabilityForRuntime"];
   readonly rollover: "none" | "daily" | undefined;
   readonly onWarning?: (message: string) => void;
@@ -315,8 +315,7 @@ export function lazyConfiguredToolHistory(
     ...(options.packEnabled === undefined ? {} : { packEnabled: options.packEnabled }),
     ...(options.ledgerEnabled ? { ledgerEnabled: true } : {}),
     ...(options.upkeep ? { upkeep: options.upkeep, mutateUpkeep: async (input: Parameters<ToolHistoryWriterHandle["writer"]["mutateUpkeep"]>[0]) => await continuityCall(async writer => await writer.mutateUpkeep(input)), publishLedger: async (generation: Parameters<ToolHistoryWriterHandle["writer"]["publishLedger"]>[0], reservation?: Parameters<ToolHistoryWriterHandle["writer"]["publishLedger"]>[1]) => await continuityCall(async writer => await writer.publishLedger(generation, reservation)) } : {}),
-    ...(options.unifiedHistory ? { unifiedHistory: true } : {}),
-    ...(options.conversationHistoryAvailable === undefined ? {} : { conversationHistoryAvailable: options.conversationHistoryAvailable }),
+    ...(options.appOwnedHistory ? { appOwnedHistory: true } : {}),
     ...(options.historyToolAvailabilityForRuntime ? { historyToolAvailabilityForRuntime: options.historyToolAvailabilityForRuntime } : {}),
     writer,
     reader,

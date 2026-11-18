@@ -133,6 +133,8 @@ export interface InclusiveRunCost {
 }
 
 export interface RunSummary {
+  /** Host-stamped ownership; never infer bare History ownership for unmarked runs. */
+  readonly appOwnedHistory?: true;
   readonly turnDisposition?: "silent" | "visible";
   /** Empty only for a host-certified silent completion; not model-written prose. */
   readonly assistantText?: "";
@@ -262,6 +264,8 @@ export interface RunExporter {
 }
 
 export interface JsonlRunRecorderOptions {
+  /** Host-stamped ownership; never infer bare History ownership for unmarked runs. */
+  readonly appOwnedHistory?: true;
   readonly runId: string;
   readonly conversationId: string;
   readonly artifactDir: string;
@@ -306,6 +310,8 @@ export interface JsonlRunRecorderOptions {
 export type RecordedRunEventCategory = "tool" | "thinking" | "message" | "runtime" | "error";
 
 export interface RecordedRunListItem {
+  /** Host-stamped ownership; never infer bare History ownership for unmarked runs. */
+  readonly appOwnedHistory?: true;
   readonly runId: string;
   readonly conversationId: string;
   readonly status: RunSummaryStatus;

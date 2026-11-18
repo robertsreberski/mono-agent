@@ -264,6 +264,7 @@ it.each(["E2_PROOF_TOOL_REFUSED", "E2_BOUNDARY_MISMATCH"])("preserves %s in CLI 
 it("classifies history warnings without retaining their variable or private text", () => {
   const privateTail = "Fictional private data /home/example/private-state";
   for (const [message, expected] of [
+    ["History endpoint could not start; " + privateTail, "endpoint_unavailable"],
     ["ConversationHistory endpoint could not start; " + privateTail, "endpoint_unavailable"],
     ["Tool lifecycle persistence failed (history_persistence_timeout); " + privateTail, "lifecycle_timeout"],
     ["Tool lifecycle persistence failed (fictional_secret); " + privateTail, "lifecycle_failed"],
@@ -283,7 +284,7 @@ it("preserves private fixed-class diagnostics through the runE2Proofs refusal", 
   vi.spyOn(runner, "productionModules").mockImplementation(async (...args) => {
     const modules = await original(...args);
     return { ...modules, app: { ...modules.app, createConfiguredConversationHarness: async options => {
-      options.onToolHistoryWarning("ConversationHistory endpoint could not start; " + privateText);
+      options.onToolHistoryWarning("History endpoint could not start; " + privateText);
       return modules.app.createConfiguredConversationHarness(options);
     } } };
   });

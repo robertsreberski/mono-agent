@@ -81,20 +81,18 @@ companion, not an MCP server injected into every composed agent. Add project
 MCP servers to the agent's own `mcp.json`; do not copy the documentation server
 there unless the resulting agent itself must answer mono-agent framework questions.
 
-`RunHistory`, `SessionHistory`, `ConversationHistory`, `MemoryJournal`, and `SetConversationTitle` are app-owned
-request-scoped tools, not entries for `mcp.json`. `SessionHistory` searches the
-current logical session's retained prior-run managed-tool calls/results and needs
-no config key. `ConversationHistory` is default-on through
-`runtime.session.continuity.enabled` and retrieves scoped sanitized conversation
-text/portable summaries, including positively finalized current-run evidence.
+`History`, `MemoryJournal`, and `SetConversationTitle` are app-owned
+request-scoped tools, not entries for `mcp.json`. In the current logical session,
+History `tools` searches retained prior-run managed-tool calls/results, `runs`
+reads settled runs, and `said` retrieves sanitized conversation text and portable
+summaries (including positively finalized current-run evidence) when
+`runtime.session.continuity.enabled` is on (the default).
 Normal `"*"` policy allows it; a named allowlist must include it and explicit deny
 wins. Generated summaries are not owner authority or renewed approval. `SetConversationTitle` appears only for writable interactive web threads;
 it keeps automatic semantic titles current, while a user rename permanently
 wins. Allow-all exposes eligible tools; a specific allowlist must name each one.
 `MemoryJournal` also requires `memory.recallTool.enabled` and an affirmative local
-browse capability. Every route is Pi-native, so no route family suppresses any of these tools; the
-surface conditions above (writable interactive web thread, retained managed-tool
-calls) are the only gates.
+browse capability. See the History section below for host-specific scope support.
 `@mono-agent/app` also owns rich reply composition. `PublishReplyFile`
 copies a confined generated file into owner-private integrity storage and is
 available under allow-all (or by exact name in a restrictive policy). Supported
@@ -186,13 +184,13 @@ aliases (`haiku`, `sonnet`, `opus`) are not model ids; use an exact model id.
 
 Provider credentials belong in the provider/runtime environment, not in committed config.
 
-### Opt-in unified history
+### History
 
-Set `tools.history.unified: true` to replace the three app-owned history tools
-with `History` on `mono-agent-history`. Default false. Required `scope` is `said`,
-`tools` or `runs`; the existing readers/storage are unchanged. Allowing `History`
-grants all scopes; legacy tool names and snake_case/MCP/server-wildcard spellings
-remain policy aliases for their scope. Config old-name denies remove one scope,
-while request-level denies fail closed over the frozen aliases. The default soul
-and memory recovery hints switch only in unified mode; custom souls are not
-rewritten (doctor warns). Children retain their existing tool surface.
+History is the only app-owned conversation-history tool on `mono-agent-history`.
+Required scope is said, tools or runs. No mode flag or alias remains. Allowing
+History grants every host-supported scope; denying it blocks the whole tool.
+Standalone composition supports said only; the controller supplies route-dependent
+scopes. Said requires continuity; tools/runs do not. The default soul and memory
+routing use native scoped calls. Custom soul references to removed tools, even
+in prose, fail startup/validate; other context files receive doctor warnings.
+The tool remains parent-only and is excluded from child suggestions.

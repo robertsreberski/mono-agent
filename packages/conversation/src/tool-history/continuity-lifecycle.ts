@@ -18,7 +18,7 @@ export function captureFinalizedToolText(
   limits: Required<ToolHistoryRetentionOptions>,
   reserve: (bytes: number, records: number) => void,
 ): void {
-  if (binding.continuityEnabled !== true || binding.finalizedContinuity !== true || binding.isolated || event.state !== "success" || toolName === "unknown_tool" || isNestedHistoryTool(toolName, binding.unifiedHistory === true ? { unifiedHistory: true } : undefined)) return;
+  if (binding.continuityEnabled !== true || binding.finalizedContinuity !== true || binding.isolated || event.state !== "success" || toolName === "unknown_tool" || isNestedHistoryTool(toolName, binding.appOwnedHistory === true ? { appOwnedHistory: true } : undefined)) return;
   const blocks = typeof event.content === "string" ? [{ type: "text", text: event.content }] : event.content;
   if (!Array.isArray(blocks) || blocks.length === 0) return;
   // Never extract a text-looking subset from opaque/image/signed content.

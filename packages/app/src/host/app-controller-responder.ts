@@ -38,9 +38,6 @@ import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "..
 import { createRestartProposalService, isProposeRestartToolAllowed } from "../service/restart/restart-proposal.js";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
 import { isRetiredProjectSkillName } from "../skills/project-skills.js";
-import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "../request-tools/run-history.js";
-import { createConversationHistoryRuntimeExtension, isConversationHistoryToolAllowed } from "../request-tools/conversation-history.js";
-import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "../request-tools/session-history.js";
 import {
   createReplyArtifactService,
   isPublishReplyFileToolAllowed,
@@ -148,7 +145,7 @@ export interface ResponderControllerPort {
  * console and other maintained operator clients: each console thread has a permanent conversation id and an
  * explicit "new thread" action, so a daily bucket on top of it just severs a
  * live conversation at midnight — the next morning's follow-up woke with no
- * transcript and had to reconstruct it through RunHistory.
+ * transcript and had to reconstruct it through History runs scope.
  */
 const SELF_BOUNDED_CHANNEL_ID = "tui";
 
@@ -217,7 +214,7 @@ export async function buildResponder(
   const memory = memoryRetrieval ?? memoryBackend;
   controller.reportMemoryRecallStatus(coreConfig, memoryRetrieval);
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
-  const historyToolSupport = historyToolRouteSupport(coreConfig);
+  const historyToolSupport = historyToolRouteSupport();
   const replyPartBudget = createReplyPartBudget();
   const suggestedReplies = isSuggestRepliesToolAllowed(coreConfig.tools)
     ? createSuggestRepliesService({ budget: replyPartBudget }) : undefined;
@@ -280,47 +277,12 @@ export async function buildResponder(
   const replyArtifactsBase = isPublishReplyFileToolAllowed(coreConfig.tools)
     ? replyArtifacts.createExtension
     : undefined;
-  const runHistoryBase = coreConfig.tools.history?.unified !== true && isRunHistoryToolAllowed(coreConfig.tools)
-    && historyToolSupport.runHistory
-    ? createRunHistoryRuntimeExtension({
-        artifactDir: coreConfig.artifacts.dir,
-        ...(coreConfig.runtime.session.rollover === undefined
-          ? {}
-          : { rollover: coreConfig.runtime.session.rollover }),
-        onUnavailable: (error) => {
-          controller.logger?.warn?.("RunHistory tool endpoint could not start; continuing without prior-run inspection.", {
-            reason: reasonOf(error),
-          });
-        },
-      })
-    : undefined;
-  const sessionHistoryBase = coreConfig.tools.history?.unified !== true && isSessionHistoryToolAllowed(coreConfig.tools)
-    && historyToolSupport.sessionHistory
-    ? createSessionHistoryRuntimeExtension({
-        historyRoot: resolve(coreConfig.artifacts.dir, "..", "history"),
-        ...(coreConfig.runtime.session.rollover === undefined
-          ? {}
-          : { rollover: coreConfig.runtime.session.rollover }),
-        onUnavailable: (error) => {
-          controller.logger?.warn?.("SessionHistory tool endpoint could not start; lifecycle persistence remains active.", {
-            reason: reasonOf(error),
-          });
-        },
-      })
-    : undefined;
-  const conversationHistoryExtension = coreConfig.tools.history?.unified !== true && coreConfig.runtime.session.continuity?.enabled !== false
-    && isConversationHistoryToolAllowed(coreConfig.tools) && historyToolSupport.conversationHistory
-    ? createConversationHistoryRuntimeExtension({
-      historyRoot: resolve(coreConfig.artifacts.dir, "..", "history"),
-      rollover: sessionRollover ?? coreConfig.runtime.session.rollover ?? "none",
-      onUnavailable: () => controller.logger?.warn?.("ConversationHistory tool endpoint could not start; retained evidence is unavailable this run."),
-    }) : undefined;
-  const historyExtension = coreConfig.tools.history?.unified !== true ? undefined : createHistoryRuntimeExtension({
+  const historyExtension = createHistoryRuntimeExtension({
     historyRoot: resolve(coreConfig.artifacts.dir, "..", "history"), artifactDir: coreConfig.artifacts.dir, policy: coreConfig.tools,
     scopeRollovers: { said: sessionRollover ?? coreConfig.runtime.session.rollover ?? "none",
       tools: coreConfig.runtime.session.rollover ?? "none", runs: coreConfig.runtime.session.rollover ?? "none" },
-    capabilities: { said: coreConfig.runtime.session.continuity?.enabled !== false && historyToolSupport.conversationHistory,
-      tools: historyToolSupport.sessionHistory, runs: historyToolSupport.runHistory },
+    capabilities: { said: coreConfig.runtime.session.continuity?.enabled !== false && historyToolSupport.said,
+      tools: historyToolSupport.tools, runs: historyToolSupport.runs },
     onUnavailable: () => controller.logger?.warn?.("History endpoint could not start; retained evidence is unavailable this run."),
   });
   // Always active: a no-op for interactive turns (which carry no cron/webhook
@@ -338,13 +300,9 @@ export async function buildResponder(
   const conversationTitleExtension = conversationTitleBase;
   const mcpAppsExtension = mcpAppsBase;
   const replyArtifactsExtension = replyArtifactsBase;
-  const runHistoryExtension = runHistoryBase;
-  const sessionHistoryExtension = sessionHistoryBase;
   const usage = controller.providerUsageFor?.(coreConfig);
   const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
     usage === undefined ? undefined : createProviderUsageRuntimeExtension(usage, coreConfig.tools),
-    runHistoryExtension,
-    sessionHistoryExtension,
     conversationTitleExtension,
     restartProposals?.extension,
     suggestedReplies?.extension,
@@ -439,7 +397,6 @@ export async function buildResponder(
     observabilityContext,
     onSessionEvent: (event) => controller.recordSessionEvent(event, coreConfig),
   }, {
-    conversationHistoryExtension: conversationHistoryExtension ?? null,
     historyExtension: historyExtension ?? null,
     processJobs: {
       registry: processJobsRegistry,
@@ -451,7 +408,7 @@ export async function buildResponder(
       protectionPosture: processJobsProtectionPosture,
       routesOnlyPiNative: requestModelOverride.targetsProcessJobsPiNative,
     },
-    // Only the responder's own bucketing changes. RunHistory above keeps the
+    // Only the responder's own bucketing changes. History runs scope above keeps the
     // CONFIGURED policy on purpose: it strips `#YYYY-MM-DD` only under `daily`,
     // and dropping that here would hide every run this console thread already
     // recorded under a dated id from the un-dated id it now runs as.

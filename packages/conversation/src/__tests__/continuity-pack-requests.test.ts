@@ -72,7 +72,7 @@ async function fixture({ summaryCapture = false, available = false, durable = tr
   const makeHarness = () => {
     const h = createConversationHarness({ identityPath, cwd: root, runtime, model: { provider: "faux", model: "base", reference: "faux:base" }, historyStore: history,
       ...(durable ? { sessionsRoot } : {}), session: { mode: perMessage ? "per-message" : "continuous", supportsResume: true, idleTimeoutMs: 60_000, isolateProactive: true },
-      toolHistory: { writer, reader, logicalConversationId: value => value, conversationHistoryAvailable: available, ...(enabled ? { continuityEnabled: true as const } : {}), packEnabled },
+      toolHistory: { writer, reader, logicalConversationId: value => value, historyToolAvailabilityForRuntime: () => ({ said: available, tools: false, runs: false }), ...(enabled ? { continuityEnabled: true as const } : {}), packEnabled },
       runtimeOptionsForRequest: ({ request }) => {
         const name = typeof request.metadata?.web === "object" && request.metadata.web !== null ? (request.metadata.web as { model?: string }).model?.split(":").at(-1) ?? "base" : "base";
         return { runtimeOptions: { model: { provider: "faux", model: name, reference: `faux:${name}` }, piResolvedModel: faux.getModel(name), piResolvedModels: models, effort: "none", compaction } };
@@ -375,7 +375,8 @@ it.each([false, true])("inspects whole forwarded pack and projection exclusions 
   expect(projection).toContain('<tool_record id="sth1_');
   expect(projection).not.toContain("Fictional packed cobalt result.");
   expect(projection).not.toContain(PACK_RETRIEVAL_GUIDANCE);
-  expect(projection).toContain(`Use ${available ? "ConversationHistory" : "SessionHistory"} for retained details.`);
+  if (available) expect(projection).toContain('Use History (scope "said") for retained details.');
+  else expect(projection).not.toContain("Use History");
   const supplied = projection.slice(projection.indexOf("Untrusted historical tool data;"));
   const boundaries = f.events.filter(event => event.type === "session_boundary" && event.kind === "resume_replay");
   expect(boundaries).toHaveLength(1); // Exclusion is not another cold boundary.

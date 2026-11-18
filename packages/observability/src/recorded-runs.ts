@@ -97,7 +97,7 @@ export async function listRecordedRuns(options: JsonlRunReaderOptions): Promise<
     .slice(0, normalized.maxRuns);
   const runs: RecordedRunListItem[] = new Array(selected.length);
   let next = 0;
-  // RunHistory can request every run. Bound event/companion file descriptors.
+  // History runs scope can request every run. Bound event/companion file descriptors.
   await Promise.all(Array.from({ length: Math.min(8, selected.length) }, async () => {
     while (next < selected.length) {
       const index = next++, entry = selected[index]!;
@@ -542,6 +542,7 @@ function coerceRunSummary(
     ...(value.upkeepAccountingPartial === true ? { upkeepAccountingPartial: true } : {}),
     ...(providerSessionId === undefined ? {} : { providerSessionId }),
     ...(isolated === undefined ? {} : { isolated }),
+    ...(value.appOwnedHistory === true ? { appOwnedHistory: true } : {}),
     eventCount,
     artifactPaths,
     ...(model === undefined ? {} : { model }),
@@ -584,6 +585,7 @@ function summaryToListItem(
     ...(summary.model === undefined ? {} : { model: summary.model }),
     ...(summary.providerSessionId === undefined ? {} : { providerSessionId: summary.providerSessionId }),
     ...(summary.isolated === undefined ? {} : { isolated: summary.isolated }),
+    ...(summary.appOwnedHistory === true ? { appOwnedHistory: true } : {}),
     ...(summary.runtimeWarnings === undefined ? {} : { runtimeWarnings: redactJsonValue(summary.runtimeWarnings, maxStringBytes) }),
     ...(summary.diagnostics === undefined ? {} : { diagnostics: redactJsonValue(summary.diagnostics, maxStringBytes) }),
     ...(summary.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: redactJsonValue(summary.capabilitiesUsed, maxStringBytes) }),

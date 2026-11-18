@@ -12,6 +12,7 @@ export async function loadContextFromFiles(input: FileContextInput): Promise<Bui
     throw new ContextValidationError('invalid_context_block', 'File context input must be an object.');
   }
 
+  if (Object.hasOwn(input, "defaultCore")) throw new TypeError("defaultCore was removed; History is the only history tool.");
   const identity = await readMarkdownFile(input.identityPath, 'identityPath');
   const core = input.soulPath === undefined ? undefined : await readMarkdownFile(input.soulPath, 'soulPath');
   const skills = await loadMergedSkillIndex(input);
@@ -19,7 +20,6 @@ export async function loadContextFromFiles(input: FileContextInput): Promise<Bui
   const buildInput: BuildContextInput = {
     identity,
     userMessage: input.userMessage,
-    ...(input.defaultCore === undefined ? {} : { defaultCore: input.defaultCore }),
     ...(core === undefined ? {} : { core }),
     ...(input.session === undefined ? {} : { session: input.session }),
     ...(input.memory === undefined ? {} : { memory: input.memory }),

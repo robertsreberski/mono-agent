@@ -126,7 +126,12 @@ function normalizeToolList(value: readonly unknown[] | undefined, field: string)
   if (!Array.isArray(value)) {
     throw new ToolPolicyError("invalid_tool_policy", `${field} must be an array.`, { field });
   }
-  const tools = value.map((tool, index) => normalizeInlineString(tool, `${field}[${index}]`));
+  const tools = value.map((tool, index) => {
+    const name = normalizeInlineString(tool, `${field}[${index}]`);
+    const retired = retiredHistoryScope(name);
+    if (retired) throw new ToolPolicyError("invalid_tool_policy", `${field}[${index}] lists removed tool ${name}. Replace it with History (scope:"${retired}"); no aliases. Allowing History grants all host-supported scopes; denying it blocks the whole tool.`, { field, index });
+    return name;
+  });
   const seen = new Set<string>();
   for (const tool of tools) {
     const key = tool.toLowerCase();
@@ -188,4 +193,14 @@ function asRecord(value: unknown, field: string): Record<string, unknown> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+// Retirement validation only; never matching aliases or execution routing.
+function retiredHistoryScope(name: string): string | undefined {
+  for (const [canonical, snake, server, scope] of [
+    ["ConversationHistory", "conversation_history", "conversation", "said"],
+    ["SessionHistory", "session_history", "session", "tools"],
+    ["RunHistory", "run_history", "run", "runs"],
+  ]) if ([canonical, snake, `mcp__mono-agent-${server}-history__${canonical}`, `mcp__mono-agent-${server}-history__${snake}`, `mcp__mono-agent-${server}-history__*`].includes(name)) return scope;
+  return undefined;
 }

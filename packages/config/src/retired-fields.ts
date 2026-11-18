@@ -2,6 +2,8 @@
 
 import { normalizeOptionalString } from "@mono-agent/contracts";
 
+import { retiredHistoryToolMessage } from "./enums.js";
+
 import { MonoAgentConfigError } from "./errors.js";
 
 import { isRecord } from "./parse/scalars.js";
@@ -45,6 +47,7 @@ const RETIRED_SUPERMEMORY_BLOCK_JSON_MESSAGE =
   "`memory.supermemory` was removed with first-party Supermemory support. Remove the block before upgrading. mono-agent does not select a replacement or migrate remote data; remote data remains untouched.";
 
 const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
+  { path: "tools.history", message: "`tools.history` was removed. Delete the entire block, including empty blocks and unified:false. History is always the only history tool; there is no opt-out or alias." },
   {
     path: "runtime.permissionMode",
     message: "`runtime.permissionMode` was removed because the Pi runtime never enforced it. Delete the key; configure `sandbox` for enforced tool isolation.",
@@ -110,6 +113,7 @@ export function assertNoRetiredMonoAgentConfig(config: object): void {
     if (!found.present) return false;
     return field.jsonValueIsActive?.(found.value) ?? true;
   });
+  retired.push(...retiredHistoryPolicyEntries(config));
   if (retired.length === 0) return;
   throw new MonoAgentConfigError("invalid_json", retired.map((field) => field.message).join(" "), {
     path: retired[0]!.path,
@@ -155,4 +159,29 @@ function isJsonRecord(value: unknown): value is Record<string, unknown> {
 /** Presence only: callers retain their own container guards and diagnostics. */
 export function hasRetiredPiSessionsRoot(value: unknown): boolean {
   return value !== null && typeof value === "object" && Object.hasOwn(value, "piSessionsRoot");
+}
+
+function retiredHistoryPolicyEntries(config: object): RetiredConfigField[] {
+  const retired: RetiredConfigField[] = [];
+  const check = (container: unknown, path: string): void => {
+    if (!isJsonRecord(container)) return;
+    for (const field of ["allowedTools", "disallowedTools"] as const) {
+      const list = container[field];
+      if (!Array.isArray(list)) continue;
+      list.forEach((name, index) => {
+        if (typeof name !== "string") return;
+        const entryPath = `${path}.${field}[${index}]`;
+        const message = retiredHistoryToolMessage(name.trim(), entryPath);
+        if (message !== undefined) retired.push({ path: entryPath, message });
+      });
+    }
+  };
+  const root = config as Record<string, unknown>;
+  check(root.tools, "tools");
+  if (!isJsonRecord(root.subagents)) return retired;
+  check(root.subagents, "subagents");
+  check(root.subagents.inline, "subagents.inline");
+  const definitions = root.subagents.definitions;
+  if (Array.isArray(definitions)) definitions.forEach((definition, index) => check(definition, `subagents.definitions[${index}]`));
+  return retired;
 }

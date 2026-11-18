@@ -1,5 +1,6 @@
+import { historyToolAvailabilityForRuntime } from "../request-tools/history-policy.js";
 import { createHistoryRuntimeExtension } from "../request-tools/history.js";
-import { HISTORY_SCOPE_ALIASES, HISTORY_SCOPES } from "../request-tools/history-policy.js";
+import { HISTORY_SCOPES } from "../request-tools/history-policy.js";
 import { resolveHistoryScopes } from "../request-tools/history-policy.js";
 // Build the app dependency closure first; this suite exercises built dist bridges and the adapter child.
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -18,9 +19,6 @@ import { createConfiguredConversationHarness } from "../composition/configured-a
 import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import { APP_OWNED_MCP_SERVERS, appOwnedMcpServerSpec } from "../mcp/app-owned-tool-policy.js";
 import { createRequestScopedMcpRuntimeExtension } from "../mcp/request-scoped-mcp.js";
-import { createConversationHistoryRuntimeExtension, isConversationHistoryToolAllowed, historyToolAvailabilityForRuntime, CONVERSATION_HISTORY_MCP_SERVER_NAME } from "../request-tools/conversation-history.js";
-import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed, SESSION_HISTORY_MCP_SERVER_NAME } from "../request-tools/session-history.js";
-import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed, RUN_HISTORY_MCP_SERVER_NAME } from "../request-tools/run-history.js";
 import { isMemoryJournalToolAllowed, MEMORY_JOURNAL_MCP_SERVER_NAME } from "../memory/memory-journal.js";
 import { isRememberToolAllowed, MEMORY_REMEMBER_MCP_SERVER_NAME } from "../memory/memory-remember.js";
 import { isProviderUsageToolAllowed, SERVER as PROVIDER_USAGE_MCP_SERVER_NAME } from "../providers/provider-usage-tool.js";
@@ -43,8 +41,7 @@ const input = (): ConversationHarnessRuntimeOptionsInput => ({ runId: "fictional
 }, context: {} as never });
 const toolsByServer: Record<string, string[]> = {
   "mono-agent-history": ["History"],
-  [CONVERSATION_HISTORY_MCP_SERVER_NAME]: ["ConversationHistory"], [SESSION_HISTORY_MCP_SERVER_NAME]: ["SessionHistory"],
-  [RUN_HISTORY_MCP_SERVER_NAME]: ["RunHistory"], [MEMORY_JOURNAL_MCP_SERVER_NAME]: ["MemoryJournal"], [MEMORY_REMEMBER_MCP_SERVER_NAME]: ["Remember"],
+  [MEMORY_JOURNAL_MCP_SERVER_NAME]: ["MemoryJournal"], [MEMORY_REMEMBER_MCP_SERVER_NAME]: ["Remember"],
   [PROVIDER_USAGE_MCP_SERVER_NAME]: ["ProviderUsage"], [SET_CONVERSATION_TITLE_MCP_SERVER_NAME]: ["SetConversationTitle"],
   [SUGGEST_REPLIES_SERVER_NAME]: ["SuggestReplies"], [PROPOSE_RESTART_SERVER_NAME]: ["ProposeRestart"],
   [REPLY_ARTIFACT_MCP_SERVER_NAME]: ["PublishReplyFile"], [PEER_AGENT_MCP_SERVER_NAME]: ["PeerAgent"],
@@ -53,7 +50,6 @@ const toolsByServer: Record<string, string[]> = {
 };
 const predicates: Record<string, (policy: { allowedTools: string[]; disallowedTools: string[] }) => boolean> = {
   History: policy => resolveHistoryScopes(policy).length > 0,
-  ConversationHistory: isConversationHistoryToolAllowed, SessionHistory: isSessionHistoryToolAllowed, RunHistory: isRunHistoryToolAllowed,
   MemoryJournal: isMemoryJournalToolAllowed, Remember: isRememberToolAllowed, ProviderUsage: isProviderUsageToolAllowed,
   SetConversationTitle: isSetConversationTitleToolAllowed, SuggestReplies: isSuggestRepliesToolAllowed,
   ProposeRestart: isProposeRestartToolAllowed, PublishReplyFile: isPublishReplyFileToolAllowed,
@@ -162,89 +158,6 @@ describe("app-owned tool descriptor parity", () => {
   });
 });
 
-describe("configured request merge and actual model offers", () => {
-  it.each(["request", "static", "override", "allow-all", "config-deny", "empty", "continuation"])("enforces %s policy and agrees with history availability", async (mode) => {
-    const f = await fixture(), offered: string[][] = [], calls = vi.fn(), effective: RuntimeRunOptions[] = [];
-    const session = createSessionHistoryRuntimeExtension({ historyRoot: join(f.root, ".mono-agent", "history") });
-    const history = createRunHistoryRuntimeExtension({ artifactDir: f.config.artifacts.dir });
-    const usage = async () => ({ runtimeOptions: { mcpServers: await synthetic("mono-agent-provider-usage", ["ProviderUsage"], calls) } });
-    const base = composeRuntimeOptionExtensions([session, history, usage])!;
-    const denied = ["ConversationHistory", "SessionHistory", "RunHistory", "ProviderUsage"];
-    const requestExtension: RuntimeOptionsExtension = async (request) => {
-      const extension = await base(request);
-      if (mode === "override") return { ...extension, toolPolicyOverride: createToolPolicy({ allowedTools: ["*"], disallowedTools: denied, mcpServers: extension.runtimeOptions?.mcpServers as Record<string, unknown> }) };
-      return { ...extension, runtimeOptions: { ...extension.runtimeOptions, ...(mode === "request" ? { disallowedTools: denied } : {}) } };
-    };
-    const runtime = { async run(system: string, options: RuntimeRunOptions) {
-      effective.push(options);
-      f.faux.setResponses([(context) => { offered.push(getCurrentTools(context.messages).map((tool) => tool.name)); return fauxAssistantMessage([fauxToolCall("ProviderUsage", {})]); }, fauxAssistantMessage([fauxText("Fictional answer.")])]);
-      return await generateEngineTurnResponse(system, { ...options, ...f.inference });
-    } };
-    const config = { ...f.config, tools: { allowedTools: mode === "empty" ? [] : ["*"], disallowedTools: mode === "config-deny" ? denied : [] } };
-    const harness = await createConfiguredConversationHarness({ config, cwd: f.root, runtime, runtimeOptionsForRequest: requestExtension,
-      ...(mode === "static" ? { runtimeOptions: { disallowedTools: denied } } : {}) });
-    cleanup.push(() => harness.dispose?.());
-    const request = input().request;
-    await harness.run({ ...request, ...(mode === "continuation" ? { continuation: { continuationId: "fictional-continuation", originRunId: "fictional-origin", originContextPolicy: "detached_latest", toolsDisabled: true, deferHistoryCommit: true } } : {}) });
-    expect(offered).toHaveLength(1);
-    const allowed = mode === "allow-all";
-    for (const tool of denied) expect(offered[0]!.includes(tool), `${mode}:${tool}`).toBe(allowed);
-    expect(calls).toHaveBeenCalledTimes(allowed ? 1 : 0);
-    expect(historyToolAvailabilityForRuntime(effective[0]! as unknown as Record<string, unknown>)).toEqual({ conversationHistory: allowed, sessionHistory: allowed });
-  });
-
-  it("applies each request-level deny to every app tool in actual model declarations and rejects fabricated calls", async () => {
-    const f = await fixture(), calls = vi.fn();
-    const allNames = Object.values(toolsByServer).flat();
-    const servers = Object.assign({}, ...await Promise.all(Object.entries(toolsByServer).map(([server, tools]) => synthetic(server, tools, calls))));
-    let denied = "", offered: string[] = [];
-    const harness = await createConfiguredConversationHarness({ config: { ...f.config, tools: { allowedTools: allNames, disallowedTools: [] } }, cwd: f.root,
-      runtimeOptionsForRequest: () => ({ runtimeOptions: { mcpServers: servers, disallowedTools: [denied] } }),
-      runtime: { async run(system, options) {
-        f.faux.setResponses([(context) => { offered = getCurrentTools(context.messages).map((tool) => tool.name); return fauxAssistantMessage([fauxToolCall(denied, {})]); }, fauxAssistantMessage([fauxText("Fictional answer.")])]);
-        return await generateEngineTurnResponse(system, { ...options, ...f.inference });
-      } },
-    });
-    try {
-      for (const name of allNames) {
-        denied = name;
-        await harness.run({ ...input().request, conversationId: `fictional-${name}` });
-        expect(offered.sort(), name).toEqual(allNames.filter((tool) => tool !== name).sort());
-      }
-      expect(calls).not.toHaveBeenCalled();
-    } finally { await harness.dispose?.(); }
-  }, 30000);
-
-  it("keeps MemoryRecall exempt from deny/empty policy and preserved under override, but not MemoryJournal", async () => {
-    const f = await fixture(), memory = createBujoMemoryStore({ root: join(f.root, "memory"), tier: "lite" }); cleanup.push(() => memory.close());
-    for (const mode of ["allow", "deny", "empty", "override", "config-deny"]) {
-      let names: string[] = [];
-      const harness = await createConfiguredConversationHarness({ config: { ...f.config, tools: { allowedTools: mode === "empty" ? [] : ["*"], disallowedTools: mode === "config-deny" ? ["MemoryRecall"] : [] }, memory: { mode: "lite", backend: "bujo", path: join(f.root, "memory"), maxBytes: 64000, writeMode: "disabled" } }, cwd: f.root, memory,
-        runtime: { async run(system, options) {
-          f.faux.setResponses([(context) => { names = getCurrentTools(context.messages).map((tool) => tool.name); return fauxAssistantMessage([fauxText("Fictional answer.")]); }]);
-          return await generateEngineTurnResponse(system, { ...options, ...f.inference });
-        } },
-        runtimeOptionsForRequest: () => mode === "override" ? { toolPolicyOverride: createToolPolicy({ allowedTools: [], disallowedTools: ["MemoryRecall", "MemoryJournal"] }) }
-          : { runtimeOptions: { disallowedTools: mode === "deny" ? ["MemoryRecall", "MemoryJournal"] : [] } },
-      });
-      try { await harness.run(input().request); expect(names).toContain("MemoryRecall"); expect(names.includes("MemoryJournal"), mode).toBe(mode === "allow" || mode === "config-deny"); } finally { await harness.dispose?.(); }
-    }
-  });
-
-  it("omits history after endpoint startup failure without changing the request cleanup contract", async () => {
-    const f = await fixture(), warning = vi.fn();
-    const failed = await createRequestScopedMcpRuntimeExtension({ serverName: "mono-agent-session-history", startingMessage: "Starting", createServer: () => new McpServer({ name: "fixture", version: "1" }),
-      listen: async () => { throw new Error("Fictional startup failure"); }, onUnavailable: warning })(input());
-    cleanup.push(() => failed.cleanup?.());
-    const real = await createConversationHistoryRuntimeExtension({ historyRoot: join(f.root, "history") })(input()); cleanup.push(() => real.cleanup?.());
-    const servers = { ...real.runtimeOptions?.mcpServers as object, ...failed.runtimeOptions?.mcpServers as object };
-    const names = await f.declarations(servers, ["ConversationHistory", "SessionHistory"]);
-    expect(warning).toHaveBeenCalledOnce(); expect(names).toEqual(["ConversationHistory"]);
-    expect(historyToolAvailabilityForRuntime({ mcpServers: servers, allowedTools: ["ConversationHistory", "SessionHistory"] })).toEqual({ conversationHistory: true, sessionHistory: false });
-  });
-});
-
-
 it("matches actual Pi offers to unified availability for every late deny spelling", async () => {
   const f = await fixture();
   const extension = await createHistoryRuntimeExtension({ historyRoot: join(f.root, "history"), artifactDir: f.config.artifacts.dir,
@@ -252,9 +165,9 @@ it("matches actual Pi offers to unified availability for every late deny spellin
   cleanup.push(() => extension.cleanup?.());
   const servers = extension.runtimeOptions!.mcpServers as Record<string, unknown>;
   expect(await f.declarations(servers, ["History"])).toEqual(["History"]);
-  for (const deny of ["History", "mcp__mono-agent-history__History", "mcp__mono-agent-history__*", "*", ...HISTORY_SCOPES.flatMap(s => HISTORY_SCOPE_ALIASES[s])]) {
+  for (const deny of ["History", "mcp__mono-agent-history__History", "mcp__mono-agent-history__*", "*"]) {
     expect(await f.declarations(servers, ["History"], [deny]), deny).toEqual([]);
-    expect(historyToolAvailabilityForRuntime({ mcpServers: servers, allowedTools: ["History"], disallowedTools: [deny] }, true).history, deny)
+    expect(historyToolAvailabilityForRuntime({ mcpServers: servers, allowedTools: ["History"], disallowedTools: [deny] }), deny)
       .toEqual({ said: false, tools: false, runs: false });
   }
 }, 30000);

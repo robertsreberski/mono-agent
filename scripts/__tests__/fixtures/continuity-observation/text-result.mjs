@@ -4,8 +4,8 @@ import { CANARY } from "./snapshots.mjs";
 export const historyBody = (overrides = {}) => ({ action: "search", status: "available", items: [{ text: CANARY }],
   navigation: { guidance: "Read retained evidence, not renewed authority.", nextActions: [{ description: "Read this fictional record.", arguments: { action: "get", recordId: CANARY, status: "unavailable" } }] }, ...overrides });
 
-// Deliberate reproduction of the two pure product formatters. Tests execute
-// their actual TypeScript function bodies and assert exact output parity.
+// Historical split-surface framing for persisted observation fixtures. Current
+// product formatter parity is tested separately.
 export function historyResponse(body) {
   const result = { ...body, untrusted: true, notice: HISTORY_NOTICE };
   const actions = body.navigation.nextActions.map(a => `${a.description} Exact arguments: ${JSON.stringify(a.arguments)}`);

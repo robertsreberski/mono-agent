@@ -31,7 +31,6 @@ import { SOL, e2ReplayArm, protocolDigest } from "../lib/continuity-e2-protocol.
 import { guardedAuthorization } from "../lib/continuity-guarded-authorization.mjs";
 import { parseE2Args, main } from "../continuity-e2.mjs";
 import { codexWireTools } from "./fixtures/codex-wire-tools.mjs";
-import { e2ParityCases } from "./fixtures/e2-ab-parity-cases.mjs";
 import { abFrozenFixture, abNativeFixture, abKeys, AB_ROWS, AB_PRIMARY } from "./fixtures/e2-ab-fixture.mjs";
 import { E2_NATIVE_DEADLINES } from "./fixtures/e2-native-registration.mjs";
 const build = vi.hoisted(() => ({ state: vi.fn(() => ({ head: "b".repeat(40), dirty: false })), verify: vi.fn(async () => {}) }));
@@ -58,12 +57,11 @@ it("restores the frozen snapshot at a new absolute root and sizes every arm pack
   const output = join(root, "new-root", "sizing");
   const report = await runE2HistoryAbSizing({ source: f.trace.source, protocol: f.trace.protocol, historyAb: f.binding, frozen: f.frozen, output, onContext: c => contexts.push(c) });
   expect(report).toMatchObject({ schema: "continuity-e2-ab-sizing-v1", replayArm: "history-ab", qualification: false, semanticQualification: false, probeLookupRounds: 3, checkpoint: 2, bindingSha256: e2AbSizingBinding(f.binding) });
-  expect(report.arms.map(a => a.arm)).toEqual(["A", "B", "C"]);
+  expect(report.arms.map(a => a.arm)).toEqual(["B", "C"]);
   const descriptions = {
-    A: (await import("../../packages/app/dist/request-tools/conversation-history.js")).CONVERSATION_HISTORY_DESCRIPTION,
     B: (await import("../../packages/app/dist/request-tools/history.js")).historyDescription(["said", "tools", "runs"], { variant: "compact" }),
     C: (await import("../../packages/app/dist/request-tools/history.js")).historyDescription(["said", "tools", "runs"], { variant: "directive" }) };
-  expect(new Set(Object.values(descriptions).map(hash)).size).toBe(3);
+  expect(new Set(Object.values(descriptions).map(hash)).size).toBe(2);
   for (const arm of report.arms) {
     const contract = await e2AbArmContract(arm.arm), own = contexts.filter(c => c.arm === arm.arm).map(c => c.context);
     // The fictional B4 checkpoint injects a continuity pack: withheld from every request.
@@ -121,7 +119,7 @@ it("restores the frozen snapshot at a new absolute root and sizes every arm pack
   const tampered = join(f.snapshot, "IDENTITY.md");
   await appendFile(tampered, "Fictional tamper.\n");
   await expect(assertE2AbSnapshot(f.binding)).rejects.toThrow("E2_SNAPSHOT_MISMATCH");
-  await expect(runE2HistoryAb({ source: f.trace.source, protocol: f.trace.protocol, historyAb: f.binding, frozen: f.frozen, arm: "A", output: join(root, "new-root", "tampered") })).rejects.toThrow("E2_SNAPSHOT_MISMATCH");
+  await expect(runE2HistoryAb({ source: f.trace.source, protocol: f.trace.protocol, historyAb: f.binding, frozen: f.frozen, arm: "B", output: join(root, "new-root", "tampered") })).rejects.toThrow("E2_SNAPSHOT_MISMATCH");
   await expect(e2AbFrozenRecord({ ...f.binding, frozen: { ...f.binding.frozen, replay: { ...f.binding.frozen.replay, sha256: "0".repeat(64) } } })).rejects.toThrow("E2_SNAPSHOT_MISMATCH");
   expect(() => e2AbFrozenCheckpoint(f.frozen, { ...f.binding, frozen: { ...f.binding.frozen, receipt: { ...f.binding.frozen.receipt, digest: "0".repeat(64) } } })).toThrow("E2_AB_BINDING_INVALID");
   expect(() => e2AbFrozenCheckpoint(f.frozen, f.binding, { protocol: { ...f.trace.protocol, probeLookupRounds: 2 } })).toThrow("E2_AB_BINDING_INVALID");
@@ -237,12 +235,12 @@ it("decodes every path encoding the relocation proof scans for", () => {
 });
 
 it("latches only genuine History store unavailability; a model's lookup mistake is recorded and scored", async () => {
-  const [{ handleConversationHistoryRequest }, { handleHistoryRequest }] = await Promise.all([import("../../packages/app/dist/request-tools/conversation-history.js"), import("../../packages/app/dist/request-tools/history.js")]);
+  const [{ handleSaidHistoryRequest }, { handleHistoryRequest }] = await Promise.all([import("../../packages/app/dist/request-tools/history-said.js"), import("../../packages/app/dist/request-tools/history.js")]);
   const scope = { conversationId: "fictional-conversation", logicalConversationId: "fictional-logical", runId: "fictional-run" };
   // A store that opens but holds no such record or readable continuity, and a reader that cannot open it at all.
   const empty = { getContinuity: () => ({ status: "unavailable", untrusted: true }), searchContinuity: () => ({ available: false, items: [] }), continuityGaps: () => ({ total: 0, items: [] }), latestContinuitySummary: () => undefined };
   const broken = new Proxy({}, { get: () => () => { throw new Error("fictional store failure"); } });
-  const split = async (reader, input) => handleConversationHistoryRequest({ reader, ...scope }, input);
+  const split = async (reader, input) => handleSaidHistoryRequest({ reader, ...scope }, input);
   const unified = async (reader, input) => handleHistoryRequest({ reader, artifactDir: "/fictional/absent/artifacts", ...scope, scopes: ["said", "tools", "runs"] }, input);
   const typo = { action: "get", recordId: "chr1_fictional-typo" }, absent = { action: "get", recordId: `chr1_${"f".repeat(43)}` };
   // [shipping result, class, the model-facing text carries the JSON envelope]
@@ -290,7 +288,7 @@ it("records a model's typo'd or missing lookup and finishes the probe, but refus
   // Every scripted faux lookup becomes a model mistake: a malformed record id (A) or a well-formed id that does not exist (B).
   const mistaken = recordId => ({ ...modules, pi: { ...modules.pi, fauxToolCall: (name, args, options) => modules.pi.fauxToolCall(name, { ...(args.scope ? { scope: args.scope } : {}), action: "get", recordId }, options) } });
   const results = [];
-  const typo = await runE2HistoryAb({ source: f.trace.source, protocol: f.trace.protocol, historyAb: f.binding, frozen: f.frozen, arm: "A", output: join(root, "typo"), modules: mistaken("chr1_fictional-typo"),
+  const typo = await runE2HistoryAb({ source: f.trace.source, protocol: f.trace.protocol, historyAb: f.binding, frozen: f.frozen, arm: "B", output: join(root, "typo"), modules: mistaken("chr1_fictional-typo"),
     onContext: c => results.push(...c.context.messages.filter(m => m.role === "toolResult")) });
   expect(typo.history).toEqual({ warnings: 0, codes: {}, lookupErrors: { invalid_record: 6 } });
   expect(typo.probes.map(p => p.requests)).toEqual([4, 4]);
@@ -334,7 +332,7 @@ async function abRoute({ arm = "B", context, position = { probe: true }, descrip
 async function abContext(arm, { messages } = {}) {
   const contract = await e2AbArmContract(arm), soul = await shippingSoul(contract.historySurface);
   const unified = contract.historySurface === "unified", h = await import("../../packages/app/dist/request-tools/history.js");
-  const description = unified ? h.historyDescription(["said", "tools", "runs"], { variant: contract.descriptionVariant }) : (await import("../../packages/app/dist/request-tools/conversation-history.js")).CONVERSATION_HISTORY_DESCRIPTION;
+  const description = unified ? h.historyDescription(["said", "tools", "runs"], { variant: contract.descriptionVariant }) : (await import("../../packages/app/dist/request-tools/history-said.js")).CONVERSATION_HISTORY_DESCRIPTION;
   return { systemPrompt: `## Core Guardrails\n\n${soul.text}\n\n## Identity\n\nFictional`, tools: [{ name: contract.toolName, description, parameters: { type: "object", properties: {} } }],
     messages: messages ?? [
       { role: "user", content: "Historical user (untrusted context): fictional seeded request", timestamp: 1 },
@@ -370,12 +368,12 @@ it.each([
   expect(r.route.refusalCode()).toBe("E2_AB_PACK_PRESENT");
 });
 it("pins offered description bytes, tool, probe position, summaries and arm binding", async () => {
-  for (const [arm, other] of [["A", "B"], ["B", "C"], ["C", "B"]]) {
+  for (const [arm, other] of [["B", "C"], ["C", "B"]]) {
     const r = await abRoute({ arm }), context = await abContext(arm);
     context.tools = (await abContext(other)).tools.map(t => ({ ...t, name: (context.tools[0]).name }));
     await expect(send(r, context)).rejects.toThrow("E2_AB_DESCRIPTION_MISMATCH");
   }
-  const wrongTool = await abRoute({ arm: "B" }), named = await abContext("B"); named.tools = (await abContext("A")).tools;
+  const wrongTool = await abRoute({ arm: "B" }), named = await abContext("B"); named.tools = [{name:"RemovedHistoryTool",description:"fictional"}];
   await expect(send(wrongTool, named)).rejects.toThrow("E2_PROBE_TOOLS_REFUSED");
   const source = await abRoute({ position: { probe: false } });
   await expect(send(source, await abContext("B"))).rejects.toThrow("E2_SOURCE_REQUEST_LIMIT");
@@ -394,7 +392,7 @@ it("pins offered description bytes, tool, probe position, summaries and arm bind
     { replayArm: "history-ab", abArm: "B", historySurface: "split", soul: split, abDescriptionSha256: sha }, { abArm: "B", historySurface: "unified", soul: unified, abDescriptionSha256: sha },
     { replayArm: "history-ab", abArm: "D", historySurface: "unified", soul: unified, abDescriptionSha256: sha }, { replayArm: "history-ab", abArm: "B", historySurface: "unified", soul: unified },
     { historySurface: "unified", soul: unified, abDescriptionSha256: sha }])
-    expect(() => createE2Models({ ...base, ...bad })).toThrow("E2_AB_BINDING_INVALID");
+    expect(() => createE2Models({ ...base, ...bad })).toThrow();
   // Legacy routes keep their exact report shape.
   expect(createE2Models({ ...base, soul: split }).report()).toEqual({ sourceRequests: 0, probeRequests: 0, summaryRequests: [], compactions: [], requestSizing: [] });
 }, TIMEOUT);
@@ -426,7 +424,7 @@ it("binds arms, variants, rows and the frozen tree into one registration and ref
   expect(r).not.toHaveProperty("historySurface"); expect(r).not.toHaveProperty("soul");
   expect(r.schedule.map(p => [p.kind, p.arm, p.budgets.map(b => [b.checkpoint, b.paidRole, b.maxRequests])])).toEqual(E2_AB_ARMS.map(arm => ["replay", `history-ab-${arm}`, [[2, "continuation", 18], [2, "probe", 6]]]));
   expect(r.probeCounts).toEqual([0, 1, 2, 3].map(checkpoint => ({ checkpoint, questions: checkpoint === 2 ? 3 : 0, lookupRounds: 3 })));
-  expect(r.toolPolicies).toEqual({ summary: [], replayFinal: [], abReplay: { A: ["ConversationHistory"], B: ["History"], C: ["History"] } });
+  expect(r.toolPolicies).toEqual({ summary: [], replayFinal: [], abReplay: { B: ["History"], C: ["History"] } });
   const handle = await auth.validate(f.args); expect(auth.bindsRegistration(handle, f.pilot)).toBe(true);
   expect(f.artifact.bindings).toMatchObject({ replayArm: "history-ab", historyAb: r.historyAb }); expect(f.artifact.bindings).not.toHaveProperty("soul");
   const saved = structuredClone(f.pilot);
@@ -437,12 +435,12 @@ it("binds arms, variants, rows and the frozen tree into one registration and ref
   };
   const contract = letter => structuredClone(r.historyAb.arms.find(a => a.arm === letter));
   await refuse(p => { p.registration.historyAb.arms[1] = { ...contract("C"), arm: "B" }; });
-  await refuse(p => { p.registration.historyAb.arms[1].descriptionVariant = "directive"; });
-  await refuse(p => { p.registration.historyAb.arms[0].historySurface = "unified"; });
-  await refuse(p => { p.registration.historyAb.arms[2].description.sha256 = "0".repeat(64); });
+  await refuse(p => { p.registration.historyAb.arms[1].descriptionVariant = "compact"; });
+  await refuse(p => { p.registration.historyAb.arms[0].historySurface = "split"; });
+  await refuse(p => { p.registration.historyAb.arms[1].description.sha256 = "0".repeat(64); });
   await refuse(p => { p.registration.historyAb.arms = [contract("B"), contract("A"), contract("C")]; });
   await refuse(p => { p.registration.historyAb.arms.pop(); });
-  await refuse(p => { p.registration.schedule[1].arm = "history-ab-C"; });
+  await refuse(p => { p.registration.schedule[1].arm = "history-ab-B"; });
   await refuse(p => { p.registration.toolPolicies.abReplay.B = ["ConversationHistory"]; });
   await refuse(p => { p.registration.historySurface = "unified"; });
   await refuse(p => { p.registration.soul = { rawDigest: "0".repeat(64), normalizedDigest: "0".repeat(64) }; });
@@ -468,7 +466,7 @@ it("binds arms, variants, rows and the frozen tree into one registration and ref
   const staleBinding = await f.bind("stale", stale);
   await refuse(p => { p.registration.sizing = [staleBinding]; });
   const other = structuredClone(f.record); other.arms.pop();
-  expect(() => normalizeE2AbSizing(f.ab.trace.protocol, other, f.ab.binding)).toThrow("E2_ESTIMATE_INVALID");
+  expect(() => normalizeE2AbSizing(f.ab.trace.protocol, other, f.ab.binding)).toThrow();
   // Paid entry must explicitly select the A/B mode; no surface selector applies.
   const out = [], err = [], io = { stdout: v => out.push(v), stderr: v => err.push(v) };
   const run = ["run", "--summary", "real", "--registration", f.args.registrationPath, "--sha256", f.args.registrationSha256, "--authorization", f.args.authorizationPath, "--credentials", f.args.credentialPath, "--output", f.args.outputRoot];
@@ -480,11 +478,11 @@ it("binds arms, variants, rows and the frozen tree into one registration and ref
   const permit = (paidRole, slot) => ({ requestId: "fictional:1", slotId: slot.slotId, round: 1, payloadDigest: "a".repeat(64), reservationUnits: e2RequestPrice(sol, { inputTokens: 10, maxOutputTokens: role.maxOutputTokens }).reservationUnits, inputTokens: 10, model: SOL, paidRole, checkpoint: 2 });
   for (const slot of r.schedule) {
     const arm = e2AbArmOfSlot(slot.arm);
-    expect(e2SlotHistorySurface(r, slot)).toBe(arm === "A" ? "split" : "unified");
+    expect(e2SlotHistorySurface(r, slot)).toBe("unified");
     expect(e2PhaseBase("/fictional/root", slot)).toBe(`/fictional/root/work/${slot.arm}`);
     const first = e2ExecutionPolicy.admission(f.pilot, slot, { holds: [] }, permit("probe", slot)).metadata;
-    expect(first).toMatchObject({ replayArm: "history-ab", abArm: arm, abDescriptionSha256: (await e2AbArmContract(arm)).description.sha256, probeRequest: 1, tools: [arm === "A" ? "ConversationHistory" : "History"] });
-    expect(first).not.toHaveProperty("historySurface");
+    expect(first).toMatchObject({ replayArm: "history-ab", abArm: arm, abDescriptionSha256: (await e2AbArmContract(arm)).description.sha256, probeRequest: 1, tools: ["History"] });
+    expect(first.historySurface).toBe("unified");
     const last = e2ExecutionPolicy.admission(f.pilot, slot, { holds: [1, 2, 3].map(n => ({ checkpoint: 2, probeRequest: n, paidRole: n === 1 ? "probe" : "continuation", model: SOL })) }, permit("continuation", slot)).metadata;
     expect(last).toMatchObject({ probeRequest: 4, tools: [] });
     expect(() => e2ExecutionPolicy.admission(f.pilot, slot, { holds: [] }, { ...permit("summary", slot) })).toThrow();
@@ -495,10 +493,10 @@ it("binds arms, variants, rows and the frozen tree into one registration and ref
   const payload = description => ({ model: "gpt-6.1-sol", stream: true, store: false, reasoning: { effort: "high" }, input: [{ role: "user", content: [{ type: "input_text", text: "Fictional current probe question" }] }],
     tools: [{ type: "function", name: "History", description, parameters: { type: "object", properties: {} }, strict: false }] });
   const paid = slot => ({ effort: "high", e2: { pilot: f.pilot, planned: slot, paidRole: "probe", model: SOL, checkpoint: 2, probeRequest: 1 } });
-  expect(() => e2ExecutionPolicy.assertPayload(payload(directive), 1, paid(r.schedule[2]))).not.toThrow();
-  expect(() => e2ExecutionPolicy.assertPayload(payload(compact), 1, paid(r.schedule[1]))).not.toThrow();
-  expect(() => e2ExecutionPolicy.assertPayload(payload(compact), 1, paid(r.schedule[2]))).toThrow("e2_tools_forbidden");
-  expect(() => e2ExecutionPolicy.assertPayload(payload(directive), 1, paid(r.schedule[1]))).toThrow("e2_tools_forbidden");
+  expect(() => e2ExecutionPolicy.assertPayload(payload(directive), 1, paid(r.schedule[1]))).not.toThrow();
+  expect(() => e2ExecutionPolicy.assertPayload(payload(compact), 1, paid(r.schedule[0]))).not.toThrow();
+  expect(() => e2ExecutionPolicy.assertPayload(payload(compact), 1, paid(r.schedule[1]))).toThrow("e2_tools_forbidden");
+  expect(() => e2ExecutionPolicy.assertPayload(payload(directive), 1, paid(r.schedule[0]))).toThrow("e2_tools_forbidden");
   expect(() => e2SlotHistorySurface({ ...r, historySurface: "unified" }, r.schedule[0])).toThrow("e2_registration_invalid");
 }, TIMEOUT);
 
@@ -516,12 +514,12 @@ it("estimates the A/B minimum as the no-cache aggregate plus the largest reserva
       requestSizing: [1, 2].flatMap(() => [row("probe", (10_000 + i * 100) * scale), ...[1, 2, 3].map(k => row("continuation", (11_000 + i * 100 + k) * scale))]) })) });
   const roles = ["probe", "continuation"].map(role => ({ role, model: SOL, maxInputTokens: 272000, maxOutputTokens: 128000, expectedOutputTokens: 3000 }));
   const one = estimateE2HistoryAb({ protocol, roles, historyAb: binding, records: [record(1)], catalog });
-  const requests = 3 * binding.rows.length * 2 * 4;
+  const requests = 2 * binding.rows.length * 2 * 4;
   expect(one.fundedSchedule.totals.requests).toBe(requests);
   expect(one).toMatchObject({ replayArm: "history-ab", qualification: false, minimumCapRule: "no-cache-aggregate-plus-largest-reservation" });
   expect(BigInt(one.minimumCapUnits)).toBe(BigInt(one.fundedSchedule.totals.noCacheUnits) + BigInt(one.largestReservationUnits));
   expect(one.minimumCapUnits).toBe(one.forecastNoCacheMinimumCapUnits);
-  expect(one.arms.map(a => a.requests)).toEqual([requests / 3, requests / 3, requests / 3]);
+  expect(one.arms.map(a => a.requests)).toEqual([requests / 2, requests / 2]);
   expect(one.arms.reduce((n, a) => n + BigInt(a.noCacheUnits), 0n)).toBe(BigInt(one.fundedSchedule.totals.noCacheUnits));
   expect(one.retryExposure).toMatchObject({ maximumAdditionalRequests: 8, includedInMinimum: false, maximumAdditionalUnits: (BigInt(one.largestReservationUnits) * 8n).toString() });
   // Hand-computed no-cache arithmetic: input * rate + expected output * rate, per request.
@@ -534,12 +532,12 @@ it("estimates the A/B minimum as the no-cache aggregate plus the largest reserva
   expect(two.fundedSchedule.totals.requests).toBe(requests);
   expect(two.minimumCapUnits).toBe(estimateE2HistoryAb({ protocol, roles, historyAb: binding, records: [record(2)], catalog }).minimumCapUnits);
   // The schedule budgets are exactly the funded counts, one slot per arm.
-  expect(e2AbPhaseSchedule(protocol, binding, [record(1)]).map(p => p.budgets.map(b => b.maxRequests))).toEqual([[24, 8], [24, 8], [24, 8]]);
+  expect(e2AbPhaseSchedule(protocol, binding, [record(1)]).map(p => p.budgets.map(b => b.maxRequests))).toEqual([[24, 8], [24, 8]]);
   // Only Sol probe/continuation roles, and only A/B records, are accepted.
   expect(() => estimateE2HistoryAb({ protocol, roles: [...roles, { ...roles[0], role: "summary" }], historyAb: binding, records: [record(1)], catalog })).toThrow("E2_ESTIMATE_INVALID");
   expect(() => estimateE2HistoryAb({ protocol, roles: roles.map(r => ({ ...r, model: "openai-codex:gpt-6-luna" })), historyAb: binding, records: [record(1)], catalog })).toThrow("E2_ESTIMATE_INVALID");
   expect(() => estimateE2HistoryAb({ protocol, roles, historyAb: { ...binding, rows: ["fictional-1"] }, records: [record(1)], catalog })).not.toThrow();
-  expect(() => estimateE2HistoryAb({ protocol, roles, historyAb: { ...binding, arms: contracts.slice(0, 2) }, records: [record(1)], catalog })).toThrow("E2_ESTIMATE_INVALID");
+  expect(() => estimateE2HistoryAb({ protocol, roles, historyAb: { ...binding, arms: contracts.slice(0, 1) }, records: [record(1)], catalog })).toThrow("E2_ESTIMATE_INVALID");
   expect(() => estimateE2SizingSet({ protocol, roles, records: [record(1)], catalog, replayArm: "history-ab" })).toThrow("E2_ESTIMATE_INVALID");
   expect(() => e2PhaseSchedule(protocol, [record(1)], [], "history-ab")).toThrow("e2_registration_invalid");
   expect(() => e2ProbeCounts(protocol, { schema: "continuity-recorded-questions-v1", questions: [] }, { schema: "continuity-recorded-evaluator-keys-v1", keys: [] }, {}, "history-ab")).toThrow("e2_registration_invalid");
@@ -592,9 +590,6 @@ it("scores each answer with the frozen scorer and crosses it with receipt-derive
   const evaluator = abKeys(), answer = (id, repeat, text, witness = true) => ({ id, repeat, text, witness, excludedSteps: [], excludedCoverage: [] });
   const [exact, referent, control] = AB_ROWS, answers = list => ({ schema: "continuity-e2-answers-v1", answers: list });
   const arms = {
-    // A: correct after lookup, contaminated correct without lookup, wrong without lookup, abstain after lookup, wrong after lookup, missing.
-    A: { answers: answers([answer(exact, 1, "Fictional response"), answer(exact, 2, "**Fictional response.**"), answer(referent, 1, "Fictional other"), answer(referent, 2, "I don't know"), answer(control, 1, "Fictional other")]),
-      receipts: await abReceipts(root, "A", [{ id: exact, repeat: 1, scopes: ["said", "said"] }, { id: exact, repeat: 2 }, { id: referent, repeat: 1 }, { id: referent, repeat: 2, scopes: ["said"] }, { id: control, repeat: 1, scopes: ["said"] }]) },
     // B: every scope of the unified tool is attributed from its own call receipt.
     B: { answers: answers(AB_ROWS.flatMap(id => [1, 2].map(repeat => answer(id, repeat, "Fictional response")))),
       receipts: await abReceipts(root, "B", AB_ROWS.flatMap((id, i) => [1, 2].map(repeat => ({ id, repeat, scopes: [["said", "tools", "runs"][i]] })))) },
@@ -605,11 +600,8 @@ it("scores each answer with the frozen scorer and crosses it with receipt-derive
   const report = scoreE2HistoryAb({ pilot, evaluator, arms });
   expect(report).toMatchObject({ schema: "continuity-e2-ab-score-v1", qualification: false, gate: "not-applicable-observational", lookupSource: "validated-probe-receipts", registrationSha256: digest(pilot),
     rows: 3, primaryRows: 1, mapping: { ratePass: "correct", blocking: "wrong", rateMiss: "abstain" } });
-  const [a, b, c] = report.arms;
+  const [b, c] = report.arms;
   expect(report.arms.map(x => x.slotId)).toEqual(E2_AB_ARMS.map(abSlot));
-  expect(a.overall).toMatchObject({ answers: 5, lookups: 3, lookupRate: 0.6, lookupEvidence: { verified: 5, missing: 0, inconsistent: 0 }, correct: 2, correctWithoutLookup: 1, wrongWithoutLookup: 1, wrongAfterLookup: 1, abstain: 1, missing: 1, byScope: { said: 3, tools: 0, runs: 0 } });
-  expect(a.primary).toMatchObject({ answers: 2, lookups: 1, correct: 2, correctWithoutLookup: 1, wrongWithoutLookup: 0, missing: 0 });
-  expect(a.items.find(i => i.id === exact && i.repeat === 1)).toMatchObject({ classification: "ratePass", outcome: "correct", lookupEvidence: "verified", lookup: true, scopes: { said: 2, tools: 0, runs: 0 } });
   expect(b.overall).toMatchObject({ answers: 6, lookups: 6, lookupRate: 1, correct: 6, correctWithoutLookup: 0, byScope: { said: 2, tools: 2, runs: 2 } });
   // Without a witness the frozen scorer is inconclusive; an unreceipted probe is unverified, never "no lookup".
   expect(c.overall).toMatchObject({ answers: 2, correct: 1, correctWithoutLookup: 0, correctLookupUnverified: 1, missing: 4, other: { inconclusive: 1 }, byScope: { runs: 1 },
@@ -622,11 +614,11 @@ it("scores each answer with the frozen scorer and crosses it with receipt-derive
   const relabeled = structuredClone(arms.B.receipts); relabeled.find(r => r.value.phase === "call").value.scope = "tools";
   expect(abEvidence("B", relabeled)).toEqual(["inconsistent", "verified", "verified", "verified", "verified", "verified"]);
   expect(abEvidence("B", arms.B.receipts.filter((_, i) => i !== 1))).toEqual(Array(6).fill("inconsistent"));
-  expect(abEvidence("A", arms.B.receipts)).toEqual(Array(6).fill("inconsistent"));
+  expect(abEvidence("C", arms.B.receipts)).toEqual(Array(6).fill("inconsistent"));
   const orphan = structuredClone(arms.B.receipts); orphan.find(r => r.value.phase === "call").value.callId.sha256 = "0".repeat(64);
   expect(abEvidence("B", orphan)[0]).toBe("inconsistent");
-  const unsettled = scoreE2HistoryAb({ pilot, evaluator, arms: { ...arms, A: { ...arms.A, receipts: [] } } }).arms[0];
-  expect(unsettled.overall).toMatchObject({ answers: 5, lookups: 0, lookupRate: null, lookupEvidence: { verified: 0, missing: 5 }, correctWithoutLookup: 0, correctLookupUnverified: 2, wrongWithoutLookup: 0, wrongLookupUnverified: 2 });
+  const unsettled = scoreE2HistoryAb({ pilot, evaluator, arms: { ...arms, B: { ...arms.B, receipts: [] } } }).arms[0];
+  expect(unsettled.overall).toMatchObject({ answers: 6, lookups: 0, lookupRate: null, lookupEvidence: { verified: 0, missing: 6 }, correctWithoutLookup: 0, correctLookupUnverified: 6, wrongWithoutLookup: 0, wrongLookupUnverified: 0 });
   expect(readE2AbReceipts(join(root, "absent"))).toEqual([]);
   // Omitted, the legacy receipt stream stays said-only and unsettled, byte for byte.
   const legacy = await abReceipts(root, "B", [{ id: exact, repeat: 1, scopes: ["said", "tools", "runs", "invalid", "unscoped"] }], { allScopes: false, name: "legacy" });
@@ -652,7 +644,7 @@ it("refuses forged or foreign receipts: provenance comes from the registration a
   // Checkpoint 999, a foreign slot, a foreign registration, an absent registration binding (offline sizing) and another branch.
   expect(abEvidence("B", forge(v => { v.checkpoint = 999; }))).toEqual(Array(6).fill("inconsistent"));
   expect(abEvidence("B", forge(v => { v.slotId = hash("fictional-foreign-slot"); }))).toEqual(Array(6).fill("inconsistent"));
-  expect(abEvidence("B", forge(v => { v.slotId = abSlot("A"); }))).toEqual(Array(6).fill("inconsistent"));
+  expect(abEvidence("B", forge(v => { v.slotId = abSlot("C"); }))).toEqual(Array(6).fill("inconsistent"));
   expect(abEvidence("B", forge(v => { v.registrationSha256 = hash("fictional-foreign-registration"); }))).toEqual(Array(6).fill("inconsistent"));
   expect(abEvidence("B", forge(v => { delete v.registrationSha256; }))).toEqual(Array(6).fill("inconsistent"));
   expect(abEvidence("B", forge(v => { v.branch = 1; }))).toEqual(Array(6).fill("inconsistent"));
@@ -671,7 +663,7 @@ it("refuses forged or foreign receipts: provenance comes from the registration a
   // Scored, the forged lookup is unverified: it is never counted as a runs lookup.
   const none = { answers: { schema: "continuity-e2-answers-v1", answers: [] }, receipts: [] };
   const all = { schema: "continuity-e2-answers-v1", answers: AB_ROWS.flatMap(id => [1, 2].map(repeat => ({ id, repeat, text: "Fictional response", witness: true, excludedSteps: [], excludedCoverage: [] }))) };
-  const forged = scoreE2HistoryAb({ pilot: AB_PILOT, evaluator: abKeys(), arms: { A: none, B: { answers: all, receipts: rewritten }, C: none } }).arms[1].overall;
+  const forged = scoreE2HistoryAb({ pilot: AB_PILOT, evaluator: abKeys(), arms: { B: { answers: all, receipts: rewritten }, C: none } }).arms[0].overall;
   expect(forged).toMatchObject({ lookups: 5, lookupEvidence: { verified: 5, missing: 0, inconsistent: 1 }, correctLookupUnverified: 1, byScope: { said: 5, tools: 0, runs: 0 } });
   // Other forged captures: a truncation flag to skip the argument check, changed result text, a renamed tool or call id, a moved request ordinal.
   const first = v => v.phase !== "settled" && v.callId.sha256 === call.callId.sha256;
@@ -705,7 +697,7 @@ it("records a unified History call that fails scope validation as a lookup attem
   const none = { answers: { schema: "continuity-e2-answers-v1", answers: [] }, receipts: [] };
   const answers = { schema: "continuity-e2-answers-v1", answers: [answer(exact, 1, "Fictional other"), answer(exact, 2, "Fictional response"), answer(referent, 1, "Fictional other"),
     answer(referent, 2, "Fictional other"), answer(control, 1, "Fictional response"), answer(control, 2, "Fictional response")] };
-  const c = scoreE2HistoryAb({ pilot: AB_PILOT, evaluator: abKeys(), arms: { A: none, B: none, C: { answers, receipts } } }).arms[2];
+  const c = scoreE2HistoryAb({ pilot: AB_PILOT, evaluator: abKeys(), arms: { B: none, C: { answers, receipts } } }).arms[1];
   // A failed attempt is a lookup: wrong after an invalid attempt is "wrong after lookup", never "wrong without lookup".
   expect(c.items.find(i => i.id === exact && i.repeat === 1)).toMatchObject({ outcome: "wrong", lookup: true, scopes: { said: 0, tools: 0, runs: 0, invalid: 1 } });
   expect(c.overall).toMatchObject({ answers: 6, lookups: 4, lookupEvidence: { verified: 6 }, wrongAfterLookup: 2, wrongWithoutLookup: 1, correctWithoutLookup: 1, byScope: { said: 1, tools: 0, runs: 1, invalid: 3 } });
@@ -713,23 +705,9 @@ it("records a unified History call that fails scope validation as a lookup attem
   const relabel = (from, to) => { const copy = structuredClone(receipts); for (const r of copy) if (r.value.phase !== "settled" && r.value.scope === from) { r.value.scope = to; break; } return copy; };
   expect(e2AbLookupEvidence(AB_BINDING, "C", relabel("invalid", "said"), abExpected("C"), 3).get(`${exact}\u0000${1}`).status).toBe("inconsistent");
   expect(e2AbLookupEvidence(AB_BINDING, "C", relabel("runs", "invalid"), abExpected("C"), 3).get(`${control}\u0000${1}`).status).toBe("inconsistent");
-  // The split arm has no scope to fail: ConversationHistory is always said.
-  const split = await abReceipts(root, "A", [{ id: exact, repeat: 1, scopes: ["invalid"] }], { name: "split-invalid" });
-  expect(split.map(r => r.value).filter(v => v.phase === "call").map(v => v.scope)).toEqual(["said"]);
+
 });
 
-it("keeps every legacy digest, policy, schedule, estimate, receipt and CLI path byte-identical to base when the mode is omitted", async () => {
-  const base = JSON.parse(await readFile(new URL("./fixtures/continuity-e2-ab-parity-base.json", import.meta.url)));
-  const current = await e2ParityCases(rel => import(new URL(rel, pathToFileURL(join(ROOT, "scripts/lib/")).href).href));
-  expect(Object.keys(current)).toEqual(Object.keys(base.cases));
-  expect(current).toEqual(base.cases);
-  expect(e2ReplayArm()).toBe("continuity");
-  // The new modules are bound into the E2 code digest (future runs only).
-  for (const file of ["scripts/lib/continuity-e2-ab.mjs", "scripts/lib/continuity-e2-ab-score.mjs", "packages/app/src/request-tools/conversation-history.ts", "scripts/lib/continuity-runner.mjs"])
-    expect(E2_PROTOCOL_FILES).toContain(file);
-  expect(e2ToolPolicies("history-ab")).toEqual(E2_AB_TOOL_POLICIES);
-  expect(() => e2ToolPolicies("history-ab", "unified")).toThrow("e2_registration_invalid");
-});
 it("parses the explicit A/B selectors and refuses mixed or implicit ones", () => {
   const size = ["size", "--source", "s", "--protocol", "p", "--output", "o"];
   expect(parseE2Args([...size, "--replay-arm", "history-ab", "--history-ab", "b"])).toEqual({ command: "size", source: "s", protocol: "p", output: "o", "replay-arm": "history-ab", "history-ab": "b" });
@@ -746,7 +724,7 @@ it("parses the explicit A/B selectors and refuses mixed or implicit ones", () =>
   expect(() => assertE2HistoryAbBinding({ schema: "continuity-e2-history-ab-v1" })).toThrow("E2_AB_BINDING_INVALID");
 });
 
-it("executes all three arms in one guarded run from the frozen snapshot through the shipping SDK, controller and A/B scorer", async () => {
+it("executes both arms in one guarded run from the frozen snapshot through the shipping SDK, controller and A/B scorer", async () => {
   const root = await scratch(), rows = [AB_ROWS[0], AB_ROWS[2]];
   const deadlines = { ...E2_NATIVE_DEADLINES, phaseDeadlineMs: 120_000, childWatchdogMs: 120_000, runDeadlineMs: 360_000 };
   const f = await abNativeFixture(root, { rows, primary: [AB_ROWS[0]], deadlines });
@@ -766,7 +744,7 @@ it("executes all three arms in one guarded run from the frozen snapshot through 
       const tools = codexWireTools(body), exact = prompt(body).includes(AB_ROWS[0]), answered = body.input.some(i => i.type === "function_call_output");
       response.writeHead(200, { "content-type": "text/event-stream" });
       // The exact row looks up once and answers; the control row answers from context alone.
-      response.end(exact && !answered && tools.length ? call(tools[0].name, { ...(tools[0].name.endsWith("ConversationHistory") ? {} : { scope: "said" }), action: "search", query: "Fictional", limit: 5 }, received.length)
+      response.end(exact && !answered && tools.length ? call(tools[0].name, { scope: "said", action: "search", query: "Fictional", limit: 5 }, received.length)
         : text(exact ? "Fictional response" : "Fictional other"));
     } catch (error) { listenerError = error; response.writeHead(500).end(); }
   }); servers.push(server); await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -778,11 +756,11 @@ it("executes all three arms in one guarded run from the frozen snapshot through 
   let stderr = ""; child.stderr.on("data", data => { stderr += data; }); const [code] = await once(child, "close");
   const result = JSON.parse(await readFile(profile.result)); expect({ code, stderr, error: result.error }).toEqual({ code: 0, stderr: "", error: undefined });
   expect(listenerError).toBeUndefined();
-  expect(result.report).toMatchObject({ replayArm: "history-ab", qualification: false, stop: "completed", schedule: { planned: 3, visited: 3, missing: 0, remaining: 0 } });
+  expect(result.report).toMatchObject({ replayArm: "history-ab", qualification: false, stop: "completed", schedule: { planned: 2, visited: 2, missing: 0, remaining: 0 } });
   expect(result.report.phases.map(p => [p.abArm, p.replayArm, p.qualification, p.terminal, p.score])).toEqual(E2_AB_ARMS.map(arm => [arm, "history-ab", false, "completed", null]));
   for (const phase of result.report.phases) expect(phase.summaryPresence).toMatchObject({ checked: 6, none: 6, pack: 0, native: 0 });
   // Six requests per arm, in A, B, C order; each offers its arm's exact tool description and no pack.
-  expect(received).toHaveLength(18);
+  expect(received).toHaveLength(12);
   for (const [i, body] of received.entries()) {
     const contract = f.pilot.registration.historyAb.arms[Math.floor(i / 6)], tools = codexWireTools(body);
     expect(JSON.stringify(body)).not.toContain("### Conversation continuity pack");

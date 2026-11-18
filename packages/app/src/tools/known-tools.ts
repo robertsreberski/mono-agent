@@ -41,9 +41,7 @@ export const CHILD_ONLY_TOOL_NAMES: readonly string[] = ["AskParent"];
 
 /** App-owned tools injected by the configured host and governed by tool policy. */
 export const APP_TOOL_NAMES = [
-  "RunHistory",
-  "SessionHistory",
-  "ConversationHistory",
+  "History",
   "SetConversationTitle",
   "SuggestReplies",
   "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule",
@@ -77,9 +75,6 @@ export const LEGACY_TOOL_ALIASES: Record<string, string> = {
   telegram_send_message: "TelegramSendMessage",
   telegram_send_document: "TelegramSendFile",
   telegram_send_photo: "TelegramSendFile",
-  run_history: "RunHistory",
-  session_history: "SessionHistory",
-  conversation_history: "ConversationHistory",
   memory_recall: "MemoryRecall",
   read_skill: "ReadSkill",
   ask_collaborator: "AskCollaborator",
@@ -91,7 +86,7 @@ export function canonicalToolName(name: string): string {
 }
 
 /** Safe read-only default pre-checked for every new agent. */
-export const DEFAULT_SAFE_TOOLS = ["Read", "Glob", "Grep", "ConversationHistory"] as const;
+export const DEFAULT_SAFE_TOOLS = ["Read", "Glob", "Grep", "History"] as const;
 
 /**
  * All offline-knowable tool names: built-ins, adapter send tools, AND the canonical
@@ -103,7 +98,7 @@ export const DEFAULT_SAFE_TOOLS = ["Read", "Glob", "Grep", "ConversationHistory"
 const KNOWN_TOOL_NAMES: readonly string[] = [
   ...new Set<string>([
     ...BUILTIN_TOOL_NAMES,
-    ...APP_TOOL_NAMES,
+    ...APP_TOOL_NAMES.filter(name => name !== "History"),
     ...ADAPTER_SEND_TOOL_NAMES,
     ...Object.values(LEGACY_TOOL_ALIASES),
   ]),

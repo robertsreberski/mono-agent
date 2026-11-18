@@ -240,7 +240,7 @@ describe("scoped retrieval, durable summary references and shared retention", ()
     }
     expect(result).toBe(text); expect(digest(result)).toBe(reader.getContinuity({ ...scope, recordId: id }).record!.sha256);
     expect(() => reader.getContinuity({ ...scope, recordId: id, chunkOffset: 1 })).toThrow(/UTF-8/u);
-    // Finalized current-run records are visible; SessionHistory's old-run contract is unchanged.
+    // Finalized current-run records are visible; the tools scope’s prior-run contract is unchanged.
     expect(reader.getContinuity({ ...scope, currentRunId: "run-prior", recordId: id }).status).toBe("available");
     expect(reader.searchContinuity({ ...scope, query: "absent" }).items).toEqual([]);
   });
@@ -310,7 +310,7 @@ describe("scoped retrieval, durable summary references and shared retention", ()
     expect(await readFile(dbPath(path))).toEqual(before);
   });
 
-  it("accounts continuity and tool records against the same byte budget without changing SessionHistory visibility", async () => {
+  it("accounts continuity and tool records against the same byte budget without changing tools scope visibility", async () => {
     const path = await root(), writer = await open(path, true, 300);
     const input = preparation([row("shared", "a".repeat(100))]); await publish(writer, input);
     const run = { conversationId: scope.currentConversationId, logicalConversationId: scope.logicalConversationId, runId: "tools", isolated: false };

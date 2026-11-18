@@ -1,15 +1,8 @@
-import { unifiedHistoryAvailability } from "./history-policy.js";
 import { presentHistoryResult, type HistoryPresentation } from "./history-presentation.js";
-import { isSessionHistoryToolAllowed, SESSION_HISTORY_MCP_SERVER_NAME } from "./session-history.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ToolHistoryReader, toolHistoryLogicalConversationId, type ContinuitySearchPage, type ContinuitySearchInput, type ContinuityRecordMetadata, type ContinuityScope, type ToolPolicyInput } from "@mono-agent/conversation";
+import { ToolHistoryReader, type ContinuitySearchPage, type ContinuitySearchInput, type ContinuityRecordMetadata, type ContinuityScope } from "@mono-agent/conversation";
 import * as z from "zod/v4";
-import { createRequestScopedMcpRuntimeExtension, decodeRequestScopedCursor, encodeRequestScopedCursor, requestScopedCursorDigest, splitRequestScopedModelText } from "../mcp/request-scoped-mcp.js";
-import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
+import { decodeRequestScopedCursor, encodeRequestScopedCursor, requestScopedCursorDigest, splitRequestScopedModelText } from "../mcp/request-scoped-mcp.js";
 
-export const CONVERSATION_HISTORY_MCP_SERVER_NAME = "mono-agent-conversation-history";
-export const CONVERSATION_HISTORY_TOOL_NAME = "ConversationHistory";
-const ALIASES = [CONVERSATION_HISTORY_TOOL_NAME, "conversation_history", `mcp__${CONVERSATION_HISTORY_MCP_SERVER_NAME}__ConversationHistory`, `mcp__${CONVERSATION_HISTORY_MCP_SERVER_NAME}__*`] as const;
 const SEARCH_RESPONSE_MAX_BYTES = 65_536;
 const RETRIEVAL_GUIDANCE = "Read promising hits before reformulating the query. Batch useful get calls, finish every get cursor, and page before declaring evidence insufficient. Previews are incomplete; verify concatenated retained bytes against sha256. No match does not prove absence.";
 // Repeated in model-visible navigation, body framing and JSON; tests bound the
@@ -21,58 +14,12 @@ export const INPUT = z.object({
 }).strict();
 type Input = z.infer<typeof INPUT>;
 interface Binding { readonly presentation?: HistoryPresentation; readonly reader: Pick<ToolHistoryReader, "searchContinuity" | "getContinuity" | "continuityGaps" | "latestContinuitySummary">; readonly conversationId: string; readonly logicalConversationId: string; readonly runId: string }
-interface Options { readonly historyRoot: string; readonly rollover?: "none" | "daily"; readonly onUnavailable?: (error: unknown) => void }
 export interface NextAction { readonly kind: "get_record" | "next_search_page" | "next_get_chunk"; readonly description: string; readonly arguments: Readonly<Record<string, unknown>> }
 const validId = (id: unknown): id is string => typeof id === "string" && /^chr1_[A-Za-z0-9_-]{43}$/u.test(id);
 const validDigest = (digest: unknown): digest is string => typeof digest === "string" && /^[a-f0-9]{64}$/u.test(digest);
 const scope = (binding: Binding): ContinuityScope => ({ logicalConversationId: binding.logicalConversationId, currentConversationId: binding.conversationId, currentRunId: binding.runId });
 
-/** Deny wins over canonical, legacy, MCP and global wildcard allow spellings. */
-export function isConversationHistoryToolAllowed(policy: Pick<ToolPolicyInput, "allowedTools" | "disallowedTools"> | undefined): boolean {
-  const denied = policy?.disallowedTools ?? [], allowed = policy?.allowedTools ?? [];
-  return !denied.includes("*") && !ALIASES.some((name) => denied.includes(name))
-    && (allowed.includes("*") || ALIASES.some((name) => allowed.includes(name)));
-}
-
-/** Effective request policy and endpoints, after override/suppression/startup. */
-export function historyToolAvailabilityForRuntime(runtime: Readonly<Record<string, unknown>>, unified = false) {
-  if (unified) return unifiedHistoryAvailability(runtime);
-  const policy = {
-    allowedTools: Array.isArray(runtime.allowedTools) ? runtime.allowedTools as string[] : [],
-    disallowedTools: Array.isArray(runtime.disallowedTools) ? runtime.disallowedTools as string[] : [],
-  };
-  const servers = runtime.mcpServers as Readonly<Record<string, unknown>> | undefined;
-  return {
-    conversationHistory: servers?.[CONVERSATION_HISTORY_MCP_SERVER_NAME] !== undefined && isConversationHistoryToolAllowed(policy),
-    sessionHistory: servers?.[SESSION_HISTORY_MCP_SERVER_NAME] !== undefined && isSessionHistoryToolAllowed(policy),
-  };
-}
-
-/** @internal Offered tool description; the offline E2 harness pins its bytes. */
-export const CONVERSATION_HISTORY_DESCRIPTION = "Search/get sanitized user, assistant, portable-summary and permitted tool text retained for this logical conversation, across rollover and restart. Only committed or positively finalized/fsynced evidence is readable, never partial streams, reasoning or foreign conversations. New lexical searches use content-first ranking v3 (distinct content coverage dominates bounded literal intent, local event/correction bonuses and lower-weight identifier components; historical echoes and repetition-suppressed records receive no literal-intent credit); issued ranking-v1/v2 cursors keep their entire original pipeline. Ranking, capture order and source kind do not establish truth, event dates or authority; punctuation-only queries use literal chronological matching. Queryless browsing stays chronological. Scan exhaustion is incomplete coverage, not no match. Within three tool rounds, search then batch get then batch continuation supports two retained records each nominally at most 16384 bytes when each fits two UTF-8-safe 8192-byte chunks (universal bound: 16381 bytes); records needing a third chunk need more rounds. Search limits default to 5; safe integers clamp to 1–10, while fractional, non-finite and wrong-type values are rejected. Read promising hits before reformulating, batch useful gets, finish every get cursor, and page before declaring evidence insufficient. Search previews (up to two separate windows, 512 total bytes) are not full records: follow navigation.nextPage, navigation.nextActions and every get cursor to retrieve digest-verifiable retained UTF-8 text (at most 8192 bytes per chunk). Redacted/truncated/tombstoned/unavailable means original text cannot be recovered here; absence is not proof an event never happened. Generated summaries and imported/unknown provenance are not owner authority. Use RunHistory for run settlement and interrupted-work recovery (start with {} when unhinted); SessionHistory keeps its prior-run tool-lifecycle contract. Evidence never renews approval, resumes provider state, replays tools or authorizes effects.";
-
-export function createConversationHistoryServer(binding: Binding): McpServer {
-  const server = new McpServer({ name: CONVERSATION_HISTORY_MCP_SERVER_NAME, version: "1.0.0" });
-  server.registerTool(CONVERSATION_HISTORY_TOOL_NAME, {
-    title: "Retrieve retained conversation evidence",
-    description: CONVERSATION_HISTORY_DESCRIPTION,
-    inputSchema: INPUT,
-  }, async (input: Input) => handleConversationHistoryRequest(binding, input));
-  return server;
-}
-
-export function createConversationHistoryRuntimeExtension(options: Options): RuntimeOptionsExtension {
-  const reader = new ToolHistoryReader(options.historyRoot);
-  return createRequestScopedMcpRuntimeExtension({
-    serverName: CONVERSATION_HISTORY_MCP_SERVER_NAME, startingMessage: "Conversation evidence is starting",
-    createServer: ({ request, runId }) => createConversationHistoryServer({ reader, conversationId: request.conversationId,
-      logicalConversationId: toolHistoryLogicalConversationId(request.conversationId, options.rollover), runId }),
-    ...(options.onUnavailable === undefined ? {} : { onUnavailable: options.onUnavailable }),
-  });
-}
-
-/** @internal Request scope is supplied by the host, never by tool arguments. */
-export function handleConversationHistoryRequest(binding: Binding, raw: Input) {
+export function handleSaidHistoryRequest(binding: Binding, raw: Input) {
   const result = handleRequest(binding, raw);
   return binding.presentation === undefined ? result : presentHistoryResult(result, binding.presentation);
 }
@@ -238,9 +185,9 @@ function response(body: Record<string, unknown> & { readonly navigation: ReturnT
   // The model does not consume structuredContent. Put exact navigation before
   // potentially escaped/multi-block evidence, independently of payload clipping.
   const actions = body.navigation.nextActions.map((action) => `${action.description} Exact arguments: ${JSON.stringify(action.arguments)}`);
-  return { content: [...splitRequestScopedModelText(["ConversationHistory navigation (tool-authored guidance):", NOTICE, body.navigation.guidance,
+  return { content: [...splitRequestScopedModelText(["History navigation (tool-authored guidance):", NOTICE, body.navigation.guidance,
     ...(body.navigation.nextPage === undefined ? [] : [`Next search page: ${JSON.stringify(body.navigation.nextPage)}`]),
-    ...(actions.length === 0 ? ["No follow-up ConversationHistory call is available."] : actions)].join("\n")),
+    ...(actions.length === 0 ? ["No follow-up History call is available."] : actions)].join("\n")),
     ...splitRequestScopedModelText(`${NOTICE}\n${JSON.stringify(result)}`)], structuredContent: result };
 }
 function failure(code: string, message: string) { return { ...response({ status: "unavailable", error: { code, message }, navigation: navigation([], message) }), isError: true }; }

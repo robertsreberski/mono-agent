@@ -11,4 +11,3 @@ export function appPackageVersion(): string | undefined {
     return undefined;
   }
 }
-

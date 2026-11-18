@@ -37,7 +37,7 @@ async function fixture({ readerEffort = "low" } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), "lookup-external-fixture-"))); dirs.push(dir);
   const roots = [join(dir, "r0"), join(dir, "rpack")];
   const files = [...LOOKUP_PILOT_PROTOCOL_FILES, "pnpm-lock.yaml", "scripts/continuity-benchmark.mjs", ...["lookup-roles", "dataset", "generator", "lookup", "runner", "probe-child", "arms", "tools", "score", "lookup-score"].map(n => `scripts/lib/continuity-${n}.mjs`),
-    ...["continuity-lookup-budget-v1.json", "continuity-soul-v1.md", "continuity-soul-v2.md"].map(n => `scripts/fixtures/${n}`)];
+    ...["continuity-lookup-budget-v3.json", "continuity-soul-v3.md", "continuity-soul-v4.md"].map(n => `scripts/fixtures/${n}`)];
   for (const [i, root] of roots.entries()) {
     await mkdir(root); git(root, ["init", "-q"]);
     for (const name of files) { await mkdir(dirname(join(root, name)), { recursive: true }); await writeFile(join(root, name), await readFile(join(ROOT, name))); }
@@ -94,7 +94,7 @@ it("round-trips v2 registration and rejects every bound-field mutation with spec
     [r => { r.common.catalog.cost.input++; }, "lookup_catalog_binding_mismatch"],
     [r => { r.common.catalogCapUSD++; }, "lookup_catalog_cap_mismatch"],
     [r => { r.common.outputLimit.tokens--; }, "lookup_output_limit_required"],
-    [r => { r.schema = "continuity-lookup-registration-v1"; }, "incompatible_lookup_registration"],
+    [r => { r.schema = "continuity-lookup-registration-v3"; }, "incompatible_lookup_registration"],
     [r => { delete r.common.lookupSource; }, "incompatible_lookup_registration"],
     [r => { r.common.lookupSelection.seed++; }, "lookup_policy_selection_mismatch"],
   ]) { const changed = structuredClone(r); change(changed); await expect(validateRegistration(changed)).rejects.toThrow(code); }

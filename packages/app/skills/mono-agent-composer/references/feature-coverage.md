@@ -25,7 +25,6 @@ authentication and `context1M` eligibility; no default route changes.
 | Same-model retries before failover | config | `runtime.retry.primaryAttempts` (default 2) gives the primary a second attempt before the chain advances; per-route `runtime.fallbacks[].attempts` opts a backup in. Only transient provider failures retry — context overflow and bad credentials still advance. Set `primaryAttempts` to 1 to disable | `runtime.retry` |
 | Backup models on retryable provider failure | config | `runtime.fallbacks[]`, each route owning optional exact effort (omission = provider default) | `runtime.fallback-models` |
 | Effort, max turns, workspace | config + cli | `runtime.effort` (`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`; `mono-agent init --effort <level>`). Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` validates effort against the model's advertised levels and warns, naming the nearest supported level, when a configured value is outside that set. Message text never changes effort. `runtime.maxTurns`, `runtime.workspace` | `runtime.effort`, `runtime.max-turns`, `runtime.workspace` |
-| Default-on retained conversation evidence and scoped ConversationHistory, independent of memory; normal wildcard allow and explicit deny, digest-bound ≤8 KiB chunks and incomplete-coverage markers | config + auto | `runtime.session.continuity.enabled`; `ConversationHistory` under normal tool policy (`conversation_history` policy alias) | `runtime.continuity`, `agent-app.conversation-history-tool` |
 | OFF-default Web-only durable model switching; requires stopped older writers and consistent backups | config | `runtime.session.modelSwitch.enabled`, `runtime.session.root` | `runtime.web-model-switch` |
 | Continuous provider sessions with idle eviction and optional daily rollover | config | `runtime.session.{mode,idleTimeoutMs,rollover,rolloverTimezone,rolloverNotice}` | `runtime.provider-sessions` |
 | Per-channel run admission/execution bounds | config | `concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns` | `runtime.concurrency` |
@@ -68,7 +67,7 @@ authentication and `context1M` eligibility; no default route changes.
 | Memory write modes and per-turn BuJo capture | config | `memory.writeMode`: `disabled`, `append-host-summary`, or `capture`; capture requires `memory.mode: "bujo"` | `memory.write-mode`, `memory.per-turn-capture` |
 | Optional BuJo capture focus, label-kind filter and trigger switches | config | `memory.capture.focus` (bounded operator guidance), `memory.capture.only` (host-accepted `fact`, `preference`, `lesson` subset), and `memory.capture.cron: false` / `memory.capture.webhook: false` (skip automatic admission and audit for the respective host-identified trigger). If Remember is enabled, the host gives per-turn manual-write guidance; unset keeps existing capture and explicit `Remember` writes are unaffected | `memory.capture-focus` |
 | Auto-provisioned targeted read-only `MemoryRecall` tool exposed for every configured memory backend; no chat LLM | config | `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on; explicit false opts out of both explicit memory-read tools) | `memory.recall-tool` |
-| Unified retained history | config | `tools.history.unified: true` replaces ConversationHistory/SessionHistory/RunHistory with required-scope History; default false, legacy names remain scope aliases, deny wins; custom souls unchanged | `history.unified` |
+| Scoped retained history | app | History requires said/tools/runs scope; no flag or aliases. Whole-tool grants/denies cover host-supported scopes. Stale soul references fail validation; tool stays parent-only | `runtime.continuity` |
 | Dated conversation evidence via existing `SearchConversations` | config | `tools.conversationSearch.datedSnippets: true`, local BuJo only; verified owner web capability, inclusive UTC message-date and role filters, bounded plain snippets and console links. Default off; legacy/UI/Telegram unchanged; rich Telegram calls return `conversation_search_unavailable` | `web.dated-conversation-search` |
 | Bounded `MemoryJournal` broad chronological retrieval over curated canonical local memory; Lite/Journal/BuJo only; no embedding/chat call | config + auto | Shares `memory.recallTool.enabled`; restrictive `tools.allowedTools` must name `MemoryJournal` (or its canonical MCP name/server wildcard), deny wins | `memory.journal-browse` |
 | Agent-callable `Remember` tool that durably stores one explicitly stated fact; deterministic, append-only, no chat LLM; bujo backend and writable stores only; allowlist-gated and rejects credential-bearing text | config | `config.memory.rememberTool.enabled` (`MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED`, default on for the bujo backend; explicit false opts out); a restrictive `tools.allowedTools` must name `Remember` | `memory.remember-tool` |
@@ -282,13 +281,13 @@ requests with usage, are included in the run total and shown separately in web.
 `runtime.session.continuity.enabled` defaults to true. Set false to opt out
 with legacy paths (no participant, sidecar probe or v3 upgrade). It retains
 sanitized evidence and portable
-summaries in the existing sidecar for scoped `ConversationHistory` search/get;
+summaries in the existing sidecar for scoped `History` search/get;
 capture alone does not add a ledger, automatic recall or tool-result clearing. No memory
 backend or durable provider-session root is required. Stop older writers and
 back up the canonical history and sidecar before the first enabled start
 upgrades v2 to v3 in place. Older binaries refuse it; rollback requires the
 pre-upgrade backup.
-Disabling capture retains doctor, stats and purge access, not the ConversationHistory tool; rollback requires a consistent backup.
+Disabling capture retains doctor, stats and purge access, not the History `said` scope; rollback requires a consistent backup.
 Records are at most 1 MiB and retrieval chunks at most 8192 UTF-8 bytes, with
 explicit retained-text digests/redaction/truncation. Pins do not expire; quota
 exhaustion reports degraded continuity. Reset/clear-sessions remove this evidence.
@@ -337,7 +336,7 @@ older-server compatibility). See
 
 ### Retained-history relevance discovery
 
-When continuity capture and tool policy offer `ConversationHistory`, lexical
+When continuity capture and tool policy offer `History`, lexical
 queries use bounded relevance discovery, punctuation-only queries use literal
 matching, and queryless browsing remains chronological. Matched previews are
 incomplete. On `scan_capacity`, use `action: "search"` with `mode: "chronological"` or

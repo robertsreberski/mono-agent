@@ -63,7 +63,7 @@ describe.sequential("four replay alternatives", () => {
   }, 180000);
   it("propagates unified selection through the clean sizing child and protected soul assertions", async () => {
     const output = join(root, "unified-protected");
-    await promisify(execFile)(process.execPath, ["scripts/continuity-e2.mjs", "size", "--source", input, "--protocol", join(input, "protocol.json"), "--output", output, "--summary", "protected-exact", "--history-surface", "unified"],
+    await promisify(execFile)(process.execPath, ["scripts/continuity-e2.mjs", "size", "--source", input, "--protocol", join(input, "protocol.json"), "--output", output, "--summary", "protected-exact"],
       { cwd: ROOT, env: { ...process.env, HOME: root, NODE_OPTIONS: "" }, maxBuffer: 1024 * 1024 });
     const record = JSON.parse(await readFile(join(output, "sizing.json"), "utf8")), soul = await sizingModels.shippingSoul("unified");
     expect(record).toMatchObject({ historySurface: "unified", qualification: true, soul: { rawDigest: soul.rawDigest, normalizedDigest: soul.normalizedDigest } });
@@ -271,7 +271,7 @@ describe.sequential("delivers real-source-scale reports over the sizing child IP
   }, 180000);
 });
 
-it.each([undefined, "split", "unified"])("measures the actual selected setup soul in protected rehearsal for %s", async historySurface => {
+it.each([undefined, "unified"])("measures the actual selected setup soul in protected rehearsal for %s", async historySurface => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "fictional-protected-soul-"))); roots.push(root);
   const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", contextWindow: 500000, maxTokens: 128000 };
   const result = await rehearseE2Protected({ work: join(root, "work"), model, carrier: "quotation", historySurface });
@@ -281,7 +281,6 @@ it.each([undefined, "split", "unified"])("measures the actual selected setup sou
     sizingModels.assertEffectiveSoul(context, soul);
     const prompt = [context.systemPrompt, ...context.messages.filter(m => m.role === "system").map(m => m.content)].filter(v => typeof v === "string").join("\n");
     expect(prompt).toContain(soul.text);
-    if (historySurface === "unified") expect(prompt).not.toContain("ConversationHistory (when available)");
-    else expect(prompt).toContain("ConversationHistory (when available)");
+    expect(prompt).toContain("History (when available)");
   }
 }, 30_000);

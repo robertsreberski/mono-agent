@@ -9,7 +9,7 @@ import type { SandboxPolicy } from "@mono-agent/turn/host/types";
 
 import type { BuiltAgentContext } from "../context/index.js";
 import type { SkillsCache } from "../skills/index.js";
-import type { UnifiedHistoryAvailability } from "../tool-history/nested-history.js";
+import type { HistoryToolAvailability } from "../tool-history/nested-history.js";
 import type { ToolHistoryReader } from "../tool-history/reader.js";
 import type { ToolHistoryWriter } from "../tool-history/writer.js";
 import type { ToolPolicy } from "../tool-policy/index.js";
@@ -316,8 +316,6 @@ export interface ConversationHarnessMcpRequestContextOptions {
 export interface ConversationHarnessOptions {
   readonly identityPath: string;
   readonly soulPath?: string;
-  /** App-selected default only; an explicit core/soul still wins. */
-  readonly defaultCore?: "legacy" | "unified";
   readonly skillsRoot?: string;
   readonly selectedSkills?: readonly string[];
   readonly skillMaxBytes?: number;
@@ -506,21 +504,10 @@ export interface ConversationHarnessToolHistoryOptions {
     readonly bind?: (model: RuntimeModelReference | undefined, signal: AbortSignal, requestInference?: Pick<import("@mono-agent/turn/host/types").MonoRuntimeHostOptions, "resolvePiApiKey" | "resolveCustomPricing">) => Promise<ContinuityUpkeepBinding | undefined> };
   readonly mutateUpkeep?: (input: UpkeepMutation) => Promise<UpkeepAdmission | null>;
   readonly publishLedger?: (generation: LedgerGeneration, reservation?: UpkeepReservation) => Promise<void>;
-  readonly conversationHistoryAvailable?: boolean;
-  /** Legacy custom hosts retain SessionHistory routing unless explicitly false. */
-  readonly sessionHistoryAvailable?: boolean;
-  /** Set while the unified app-owned History surface is active. Lets the
-   * harness treat the bare `History` name as nested history output in
-   * capture paths. Absent keeps legacy retention byte-identical. */
-  readonly unifiedHistory?: boolean;
-  /** Host-owned predicate evaluated after all runtime policy layers. Never cloned into prepared context. */
-  readonly historyToolAvailabilityForRuntime?: (runtimeOptions: Readonly<Record<string, unknown>>) => {
-    readonly conversationHistory: boolean;
-    readonly sessionHistory: boolean;
-    /** Present while the unified app-owned History surface is active. Absent
-     * keeps every legacy string byte-identical. */
-    readonly history?: UnifiedHistoryAvailability;
-  };
+  /** Positive app ownership, independent of which scopes this request offers. */
+  readonly appOwnedHistory?: boolean;
+  /** Evaluated after every runtime policy layer; absent means no History tool. */
+  readonly historyToolAvailabilityForRuntime?: (runtimeOptions: Readonly<Record<string, unknown>>) => HistoryToolAvailability;
   readonly writer: Pick<ToolHistoryWriter, "createSink" | "finishRun" | "resetConversation">;
   readonly reader: ToolHistoryReader;
   /** Collapse a physical rollover bucket into its current logical session. */

@@ -325,7 +325,7 @@ describe("check-consumer-docs-consistency", () => {
       "This is not a deprecated alias `memory_recall`; use it as the current tool.",
       "This is no longer the legacy alias `memory_recall`; use it as the current tool.",
       "This is not actually a deprecated alias `memory_recall`; use it as the current tool.",
-      "The retired alias `run_history` remains documented; use `memory_recall` for current recall.",
+      "The retired alias `unrelated_alias` remains documented; use `memory_recall` for current recall.",
     ];
     await writeRepoDoc(repoRoot, "docs/current/NEGATED.example.md", `${probes.join("\n")}\n`);
 
@@ -349,7 +349,7 @@ describe("check-consumer-docs-consistency", () => {
       { text: "This is not a deprecated alias `memory_recall`; use it as the current tool." },
       { text: "This is no longer the legacy alias `memory_recall`; use it as the current tool." },
       { text: "This is not actually a deprecated alias `memory_recall`; use it as the current tool." },
-      { text: "The retired alias `run_history` remains documented; use `memory_recall` for current recall." },
+      { text: "The retired alias `unrelated_alias` remains documented; use `memory_recall` for current recall." },
       { text: "This is not a currently deprecated alias `memory_recall`; use it as the current tool." },
       { text: "This is not an actually deprecated alias `memory_recall`; use it as the current tool." },
       { text: "This is not an officially deprecated alias `memory_recall`; use it as the current tool." },
@@ -1061,3 +1061,24 @@ async function tempDir(prefix) {
   tempDirs.push(dir);
   return dir;
 }
+
+it.each([
+  "ConversationHistory", "SessionHistory", "RunHistory", "conversation_history", "session_history", "run_history",
+  "mcp__mono-agent-conversation-history__ConversationHistory", "mcp__fictional__SessionHistory", "mcp__fictional__run_history",
+  "mono-agent-conversation-history", "mono-agent-session-history", "mono-agent-run-history", "mcp__mono-agent-run-history__*",
+])("rejects removed history guidance %s without matching storage identifiers", async name => {
+  const repoRoot = await tempRepo();
+  await writeRepoDoc(repoRoot, "docs/history.md", `Use ${name}.\n`);
+  expect((await checkConsumerDocsConsistency([], {repoRoot})).issues.join("\n")).toContain("removed conversation-history tools");
+  await writeRepoDoc(repoRoot, "docs/history.md", "ConversationHistoryStore ToolHistoryRunBinding RunHistoryCursor\nmono-agent-history mcp__mono-agent-history__History\nconversation_history_set_aside\nUse History with required scope.\n");
+  expect((await checkConsumerDocsConsistency([], {repoRoot})).issues).toEqual([]);
+});
+it("permits only the exact path/line-bound breaking migration record, not arbitrary historical prose", async () => {
+  const repoRoot = await tempRepo();
+  const migration = await readFile(new URL("../../docs/reference/framework-simplification-migration.md", import.meta.url), "utf8");
+  const payload = migration.split("\n").find(line => line.startsWith("> **Breaking: History replaces"));
+  await writeRepoDoc(repoRoot,"docs/history.md",'<!-- mono-agent-doc-history:v1 {"path":"docs/history.md","line":2} -->\n'+payload+'\n');
+  expect((await checkConsumerDocsConsistency([], {repoRoot})).issues).toEqual([]);
+  await writeRepoDoc(repoRoot,"docs/history.md",'<!-- mono-agent-doc-history:v1 {"path":"docs/history.md","line":2} -->\n> Historical ConversationHistory is allowed.\n');
+  expect((await checkConsumerDocsConsistency([], {repoRoot})).issues.length).toBeGreaterThan(0);
+});

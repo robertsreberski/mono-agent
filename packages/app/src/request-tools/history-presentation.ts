@@ -30,19 +30,16 @@ export function presentHistoryResult(result: Result, presentation: HistoryPresen
   const args = (input: Readonly<Record<string, unknown>>) => {
     if (scope !== "runs") return { scope, ...input };
     const { action: _action, ...rest } = input;
-    return { scope, action: input.runId === undefined ? "search" : "get", ...rest };
+    return { scope, action: input.action === "inspect" || input.runId !== undefined ? "get" : "search", ...rest };
   };
-  const text = (input: string) => input.replaceAll("Start again with {}", 'Start again with {scope:"runs"}')
-    .replaceAll("{query}", '{scope:"runs", query}')
-    .replaceAll("ConversationHistory", 'History (scope "said")')
-    .replaceAll("SessionHistory", 'History (scope "tools")').replaceAll("RunHistory", 'History (scope "runs")');
-  const actions: Action[] = (old?.nextActions ?? []).map(action => ({ ...action, description: text(action.description), arguments: args(action.arguments) }));
+  const actions: Action[] = (old?.nextActions ?? []).map(action => ({ ...action, description: action.description, arguments: args(action.arguments) }));
   if (scope === "runs" && scopes.includes("tools")) {
-    for (const related of old?.relatedTools ?? []) actions.push({ kind: "search", description: text(related.description), arguments: { scope: "tools", ...related.arguments } });
+    for (const related of old?.relatedTools ?? []) actions.push({ kind: "search", description: related.description, arguments: { scope: "tools", ...related.arguments } });
   }
-  const navigation = { guidance: text(old?.guidance ?? String((body.error as { message?: string } | undefined)?.message ?? "Read-only historical evidence.")),
-    ...(old?.nextPage === undefined ? {} : { nextPage: args(old.nextPage) }), nextActions: actions };
-  const structuredContent = { ...body, scope, navigation };
+  const navigation = { guidance: old?.guidance ?? String((body.error as { message?: string } | undefined)?.message ?? "Read-only historical evidence."),
+    ...(old?.nextPage === undefined ? {} : { nextPage: args(old.nextPage) }), nextActions: actions,
+    ...(scope === "runs" && scopes.includes("tools") && old?.relatedTools?.length ? { relatedTools: (old?.relatedTools ?? []).map(related => ({tool: "History", description: related.description, arguments: {scope: "tools", ...related.arguments}})) } : {}) };
+  const structuredContent = { ...body, ...(scope === "runs" ? { action: body.action === "inspect" ? "get" : "search" } : {}), scope, navigation };
   const header = [`History navigation (scope: ${scope}; tool-authored guidance):`,
     ...(scope === "said" && body.notice !== undefined ? [String(body.notice)] : []), navigation.guidance,
     ...(navigation.nextPage === undefined ? [] : [`Next search page: ${JSON.stringify(navigation.nextPage)}`]),

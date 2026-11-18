@@ -95,7 +95,7 @@ export async function rehearseE2Protected({ work, model, carrier, historySurface
       };
       const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
     } });
-    harness = createConversationHarness({ identityPath, ...(e2HistorySurface(historySurface) === "unified" ? { defaultCore: "unified" } : {}), cwd: work, historyStore: store, runtime, sessionsRoot,
+    harness = createConversationHarness({ identityPath, cwd: work, historyStore: store, runtime, sessionsRoot,
       model: { provider: model.provider, model: model.id, reference: `${model.provider}:${model.id}` }, session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true },
       toolHistory: { writer, reader, continuityEnabled: true, packEnabled: carrier === "quotation", logicalConversationId: x => x },
       runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: measuredModels, effort: "none", compaction: { enabled: false } },

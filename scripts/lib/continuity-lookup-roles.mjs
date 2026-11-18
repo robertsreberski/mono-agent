@@ -11,7 +11,7 @@ import { lookupAuthorizationBinds } from "./continuity-lookup-authorization.mjs"
 import { BUILD_POLICY, prepareRealBuild, verifyRealBuild } from "./memory-e2e-build.mjs";
 
 export const ROOT = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/u, "");
-export const REGISTRATION_SCHEMA = "continuity-lookup-registration-v1";
+export const REGISTRATION_SCHEMA = "continuity-lookup-registration-v3";
 // Frozen guidance-only file list, not the squash merge's larger plumbing diff.
 export const GUIDANCE_FILES = Object.freeze([
   "CHANGELOG.md", "docs/context/assembly.md", "docs/runtime/sessions-concurrency.md", "docs/tools/mcp.md",
@@ -121,7 +121,7 @@ export async function lookupProtocol(root = ROOT) {
   const hashFiles = async files => digest(await Promise.all(files.map(async path => [path, sha256(await readFile(join(root, path)))])));
   return { version: LOOKUP_ROLE_PROTOCOL, probeMode: LOOKUP_MODE,
     pilotSha256: await hashFiles(LOOKUP_PILOT_PROTOCOL_FILES),
-    budgetSha256: sha256(await readFile(join(root, "scripts/fixtures/continuity-lookup-budget-v1.json"))),
+    budgetSha256: sha256(await readFile(join(root, "scripts/fixtures/continuity-lookup-budget-v3.json"))),
     lockfileSha256: sha256(await readFile(join(root, "pnpm-lock.yaml"))),
     entrypointSha256: await hashFiles(["scripts/continuity-benchmark.mjs", "scripts/lib/continuity-lookup-roles.mjs", "scripts/lib/continuity-dataset.mjs", "scripts/lib/continuity-generator.mjs"]),
     readerSha256: await hashFiles(["scripts/lib/continuity-lookup.mjs", "scripts/lib/continuity-runner.mjs", "scripts/lib/continuity-probe-child.mjs", "scripts/lib/continuity-arms.mjs", "scripts/lib/continuity-tools.mjs"]),
@@ -491,7 +491,7 @@ export async function aggregateLookupRoles(registration, observations, { availab
     const plan = { arms: [{ id: role.arm }], repeats: registration.common.repeats,
       corpus: { traces: registration.common.corpora.flatMap(c => c.traces.map(t => ({ ...t, id: `${c.suite}/${t.id}` }))) },
       lookup: { role: { id: role.id }, budget: { ...(registration.common.policy?.budget ?? LOOKUP_BUDGET),
-        paths: (registration.common.policy?.budget.paths.filter(path => path.role === role.id) ?? LOOKUP_BUDGET.paths).flatMap(path => registration.common.corpora.map(c => ({ ...path, traceId: `${c.suite}/${path.traceId}` }))) } } };
+        paths: (registration.common.policy?.budget.paths.filter(path => path.role === role.id) ?? LOOKUP_BUDGET.paths ?? []).flatMap(path => registration.common.corpora.map(c => ({ ...path, traceId: `${c.suite}/${path.traceId}` }))) } } };
     roles[role.id] = summarizeLookup(all, plan).arms[role.arm];
   }
   requireLookup(observations.every(row => slots.some(slot => slot.role === row.role && slot.suite === row.suite && slot.arm === row.arm

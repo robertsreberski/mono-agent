@@ -150,7 +150,7 @@ describe("sessionToolHistorySection", () => {
 
     const unsupported = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: false });
     expect(unsupported.status).toBe("waiting");
-    expect(unsupported.details.join("\n")).toMatch(/unsupported_route.*persist.*cold-project.*cannot expose SessionHistory/iu);
+    expect(unsupported.details.join("\n")).toMatch(/unsupported_route.*persist.*cold-project.*cannot expose History/iu);
   });
 
   it("reports message bytes separately from retained payload and physical tool-history bytes", async () => {

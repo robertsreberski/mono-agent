@@ -29,11 +29,11 @@ it("leaves an unknown legacy producer unclassified rather than guessing", () => 
 it.each([[true, true], [false, true], [false, false]])("measures the resolved header forwarded for tools %s/%s", async (conversationHistory, sessionHistory) => {
   const { renderToolHistoryProjection } = await import("../tool-history/projection.js");
   const projection = renderToolHistoryProjection({ blocks: [{ callId: "sth1_fictional", lines: ["Fictional é evidence"] }],
-    recordCount: 1, truncated: false }, { conversationHistory, sessionHistory })!;
+    recordCount: 1, truncated: false }, { said: conversationHistory, tools: sessionHistory, runs: false })!;
   const facts = reconstructionFacts({ history: [], toolHistoryProjection: projection.text, toolProjectionRecords: projection.recordCount });
   expect(facts.toolProjectionBytes).toBe(Buffer.byteLength(projection.text, "utf8"));
   expect(facts.toolProjectionRecords).toBe(1);
   const unavailable = renderToolHistoryProjection({ blocks: [{ callId: "sth1_fictional", lines: ["Fictional é evidence"] }],
-    recordCount: 1, truncated: false }, { conversationHistory: false, sessionHistory: false })!;
+    recordCount: 1, truncated: false }, { said: false, tools: false, runs: false })!;
   if (conversationHistory || sessionHistory) expect(facts.toolProjectionBytes).toBeGreaterThan(Buffer.byteLength(unavailable.text));
 });

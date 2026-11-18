@@ -50,7 +50,7 @@ async function registrationFixture() {
   const build = revision => ({ policy: BUILD_POLICY, sourceHead: revision, command: ["pnpm", "--filter", "@mono-agent/app...", "run", "build"],
     packages: ["packages/app"], outputRoots: ["packages/app/dist"], outputSha256: "c".repeat(64), node: process.version });
   const codes = { R0: { path: "/fictional/r0", revision: "a".repeat(40), build: build("a".repeat(40)) }, Rpack: { path: "/fictional/rpack", revision: "b".repeat(40), build: build("b".repeat(40)) } };
-  return { schema: "continuity-lookup-registration-v1", purpose: "offline-mechanics-only-not-ledger-qualification", common, codes, diffFiles: [RENDER],
+  return { schema: "continuity-lookup-registration-v3", purpose: "offline-mechanics-only-not-ledger-qualification", common, codes, diffFiles: [RENDER],
     roles: LOOKUP_ROLES.map(def => ({ id: def.id, arm: def.arm, code: def.code, revision: codes[def.code].revision, buildHash: codes[def.code].build.outputSha256, soul: LOOKUP_SOULS[def.soul] })) };
 }
 
@@ -96,14 +96,14 @@ const externalOnlyOptions = [
 
 it("pins ordinary A1 plan bytes in addition to the existing three recall-only digest tests", async () => {
   const plan = makePlan({ ...await loadTraces(), probeMode: LOOKUP_MODE, codeRevision: "a".repeat(40), profile: { judge: null } });
-  expect(digest(plan)).toBe("48d89ea070e196d4c320041e451e79eb2bd0782dd1b36d41d00fce588d5db978");
+  expect(digest(plan)).toBe("75f55fc85785bbd3a039d287ab4177fa2a535c875ff3c7f4b72718b689bdd7ec");
   expect(plan.lookup).not.toHaveProperty("role");
 });
 
 it("pins the frozen post-routing S1 raw/core digests independently of future defaults, distinct from S0", async () => {
-  const bytes = await readFile(join(ROOT, "scripts/fixtures/continuity-soul-v2.md"));
+  const bytes = await readFile(join(ROOT, "scripts/fixtures/continuity-soul-v4.md"));
   expect(sha256(bytes.toString("utf8").replace(/\r\n?/gu, "\n").trim())).toBe(LOOKUP_SOULS.S1.coreSha256);
-  expect(sha256(bytes)).toBe("e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9");
+  expect(sha256(bytes)).toBe("c4f684f265c31a1dd59b8a78bee7134e9c92495d767afe605b817dcfc1298bf5");
   expect(LOOKUP_SOULS.S1.coreSha256).toBe(LOOKUP_SOULS.S1.rawSha256);
   expect(LOOKUP_SOULS.S0.rawSha256).not.toBe(LOOKUP_SOULS.S1.rawSha256);
   const work = await scratch();
@@ -117,9 +117,9 @@ it("pins the frozen post-routing S1 raw/core digests independently of future def
 it("fails module loading when the frozen S1 fixture bytes drift", async () => {
   const base = await scratch(); await mkdir(join(base, "lib")); await mkdir(join(base, "fixtures"));
   const module = join(base, "lib/continuity-lookup.mjs"); await cp(join(ROOT, "scripts/lib/continuity-lookup.mjs"), module);
-  for (const file of ["continuity-soul-v1.md", "continuity-soul-v2.md", "continuity-lookup-budget-v1.json"]) await cp(join(ROOT, "scripts/fixtures", file), join(base, "fixtures", file));
+  for (const file of ["continuity-soul-v3.md", "continuity-soul-v4.md", "continuity-lookup-budget-v3.json"]) await cp(join(ROOT, "scripts/fixtures", file), join(base, "fixtures", file));
   expect(spawnSync(process.execPath, [module]).status).toBe(0);
-  const fixture = join(base, "fixtures/continuity-soul-v2.md"), original = await readFile(fixture, "utf8");
+  const fixture = join(base, "fixtures/continuity-soul-v4.md"), original = await readFile(fixture, "utf8");
   for (const changed of [original + "\n", "Fictional drift\n" + original]) {
     await writeFile(fixture, changed);
     const child = spawnSync(process.execPath, [module], { encoding: "utf8" });
@@ -243,7 +243,7 @@ it("keeps missing and duplicate role slots and reports failure-inclusive paired 
   const trial = (role, probe = 0, extra = {}) => ({ role, suite: corpus.suite, traceId: trace.id, probeId: trace.probes[probe], arm: reg.roles.find(r => r.id === role).arm, repeat: 1,
     status: "completed", lookup: { exactAccuracy: true, budgetFeasibility: { classification: "feasible" } }, ...extra });
   const result = await aggregateLookupRoles(reg, [trial("pack"), trial("pack-only", 0, { status: "failed" }), trial("pack", 1), trial("pack", 1)]);
-  expect(result.coverage).toMatchObject({ planned: 12, completed: 1, blocked: 6, missing: 9, duplicate: 1, observations: 4 });
+  expect(result.coverage).toMatchObject({ planned: 12, completed: 1, blocked: 12, missing: 9, duplicate: 1, observations: 4 });
   expect(result.slots.find(s => s.role === "pack" && s.probeId === trace.probes[1])).toMatchObject({ status: "duplicate", occurrences: 2 });
   expect(result.roles.pack.exact).toMatchObject({ correct: 1, n: 1 });
   expect(result.roles["pack-only"]).toMatchObject({ exact: { n: 0 }, exactWithFailures: { correct: 0, n: 1 }, failedFeasible: 1 });
@@ -285,7 +285,7 @@ it("keeps receipt-less post-aggregate failures missing with a reason, but reject
 
 it("uses the frozen conservative context and one-token-per-returned-byte replay bounds", async () => {
   const reg = await registrationFixture(), trace = (await loadTraces()).traces[0];
-  const shape = traceTokenShape(trace), paths = LOOKUP_BUDGET.paths.filter(p => p.traceId === trace.id && p.arm === "continuity-pack-cold");
+  const shape = traceTokenShape(trace), paths = (LOOKUP_BUDGET.paths ?? []).filter(p => p.traceId === trace.id && p.arm === "continuity-pack-cold");
   const initial = Math.max(shape.cold + 12000, ...paths.map(p => Math.ceil(p.initialContextBytes / 3)), ...paths.map(p => p.initialTokens));
   const estimate = await estimateLookup({ workload: reg.common });
   expect(estimate.assumptions).toMatchObject({ packAllowanceTokens: 12000, soulDeltaTokens: 56 });

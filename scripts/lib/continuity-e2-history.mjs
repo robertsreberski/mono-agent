@@ -1,18 +1,17 @@
-// Explicit split is execution-equivalent but remains digest-bound JSON. Builders
-// omit it to preserve legacy raw and canonical registration digests.
-// Shared offline selector. Omitted/split leave legacy request and artifact shapes intact.
+// Unified-only execution. Historical observation readers retain old-name attribution.
 import { fail } from "./continuity-observation-input.mjs";
-export function e2HistorySurface(surface = "split") {
-  if (!["split", "unified"].includes(surface)) fail("E2_ARGUMENTS_INVALID");
-  return surface;
+export function e2HistorySurface(surface = "unified") {
+  if (surface !== "unified") fail("E2_ARGUMENTS_INVALID");
+  return "unified";
 }
-export const historySurfaceBinding = surface => e2HistorySurface(surface) === "unified" ? { historySurface: "unified" } : {};
-export const historyToolName = surface => e2HistorySurface(surface) === "unified" ? "History" : "ConversationHistory";
-export const historyServerName = surface => e2HistorySurface(surface) === "unified" ? "mono-agent-history" : "mono-agent-conversation-history";
-export const historyConfig = surface => e2HistorySurface(surface) === "unified" ? { history: { unified: true } } : {};
-export const historyArguments = (surface, args, scope = "said") => e2HistorySurface(surface) === "unified" ? { scope, ...args } : args;
+export const historySurfaceBinding = surface => { e2HistorySurface(surface); return {historySurface:"unified"}; };
+export const historyToolName = surface => { e2HistorySurface(surface); return "History"; };
+export const historyServerName = surface => { e2HistorySurface(surface); return "mono-agent-history"; };
+export const historyConfig = surface => { e2HistorySurface(surface); return {}; };
+export const historyArguments = (surface, args, scope = "said") => { e2HistorySurface(surface); return {scope,...args}; };
 export function assertHistorySurfaceBinding(registration, value) {
-  if (e2HistorySurface(registration.historySurface) !== e2HistorySurface(value.historySurface)) fail("e2_authorization_binding_mismatch");
+  if (registration.replayArm === "history-ab") { if (Object.hasOwn(registration,"historySurface") || (Object.hasOwn(value,"historySurface") && value.historySurface !== "unified")) fail("e2_authorization_binding_mismatch"); return; }
+  if (registration.historySurface !== "unified" || value.historySurface !== "unified") fail("e2_authorization_binding_mismatch");
 }
 // Keep scope attribution explicit: tools/runs are not conversation-text lookups.
 export function historyCallScope(name, args) {
@@ -31,20 +30,15 @@ export function e2AbLookupScope(name, args) {
   return historyCallScope(name, args) ?? (["History", "mcp__mono-agent-history__History"].includes(name) ? "invalid" : undefined);
 }
 
-// Both the lookup safety guard and paid E2 config guard consume this selector.
-export const LOOKUP_TOOL_ALLOWLIST_V1 = Object.freeze({ version: "v1", tools: Object.freeze(["ConversationHistory"]) });
-export const LOOKUP_TOOL_ALLOWLIST_V2 = Object.freeze({ version: "v2", tools: Object.freeze(["ConversationHistory", "History"]) });
-export const lookupToolAllowlist = surface => e2HistorySurface(surface) === "unified" ? LOOKUP_TOOL_ALLOWLIST_V2 : LOOKUP_TOOL_ALLOWLIST_V1;
+// Current execution allowlist. Older versions are historical evidence only.
+export const LOOKUP_TOOL_ALLOWLIST_V3 = Object.freeze({version:"v3",tools:Object.freeze(["History"])});
+export const lookupToolAllowlist = surface => { e2HistorySurface(surface); return LOOKUP_TOOL_ALLOWLIST_V3; };
 
-// Closed History A/B arm table (names and surfaces only, no I/O). The A/B mode is
-// explicit opt-in (`replayArm: "history-ab"`); omitting it keeps every existing
-// E2 registration, schedule and policy byte-identical.
 export const E2_AB_REPLAY_ARM = "history-ab";
 const freeze = value => { for (const child of Object.values(value)) if (child && typeof child === "object") freeze(child); return Object.freeze(value); };
-// A: split ConversationHistory with the default soul. B/C: unified History with
-// the compact or directive description. Nothing else differs between arms.
+// Historical arm A used the split surface. Current arms differ only in the
+// compact (B) or directive (C) History description.
 export const E2_AB_ARM_SURFACES = freeze({
-  A: { historySurface: "split" },
   B: { historySurface: "unified", descriptionVariant: "compact" },
   C: { historySurface: "unified", descriptionVariant: "directive" },
 });
@@ -59,7 +53,7 @@ export const e2AbArmOfSlot = arm => typeof arm === "string" && /^history-ab-[A-Z
 /** Per-slot History surface: an A/B slot uses its arm, every other slot the registration. */
 export function e2SlotHistorySurface(registration, slot) {
   const arm = e2AbArmOfSlot(slot?.arm);
-  if (arm === undefined) return registration?.historySurface;
+  if (arm === undefined) { if (registration?.historySurface !== "unified") fail("e2_registration_invalid"); return "unified"; }
   if (registration?.replayArm !== E2_AB_REPLAY_ARM || slot.kind !== "replay" || Object.hasOwn(registration, "historySurface")) fail("e2_registration_invalid");
   return E2_AB_ARM_SURFACES[arm].historySurface;
 }

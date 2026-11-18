@@ -146,10 +146,15 @@ An invalid namespace does not add a row per boundary. Metadata-write failures
 back off exponentially from one second to 60 seconds and are reported once.
 Export I/O runs separately from admission replies and has a bounded close drain;
 all outbox writes use the host's secure journal transaction.
-These degradation diagnostics also appear as artifact warnings in `RunHistory`
+These degradation diagnostics also appear as artifact warnings in `History`
 inspection when the applicable run evidence is degraded.
 
 ### Recorder checkpoints and reads
+
+Configured app conversation runs stamp positive History ownership in new run
+summaries. The History runs projection uses it to omit nested bare History
+output without reclassifying unmarked historical third-party calls. Existing
+artifacts are not rewritten.
 
 The JSONL recorder writes an initial `running` snapshot, then schedules a
 checkpoint of the redacted event trail after 25 new events or five seconds

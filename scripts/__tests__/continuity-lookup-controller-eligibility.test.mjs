@@ -48,7 +48,7 @@ afterEach(async () => {
 
 async function controllerOptions(mode, withEligible) {
   const outputRoot = join(base, "output"); await mkdir(outputRoot, {mode: 0o700});
-  const pilot = {registration: {
+  const pilot = {registration: { historySurface: "unified",
     roles: [{id: "native", arm: "native-lookup", code: "R0"}],
     codes: {R0: {path: "/fictional/r0", revision: "a".repeat(40), build: {outputSha256: "b".repeat(64)}}},
     common: {protocol: {pilotSha256: "c".repeat(64)}, corpora: [{suite: "holdout", sha256: "d".repeat(64),

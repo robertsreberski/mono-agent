@@ -1,56 +1,30 @@
-import type { HistoryToolAvailability, ToolPolicyInput, UnifiedHistoryAvailability } from "@mono-agent/conversation";
-
+import type { HistoryToolAvailability, ToolPolicyInput } from "@mono-agent/conversation";
 export const HISTORY_MCP_SERVER_NAME = "mono-agent-history";
 export const HISTORY_TOOL_NAME = "History";
 export const HISTORY_SCOPES = ["said", "tools", "runs"] as const;
 export type HistoryScope = (typeof HISTORY_SCOPES)[number];
 type Policy = Pick<ToolPolicyInput, "allowedTools" | "disallowedTools">;
-
-export const HISTORY_SCOPE_ALIASES = Object.freeze({
-  said: Object.freeze(["ConversationHistory", "conversation_history", "mcp__mono-agent-conversation-history__ConversationHistory", "mcp__mono-agent-conversation-history__*"]),
-  tools: Object.freeze(["SessionHistory", "session_history", "mcp__mono-agent-session-history__SessionHistory", "mcp__mono-agent-session-history__*"]),
-  runs: Object.freeze(["RunHistory", "run_history", "mcp__mono-agent-run-history__RunHistory", "mcp__mono-agent-run-history__*"]),
-});
-const UNIFIED_ALIASES = Object.freeze([HISTORY_TOOL_NAME, `mcp__${HISTORY_MCP_SERVER_NAME}__History`, `mcp__${HISTORY_MCP_SERVER_NAME}__*`]);
-
-/** Config-time scope grants. An old-name deny removes only its own scope. */
-export function resolveHistoryScopes(policy: Policy, capabilities: UnifiedHistoryAvailability = { said: true, tools: true, runs: true }): readonly HistoryScope[] {
-  const allowed = new Set(policy.allowedTools ?? []), denied = new Set(policy.disallowedTools ?? []);
-  if (denied.has("*") || UNIFIED_ALIASES.some(alias => denied.has(alias))) return Object.freeze([]);
-  const all = allowed.has("*") || UNIFIED_ALIASES.some(alias => allowed.has(alias));
-  return Object.freeze(HISTORY_SCOPES.filter(scope => capabilities[scope]
-    && !HISTORY_SCOPE_ALIASES[scope].some(alias => denied.has(alias))
-    && (all || HISTORY_SCOPE_ALIASES[scope].some(alias => allowed.has(alias)))));
+export const HISTORY_MCP_TOOL_NAME = `mcp__${HISTORY_MCP_SERVER_NAME}__${HISTORY_TOOL_NAME}`;
+const NAMES = [HISTORY_TOOL_NAME, HISTORY_MCP_TOOL_NAME, `mcp__${HISTORY_MCP_SERVER_NAME}__*`];
+export function resolveHistoryScopes(policy: Policy, capabilities: HistoryToolAvailability = { said: true, tools: true, runs: true }): readonly HistoryScope[] {
+  const allowed = policy.allowedTools ?? [], denied = policy.disallowedTools ?? [];
+  return Object.freeze(denied.includes("*") || NAMES.some(name => denied.includes(name))
+    || !(allowed.includes("*") || NAMES.some(name => allowed.includes(name))) ? [] : HISTORY_SCOPES.filter(scope => capabilities[scope]));
 }
-
-/** Only permitted old aliases reach Pi: config denies cannot hide other scopes. */
-export function historyPolicyAliases(scopes: readonly HistoryScope[]): readonly string[] {
-  return Object.freeze(scopes.flatMap(scope => HISTORY_SCOPE_ALIASES[scope]));
-}
-
-/** Match Pi's effective MCP predicate against the exact prepared descriptor.
- * A later deny of any frozen alias hides the entire tool (fail closed).
- */
-export function unifiedHistoryAvailability(runtime: Readonly<Record<string, unknown>>): HistoryToolAvailability {
-  const servers = runtime.mcpServers as Record<string, { appOwnedTools?: { version?: unknown; aliases?: Record<string, unknown> } }> | undefined;
+/** Resolve only explicit app-owned metadata, after every request policy layer. */
+export function historyToolAvailabilityForRuntime(runtime: Readonly<Record<string, unknown>>): HistoryToolAvailability {
+  const none = { said: false, tools: false, runs: false };
+  const servers = runtime.mcpServers as Record<string, { appOwnedTools?: { version?: unknown; aliases?: unknown; historyScopes?: unknown } }> | undefined;
   const descriptor = servers?.[HISTORY_MCP_SERVER_NAME]?.appOwnedTools;
-  const aliases = descriptor?.aliases?.History;
-  const none = { conversationHistory: false, sessionHistory: false, history: { said: false, tools: false, runs: false } };
-  if (descriptor?.version !== 1 || !isRecord(descriptor) || !isRecord(descriptor.aliases)
-    || !Object.values(descriptor.aliases).every(values => Array.isArray(values) && values.every(value => typeof value === "string"))
-    || !Array.isArray(aliases) || !aliases.every((alias): alias is string => typeof alias === "string")) return none;
-  const names = [...UNIFIED_ALIASES, ...aliases];
-  const denied = new Set(Array.isArray(runtime.disallowedTools) ? runtime.disallowedTools : []);
-  const allowed = Array.isArray(runtime.allowedTools) ? new Set(runtime.allowedTools) : undefined;
-  if (denied.has("*") || names.some(name => denied.has(name))
-    || (allowed !== undefined && !allowed.has("*") && !names.some(name => allowed.has(name)))) return none;
-  return { conversationHistory: false, sessionHistory: false, history: {
-    said: aliases.includes("ConversationHistory"), tools: aliases.includes("SessionHistory"), runs: aliases.includes("RunHistory"),
-  } };
+  const scopes = descriptor?.historyScopes;
+  if (descriptor?.version !== 1 || !isRecord(descriptor.aliases) || Object.keys(descriptor.aliases).length !== 0 || !Object.values(descriptor.aliases).every(values => Array.isArray(values) && values.every(value => typeof value === "string"))
+    || !isRecord(scopes) || Object.keys(scopes).sort().join() !== "runs,said,tools" || !HISTORY_SCOPES.every(scope => typeof scopes[scope] === "boolean")) return none;
+  const allowed = Array.isArray(runtime.allowedTools) ? runtime.allowedTools as string[] : ["*"];
+  const disallowed = Array.isArray(runtime.disallowedTools) ? runtime.disallowedTools as string[] : [];
+  const permitted = resolveHistoryScopes({ allowedTools: allowed, disallowedTools: disallowed }, scopes as unknown as HistoryToolAvailability);
+  return { said: permitted.includes("said"), tools: permitted.includes("tools"), runs: permitted.includes("runs") };
 }
-
 function isRecord(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object") return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value); return proto === Object.prototype || proto === null;
 }

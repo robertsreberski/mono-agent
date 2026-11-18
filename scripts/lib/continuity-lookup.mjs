@@ -5,22 +5,20 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 
-export const LOOKUP_MODE = "lookup-allowed-v1";
-export const HISTORY_SERVER = "mono-agent-conversation-history";
+export const LOOKUP_MODE = "lookup-allowed-v3";
+export const HISTORY_SERVER = "mono-agent-history";
 export const LOOKUP_DEFAULT_ARMS = Object.freeze(["native-lookup", "continuity-pack-cold"]);
 export const LOOKUP_TIMING = Object.freeze({ deadlineMs: 600000, cleanupAllowanceMs: 60000, turnTimeoutMs: 690000, childWatchdogMs: 720000 });
 export const sha256 = value => createHash("sha256").update(value).digest("hex");
-const soulFile = new URL("../fixtures/continuity-soul-v1.md", import.meta.url);
+const soulFile = new URL("../fixtures/continuity-soul-v3.md", import.meta.url);
 const soulBytes = readFileSync(soulFile);
-export const SOUL_BINDING = Object.freeze({ file: "continuity-soul-v1.md", rawSha256: sha256(soulBytes), coreSha256: sha256(soulBytes.toString("utf8").replace(/\r\n?/gu, "\n").trim()) });
-export const LOOKUP_BUDGET = Object.freeze(JSON.parse(readFileSync(new URL("../fixtures/continuity-lookup-budget-v1.json", import.meta.url), "utf8")));
+export const SOUL_BINDING = Object.freeze({ file: "continuity-soul-v3.md", rawSha256: sha256(soulBytes), coreSha256: sha256(soulBytes.toString("utf8").replace(/\r\n?/gu, "\n").trim()) });
+export const LOOKUP_BUDGET = Object.freeze(JSON.parse(readFileSync(new URL("../fixtures/continuity-lookup-budget-v3.json", import.meta.url), "utf8")));
 
 // Opt-in cross-checkout contract; ordinary A1 plans keep their original shape.
-export const LOOKUP_ROLE_PROTOCOL = "continuity-lookup-role-v1";
-const soul1Bytes = readFileSync(new URL("../fixtures/continuity-soul-v2.md", import.meta.url));
-export const LOOKUP_SOULS = Object.freeze({ S0: SOUL_BINDING, S1: Object.freeze({ file: "continuity-soul-v2.md",
-  rawSha256: "e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9",
-  coreSha256: "e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9" }) });
+export const LOOKUP_ROLE_PROTOCOL = "continuity-lookup-role-v3";
+const soul1Bytes = readFileSync(new URL("../fixtures/continuity-soul-v4.md", import.meta.url));
+export const LOOKUP_SOULS = Object.freeze({S0:SOUL_BINDING,S1:Object.freeze({file:"continuity-soul-v4.md",rawSha256:"c4f684f265c31a1dd59b8a78bee7134e9c92495d767afe605b817dcfc1298bf5",coreSha256:"c4f684f265c31a1dd59b8a78bee7134e9c92495d767afe605b817dcfc1298bf5"})});
 assertSoul(soul1Bytes, LOOKUP_SOULS.S1);
 export const LOOKUP_ROLES = Object.freeze([
   { id: "native", arm: "native-lookup", code: "R0", soul: "S0" },
@@ -45,7 +43,7 @@ export function assertLookupRole(role) {
   }
 }
 
-export const FIXED_BUDGET_SHA256 = sha256(readFileSync(new URL("../fixtures/continuity-lookup-budget-v1.json", import.meta.url)));
+export const FIXED_BUDGET_SHA256 = sha256(readFileSync(new URL("../fixtures/continuity-lookup-budget-v3.json", import.meta.url)));
 export function assertFixedBudget(hash) {
   if (hash !== FIXED_BUDGET_SHA256) throw Object.assign(new Error("lookup_fixed_budget_hash_mismatch"), { code: "lookup_fixed_budget_hash_mismatch" });
 }
@@ -56,7 +54,7 @@ export function assertLookupContract({ suite, sha256: corpusSha256, source, look
     if (lookupPolicy) assertExternalPolicy(lookupPolicy, { source });
     return;
   }
-  if (LOOKUP_BUDGET.status !== "frozen" || LOOKUP_BUDGET.corpus[suite] !== corpusSha256) throw Object.assign(new Error("lookup_requires_frozen_corpus_and_budget"), { code: "lookup_requires_frozen_corpus_and_budget" });
+  if (!["configured-unmeasured", "frozen"].includes(LOOKUP_BUDGET.status) || LOOKUP_BUDGET.corpus[suite] !== corpusSha256) throw Object.assign(new Error("lookup_requires_frozen_corpus_and_budget"), { code: "lookup_requires_frozen_corpus_and_budget" });
   if (!Number.isSafeInteger(LOOKUP_BUDGET.callBudget) || LOOKUP_BUDGET.callBudget < 1 || LOOKUP_BUDGET.callBudget > 96 || LOOKUP_BUDGET.callBudget + 2 > 100
     || !Number.isSafeInteger(LOOKUP_BUDGET.byteBudget) || LOOKUP_BUDGET.byteBudget < 1 || LOOKUP_BUDGET.byteBudget > 8 * 1024 * 1024) throw Object.assign(new Error("lookup_invalid_frozen_budget"), { code: "lookup_invalid_frozen_budget" });
   assertSoul(soulBytes, LOOKUP_BUDGET.soul);
@@ -78,7 +76,7 @@ export async function installSoul(work, binding) {
   await writeFile(join(work, "BENCHMARK-SOUL.md"), bytes, { mode: 0o600 });
 }
 export function lookupPrompt(probe) {
-  return ["Quick check about this conversation so far, including tool results. You may use ConversationHistory to retrieve retained evidence before answering:",
+  return ["Quick check about this conversation so far, including tool results. You may use History (scope said) to retrieve retained evidence before answering:",
     probe.question, probe.format, probe.abstainOption ? "If the value is not available, reply exactly UNKNOWN." : null].filter(Boolean).join(" ");
 }
 
@@ -236,6 +234,7 @@ export async function lookupForwarder({ meter, witness, pinEndpoint = false }) {
       server = new Server({ name: HISTORY_SERVER, version: "1.0.0" }, { capabilities: { tools: {} } }); servers.add(server);
       server.setRequestHandler(ListToolsRequestSchema, () => client.listTools());
       server.setRequestHandler(CallToolRequestSchema, async call => {
+        if (call.params.name !== "History") throw Object.assign(Error("lookup_tools_forbidden"),{code:"lookup_tools_forbidden"});
         meter.dispatch();
         const result = await client.callTool(call.params);
         meter.deliver(result); witness?.delivered(result);

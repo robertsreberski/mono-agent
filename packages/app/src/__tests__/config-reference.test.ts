@@ -99,7 +99,6 @@ const EXPECTED_CORE_FIELD_TYPES: Record<keyof typeof CORE_CONFIG_FIELD_IDS, Conf
   "tools.disallowedTools": "string[]",
   "tools.filesystem.readableRoots": "string[]",
   "tools.filesystem.writableRoots": "string[]",
-  "tools.history.unified": "boolean",
   "tools.conversationSearch.datedSnippets": "boolean",
   "tools.computerUse.backend": "string",
   "tools.computerUse.command": "string",
@@ -833,7 +832,7 @@ it("publishes switching prerequisites without a stopped-writer config acknowledg
 it("publishes default-on recording and packs without paid upkeep or clearing settings", () => {
   const field = allConfigReferenceFields().find((f) => f.jsonPath === "runtime.session.continuity.enabled")!;
   expect(schemaForField(field)).toMatchObject({ type: "boolean", default: true });
-  expect(field.description).toContain("ConversationHistory");
+  expect(field.description).toContain("History (said scope)");
   const pack = allConfigReferenceFields().find(f => f.jsonPath === "runtime.session.continuity.packEnabled")!;
   expect(schemaForField(pack)).toMatchObject({ type: "boolean", default: true });
   expect(findUnknownAppConfigPaths({ runtime: { session: { continuity: { packEnabled: false } } } })).toEqual([]);

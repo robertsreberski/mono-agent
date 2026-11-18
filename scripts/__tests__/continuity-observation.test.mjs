@@ -132,7 +132,7 @@ describe("read-only continuity observation", () => {
     const f = fixture(temp(), { parts: i => i === 1 ? [boundary(),
       tool({ toolCallId: "failure", status: "error", structuredResult: undefined }),
       tool({ toolCallId: "unavailable", structuredResult: { status: "unavailable", error: { code: "history_unavailable", message: CANARY } } }),
-      tool({ toolCallId: "get", args: { recordId: CANARY }, structuredResult: { status: "tombstoned" } }),
+      tool({ toolCallId: "get", args: { scope: "said", recordId: CANARY }, structuredResult: { status: "tombstoned" } }),
       tool({ toolCallId: "unknown", result: `success unavailable ${CANARY}`, structuredResult: undefined }),
     ] : [] });
     const m = (await run(f)).metrics.strata[0].retrieval;
@@ -148,30 +148,30 @@ describe("read-only continuity observation", () => {
       const js = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
       return new Function(...Object.keys(bindings), `${js}; return ${name};`)(...Object.values(bindings));
     }
-    const source = fs.readFileSync(join(ROOT, "packages/app/src/request-tools/conversation-history.ts"), "utf8");
+    const source = fs.readFileSync(join(ROOT, "packages/app/src/request-tools/history-said.ts"), "utf8");
     expect(JSON.parse(source.match(/^const NOTICE = (".*");$/m)[1])).toBe(HISTORY_NOTICE);
     const splitSource = fs.readFileSync(join(ROOT, "packages/app/src/mcp/request-scoped-mcp.ts"), "utf8");
     const sectionLimit = Number(splitSource.match(/const REQUEST_SCOPED_MCP_MODEL_TEXT_MAX_CHARS = ([\d_]+);/)[1].replaceAll("_", ""));
     const split = pureFunction("packages/app/src/mcp/request-scoped-mcp.ts", "splitRequestScopedModelText", { REQUEST_SCOPED_MCP_MODEL_TEXT_MAX_CHARS: sectionLimit });
-    const format = pureFunction("packages/app/src/request-tools/conversation-history.ts", "response", { NOTICE: HISTORY_NOTICE, splitRequestScopedModelText: split });
+    const format = pureFunction("packages/app/src/request-tools/history-said.ts", "response", { NOTICE: HISTORY_NOTICE, splitRequestScopedModelText: split });
     const joinText = pureFunction("packages/turn/src/providers/pi/messages.ts", "toolResultContent");
     // Both navigation and evidence can acquire a new continued-section block.
     // Bound the total serialized growth, not just three raw notice copies.
     const oldNotice = HISTORY_NOTICE.slice(0, HISTORY_NOTICE.indexOf(" Historical alternatives"));
-    const oldFormat = pureFunction("packages/app/src/request-tools/conversation-history.ts", "response", { NOTICE: oldNotice, splitRequestScopedModelText: split });
-    const emptyNavigation = [HISTORY_HEADER, oldNotice, "", "No follow-up ConversationHistory call is available."].join("\n");
+    const oldFormat = pureFunction("packages/app/src/request-tools/history-said.ts", "response", { NOTICE: oldNotice, splitRequestScopedModelText: split });
+    const scopedFormat = pureFunction("packages/app/src/request-tools/history-presentation.ts", "presentHistoryResult", { splitRequestScopedModelText: split });
+    const scoped = result => scopedFormat(result, { scope: "said", scopes: ["said", "tools", "runs"] });
+    const emptyNavigation = ["History navigation (scope: said; tool-authored guidance):", oldNotice, "", "No follow-up History call is available."].join("\n");
     const boundary = historyBody({ navigation: { guidance: "x".repeat(sectionLimit - emptyNavigation.length), nextActions: [] }, padding: "" });
-    const oldSection = `${oldNotice}\n${JSON.stringify({ ...boundary, untrusted: true, notice: oldNotice })}`;
+    const oldSection = `${oldNotice}\n${JSON.stringify(scoped(oldFormat(boundary)).structuredContent)}`;
     boundary.padding = "x".repeat(19800 - oldSection.length);
-    const before = oldFormat(boundary), after = format(boundary);
+    const before = scoped(oldFormat(boundary)), after = scoped(format(boundary));
     expect(before.content).toHaveLength(3); expect(after.content).toHaveLength(5);
     expect(Buffer.byteLength(JSON.stringify(after.content)) - Buffer.byteLength(JSON.stringify(before.content))).toBeLessThanOrEqual(640);
 
     for (const body of [historyBody(), historyBody({ items: [{ text: CANARY.repeat(900) }] }), historyBody({ status: "unavailable", error: { code: "history_unavailable" }, navigation: { guidance: "Unavailable.", nextActions: [] } })]) {
-      expect(historyResponse(body)).toEqual(format(body)); expect(historyText(body)).toBe(joinText(format(body)));
-      expect(parseConversationHistoryText(historyText(body))).toEqual(format(body).structuredContent);
-      const unifiedFormat = pureFunction("packages/app/src/request-tools/history-presentation.ts", "presentHistoryResult", { splitRequestScopedModelText: split });
-      const unified = unifiedFormat(format(body), { scope: "said", scopes: ["said", "tools", "runs"] });
+      expect(parseConversationHistoryText(historyText(body))).toEqual(historyResponse(body).structuredContent);
+      const unified = scoped(format(body));
       expect(parseConversationHistoryText(joinText(unified))).toEqual(unified.structuredContent);
     }
   });

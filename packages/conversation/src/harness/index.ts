@@ -166,6 +166,10 @@ export class ConversationHarnessImpl implements ConversationHarness {
 
   constructor(options: ConversationHarnessOptions, internalOptions: ConversationHarnessInternalOptions = {}) {
     if (Object.hasOwn(options, "piSessionsRoot") || (options.runtimeOptions && Object.hasOwn(options.runtimeOptions, "piSessionsRoot"))) throw new TypeError("piSessionsRoot was renamed to sessionsRoot; use sessionsRoot instead");
+    if (Object.hasOwn(options, "defaultCore")) throw new TypeError("defaultCore was removed; History is the only history tool.");
+    for (const key of ["sessionHistoryAvailable", "conversationHistoryAvailable", "unifiedHistory"]) {
+      if (options.toolHistory && Object.hasOwn(options.toolHistory, key)) throw new TypeError(`toolHistory.${key} was removed; use appOwnedHistory and historyToolAvailabilityForRuntime with said/tools/runs scopes.`);
+    }
     validateOptions(options);
     if ((options.memoryWriteMode === "append-host-summary" || options.memoryWriteMode === "capture")
       && typeof options.memory?.persistCompletedTurn !== "function") {
@@ -362,7 +366,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
         abortSignal: controller.signal,
         messages: warm ? [] : coldReplayMessages(history,
           renderToolHistoryProjection(loadToolHistoryProjection(this.options, conversationId, runId, history),
-            { conversationHistory: false, sessionHistory: false })?.text),
+            { said: false, tools: false, runs: false })?.text),
         sessionId,
         providerSessionId: sessionId,
         sessionTurn: providerTurn.reconciliation?.descriptor ?? { kind: "host", ownerKey: this.options.toolHistory?.logicalConversationId(conversationId) ?? conversationId,
@@ -610,7 +614,7 @@ export class ConversationHarnessImpl implements ConversationHarness {
     const isolated = proactiveIsolated || continuationIsolated;
     const mailboxEligible = !isolated;
     const turnContinuityCollector = new UncommittedTurnCollector(this.options.toolHistory?.continuityEnabled === true,
-      this.options.toolHistory?.unifiedHistory === true);
+      this.options.toolHistory?.appOwnedHistory === true);
     let liveInputMailbox: LiveInputMailbox | undefined;
     let liveInputCloseReason: "closed" | "failed" = "failed";
     let toolHistoryStatus: "succeeded" | "failed" | "cancelled" = "failed";

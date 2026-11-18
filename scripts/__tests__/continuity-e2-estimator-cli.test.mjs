@@ -14,7 +14,7 @@ const roots = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const fixture = async () => JSON.parse(await readFile(new URL("./fixtures/continuity-e2-cap-sizing.json", import.meta.url)));
 function replay(f, summary = "faux-short") {
-  return { schema: "continuity-e2-sizing-v1", sourceDigest: "a".repeat(64), protocolDigest: protocolDigest(f.protocol), summary,
+  return { historySurface:"unified", schema: "continuity-e2-sizing-v1", sourceDigest: "a".repeat(64), protocolDigest: protocolDigest(f.protocol), summary,
     semanticQualification: false, usage: "estimated-not-measured", branches: f.protocol.branches.map((branch, index) => ({ branch: index,
       requestSizing: [f.sizing.variants[0].requests[1], f.sizing.variants[0].requests[3], f.sizing.variants[0].requests[2]].map(row => ({ ...row, turn: branch.checkpoints[0].turn, message: branch.checkpoints[0].message })) })) };
 }
@@ -148,24 +148,17 @@ it("runs the unified CLI estimate with a 500K Sol summary envelope and refuses m
   const protocol = join(root, "protocol.json"), sizing = join(root, "sizing.json"), limits = join(root, "limits.json");
   for (const [path, value] of [[protocol, f.protocol], [sizing, f.sizing], [limits, { schema: "continuity-e2-estimate-limits-v1", roles: f.roles, probeCounts: [] }]]) await writeFile(path, JSON.stringify(value), { mode: 0o600 });
   const args = ["scripts/continuity-e2.mjs", "--estimate", "--protocol", protocol, "--limits", limits, "--sizing", sizing];
-  const { stdout, stderr } = await promisify(execFile)(process.execPath, [...args, "--output", join(root, "unified"), "--history-surface", "unified"], { cwd: ROOT });
+  const { stdout, stderr } = await promisify(execFile)(process.execPath, [...args, "--output", join(root, "unified")], { cwd: ROOT });
   expect(stderr).toBe("");
   const report = JSON.parse(stdout);
   expect(report.historySurface).toBe("unified");
   expect(report).toEqual(estimateE2SizingSet({ protocol: f.protocol, roles: f.roles, records: [f.sizing], catalog: await loadE2Catalog(), historySurface: "unified" }));
   expect(report.fundedSchedule.checkpoints.find(r => r.model === row.model && r.role === "summary")).toMatchObject({ maxInputTokens: 500000, maxReservationUnits: "8840000000" });
   expect(await readFile(join(root, "unified", "estimate.json"), "utf8")).toBe(stdout);
+  f.sizing.historySurface="split"; await writeFile(sizing,JSON.stringify(f.sizing));
   await expect(promisify(execFile)(process.execPath, [...args, "--output", join(root, "mismatch")], { cwd: ROOT })).rejects.toMatchObject({ code: 1, stderr: "e2_authorization_binding_mismatch\n" });
   await expect(stat(join(root, "mismatch"))).rejects.toMatchObject({ code: "ENOENT" });
 });
-it("keeps actual split CLI estimate output byte-identical with omitted and explicit selectors", async () => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "fictional-split-estimate-"))); roots.push(root);
-  const f = await fixture();
-  const protocol = join(root, "protocol.json"), sizing = join(root, "sizing.json"), limits = join(root, "limits.json");
-  for (const [path, value] of [[protocol, f.protocol], [sizing, f.sizing], [limits, { schema: "continuity-e2-estimate-limits-v1", roles: f.roles, probeCounts: [] }]]) await writeFile(path, JSON.stringify(value), { mode: 0o600 });
-  const args = ["scripts/continuity-e2.mjs", "--estimate", "--protocol", protocol, "--limits", limits, "--sizing", sizing];
-  const omitted = await promisify(execFile)(process.execPath, [...args, "--output", join(root, "omitted")], { cwd: ROOT });
-  const explicit = await promisify(execFile)(process.execPath, [...args, "--output", join(root, "split"), "--history-surface", "split"], { cwd: ROOT });
-  expect(explicit.stdout).toBe(omitted.stdout); expect(explicit.stderr).toBe("");
-  expect(JSON.parse(omitted.stdout)).toMatchObject({ forecastMinimumCapUnits: "9025809000", worstCaseCapUnits: "26716000000" });
+it("refuses the retired CLI selector", () => {
+  expect(() => parseE2Args(["estimate","--protocol","fiction","--limits","fiction","--sizing","fiction","--output","fiction","--history-surface","split"])).toThrow("E2_ARGUMENTS_INVALID");
 });

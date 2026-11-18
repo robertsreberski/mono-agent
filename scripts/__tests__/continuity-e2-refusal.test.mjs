@@ -54,7 +54,7 @@ async function setup({ retryFirst = false, length = false, replay = false, compa
   const model = { ...E2_GUARD_CONTRACT, id: "gpt-6.1-sol", contextWindow: 272000, maxTokens: 128000, reasoning: false };
   const protocol = replay ? { probeLookupRounds: 3, branches: [{ checkpoints: [5, 15, 25, 35].map(turn => ({ turn })) }, { checkpoints: [{ turn: 35 }] }] } : {};
   const protocolText = JSON.stringify(protocol);
-  const pilot = { descriptor: { retryPolicy: E2_RETRY_POLICY }, registration: {
+  const pilot = { descriptor: { retryPolicy: E2_RETRY_POLICY }, registration: { historySurface: "unified",
     protocol: { path: join(f.root, "fictional-protocol.json"), sha256: digest(protocolText) },
     roles: ["summary", "probe", "continuation"].map(role => ({ role, model: `openai-codex:${model.id}`, maxInputTokens: 272000, maxOutputTokens: 128000 })),
     catalog: await loadE2Catalog(), toolPolicies: { summary: [], proof: [], replay: [], replayFinal: [] }, ...(replay ? { probeCounts: [0, 1, 2, 3, 4].map(checkpoint => ({ checkpoint, lookupRounds: 3 })) } : {}),

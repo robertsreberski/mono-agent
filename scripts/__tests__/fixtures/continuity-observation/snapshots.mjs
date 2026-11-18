@@ -9,7 +9,7 @@ export const telemetry = (kind, data) => ({ type: "telemetry", event: "runtime_t
 export const boundary = () => telemetry("session_boundary", { kind: "resume_replay", reason: "model_change", context: "reconstructed", conversationId: CANARY, timestamp: at(1), providerSessionId: CANARY });
 export const compaction = () => telemetry("context_compaction", { operationId: CANARY, status: "succeeded", trigger: "proactive", tokensBefore: 90000, tokensAfter: 14000, model: CANARY });
 export const pack = () => telemetry("continuity_pack_injected", { reason: CANARY, ownerEntries: 2, toolEntries: 1, summaryEntries: 1, evidenceEntries: 0, omittedCount: 3, tokens: 700, degradedReason: "none", text: CANARY });
-export const tool = (overrides = {}) => ({ type: "tool-call", toolCallId: `${CANARY}_call`, toolName: "ConversationHistory", args: { action: "search", query: CANARY }, status: "complete", result: CANARY,
+export const tool = (overrides = {}) => ({ type: "tool-call", toolCallId: `${CANARY}_call`, toolName: "History", args: { scope: "said", action: "search", query: CANARY }, status: "complete", result: CANARY,
   structuredResult: { status: "available", items: [{ text: CANARY, recordId: CANARY }], notice: CANARY }, history: { persistence: "persisted", terminalState: "success", untrusted: true, recordId: CANARY }, ...overrides });
 export function fixture(dir, { parts, statuses = [], count = 4, telemetryCoverage = "complete", soul = "default", closure = "target", strata, sidecar = false, journal = false } = {}) {
   const web = join(dir, "snapshot.sqlite"), db = new DatabaseSync(web);
@@ -44,7 +44,7 @@ export function fixture(dir, { parts, statuses = [], count = 4, telemetryCoverag
       CREATE TABLE continuity_generations(generation_id TEXT,conversation_id TEXT,state TEXT,created_at_ms INTEGER);
     `);
     d.prepare("INSERT INTO runs VALUES(?,?,?)").run(CANARY, CANARY, CANARY);
-    d.prepare("INSERT INTO tool_calls VALUES(?,?,?,?,?,?,?,?)").run(CANARY, CANARY, `${CANARY}_call`, "ConversationHistory", "success", CANARY, Date.parse(at(1)), Date.parse(at(1)));
+    d.prepare("INSERT INTO tool_calls VALUES(?,?,?,?,?,?,?,?)").run(CANARY, CANARY, `${CANARY}_call`, "History", "success", CANARY, Date.parse(at(1)), Date.parse(at(1)));
     d.prepare("INSERT INTO tool_records VALUES(?,?,?,?,?,?)").run(CANARY, CANARY, CANARY, `${CANARY}_call`, "result", CANARY);
     d.prepare("INSERT INTO continuity_records VALUES(?,?,?,?,?)").run(1, CANARY, "owner", Date.parse(at(1)), CANARY);
     d.prepare("INSERT INTO continuity_generations VALUES(?,?,?,?)").run(CANARY, CANARY, "committed", Date.parse(at(1)));

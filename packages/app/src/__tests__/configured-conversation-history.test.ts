@@ -1,3 +1,5 @@
+import { scopedCall } from "./fixtures/history-scopes.js";
+import { historyToolAvailabilityForRuntime } from "../request-tools/history-policy.js";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,18 +11,18 @@ import { acquireToolHistoryWriter, createInMemoryHistoryStore, createToolPolicy,
 import type { RuntimeRunOptions } from "@mono-agent/turn/host/types";
 import { expect, it } from "vitest";
 import { createConfiguredAgentResponderForApp, createConfiguredConversationHarness } from "../composition/configured-agent.js";
-import { CONVERSATION_HISTORY_MCP_SERVER_NAME, CONVERSATION_HISTORY_TOOL_NAME, historyToolAvailabilityForRuntime } from "../request-tools/conversation-history.js";
+import { HISTORY_MCP_SERVER_NAME, HISTORY_TOOL_NAME } from "./fixtures/history-scopes.js";
 
 it.each([
   { allow: ["*"], deny: [], enabled: undefined, present: true },
-  { allow: ["ConversationHistory"], deny: [], enabled: undefined, present: true },
-  { allow: ["conversation_history"], deny: [], enabled: undefined, present: true },
-  { allow: [`mcp__${CONVERSATION_HISTORY_MCP_SERVER_NAME}__*`], deny: [], enabled: true, present: true },
-  { allow: ["*"], deny: ["ConversationHistory"], enabled: undefined, present: false },
-  { allow: ["*"], deny: ["conversation_history"], enabled: true, present: false },
-  { allow: ["*"], deny: [`mcp__${CONVERSATION_HISTORY_MCP_SERVER_NAME}__*`], enabled: true, present: false },
-  { allow: ["ConversationHistory"], deny: ["*"], enabled: true, present: false },
-  { allow: ["SessionHistory", "Read"], deny: [], enabled: true, present: false },
+  { allow: ["History"], deny: [], enabled: undefined, present: true },
+  { allow: ["mcp__mono-agent-history__History"], deny: [], enabled: undefined, present: true },
+  { allow: [`mcp__${HISTORY_MCP_SERVER_NAME}__*`], deny: [], enabled: true, present: true },
+  { allow: ["*"], deny: ["History"], enabled: undefined, present: false },
+  { allow: ["*"], deny: ["mcp__mono-agent-history__History"], enabled: true, present: false },
+  { allow: ["*"], deny: [`mcp__${HISTORY_MCP_SERVER_NAME}__*`], enabled: true, present: false },
+  { allow: ["History"], deny: ["*"], enabled: true, present: false },
+  { allow: ["Read"], deny: [], enabled: true, present: false },
   { allow: ["*"], deny: [], enabled: false, present: false },
 ])("configured tool policy $allow / $deny with continuity=$enabled exposes=$present", async ({ allow, deny, enabled, present }) => {
   const cwd = await mkdtemp(join(tmpdir(), "configured-conversation-history-"));
@@ -34,12 +36,12 @@ it.each([
     const harness = await createConfiguredConversationHarness({ config, cwd, env: {}, historyStore: createInMemoryHistoryStore(),
       runtime: { async run(_prompt, options) {
         received = options;
-        const spec = (options.mcpServers as Record<string, { url: string }> | undefined)?.[CONVERSATION_HISTORY_MCP_SERVER_NAME];
+        const spec = (options.mcpServers as Record<string, { url: string }> | undefined)?.[HISTORY_MCP_SERVER_NAME];
         expect(spec !== undefined).toBe(present);
         if (spec) {
           const client = new Client({ name: "configured-fictional-client", version: "1.0.0" });
           try { await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
-            expect((await client.listTools()).tools.map(({ name }) => name)).toEqual([CONVERSATION_HISTORY_TOOL_NAME]);
+            expect((await client.listTools()).tools.map(({ name }) => name)).toEqual([HISTORY_TOOL_NAME]);
           } finally { await client.close(); }
         }
         return { text: "Fictional answer." };
@@ -60,7 +62,7 @@ it.each([true, false])("retrieves finalized current-run tool text only with an o
     await writeFile(join(cwd, "IDENTITY.md"), "You are a fictional fixture.");
     const config = resolveJsonMonoAgentConfig({ cwd, json: {
       runtime: { model: "openai-codex:gpt-5.5", session: { mode: "per-message" } },
-      context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: ["ConversationHistory", "Read"] },
+      context: { identityPath: "IDENTITY.md" }, tools: { allowedTools: ["History", "Read"] },
       artifacts: { dir: join(cwd, "artifacts") },
     } });
     // This is a durable storage assertion, not a test of the production 250 ms
@@ -72,18 +74,18 @@ it.each([true, false])("retrieves finalized current-run tool text only with an o
       runtime: { async run(_prompt, options) {
         await options.toolLifecycleSink!({ phase: "invocation", toolCallId: "fictional-live-call", toolName: "Read", arguments: {} });
         await options.toolLifecycleSink!({ phase: "result", toolCallId: "fictional-live-call", toolName: "Read", state: "success", content: [{ type: "text", text }] });
-        const spec = (options.mcpServers as Record<string, { url: string }>)[CONVERSATION_HISTORY_MCP_SERVER_NAME]!;
+        const spec = (options.mcpServers as Record<string, { url: string }>)[HISTORY_MCP_SERVER_NAME]!;
         const client = new Client({ name: "configured-live-evidence", version: "1.0.0" });
         try {
           await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
-          const found = (await client.callTool({ name: CONVERSATION_HISTORY_TOOL_NAME, arguments: { query: "cobalt" } })).structuredContent as any;
+          const found = (await scopedCall(client, "said", { name: HISTORY_TOOL_NAME, arguments: { query: "cobalt" } })).structuredContent as any;
           expect(found.items ?? []).toHaveLength(owned ? 1 : 0);
           if (owned) {
             const item = found.items[0]; evidenceRunId = item.runId;
             expect(item).toMatchObject({ kind: "tool", provenance: "tool", truncated: false, originalBytes: Buffer.byteLength(text) });
             let actual = "", args: any = { action: "get", recordId: item.recordId };
             do {
-              const body = (await client.callTool({ name: CONVERSATION_HISTORY_TOOL_NAME, arguments: args })).structuredContent as any;
+              const body = (await scopedCall(client, "said", { name: HISTORY_TOOL_NAME, arguments: args })).structuredContent as any;
               expect(body.status).toBe("available"); actual += body.chunk;
               args = body.nextCursor ? body.navigation.nextActions[0].arguments : undefined;
             } while (args);
@@ -127,60 +129,10 @@ it("respects explicit controller suppression instead of creating a standalone hi
     const responder = await createConfiguredAgentResponderForApp({ config, cwd, env: {}, historyStore: createInMemoryHistoryStore(),
       runtime: { async run(_prompt, options) {
         observed = true;
-        expect((options.mcpServers as Record<string, unknown> | undefined)?.[CONVERSATION_HISTORY_MCP_SERVER_NAME]).toBeUndefined();
+        expect((options.mcpServers as Record<string, unknown> | undefined)?.[HISTORY_MCP_SERVER_NAME]).toBeUndefined();
         return { text: "Fictional answer." };
-      } } }, { conversationHistoryExtension: null });
+      } } }, { historyExtension: null });
     await responder.respond({ conversationId: "web:fiction", text: "Fictional request.", abortSignal: new AbortController().signal }, { append: async () => {} });
     expect(observed).toBe(true);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
-
-it.each(["healthy", "suppressed", "startup-failure", "override", "disabled", "session-only"] as const)(
-  "forwards capability-matched projection guidance after %s", async (mode) => {
-    const cwd = await mkdtemp(join(tmpdir(), "configured-history-routing-"));
-    const conversationId = "web:fictional";
-    try {
-      await writeFile(join(cwd, "IDENTITY.md"), "Fictional fixture.");
-      const config = resolveJsonMonoAgentConfig({ cwd, json: {
-        runtime: { model: "openai-codex:gpt-5.5", session: { mode: "per-message" } },
-        context: { identityPath: "IDENTITY.md" }, artifacts: { dir: join(cwd, "artifacts") },
-        tools: { allowedTools: ["*"], ...(mode === "session-only" ? { disallowedTools: ["ConversationHistory"] } : {}) },
-      } });
-      const writer = await ToolHistoryWriter.open({ root: join(cwd, "history") });
-      const binding = { conversationId, logicalConversationId: conversationId, runId: "old", isolated: false };
-      try {
-        await writer.persist(binding, { phase: "invocation", toolCallId: "fictional-call", toolName: "Read", arguments: {} });
-        await writer.persist(binding, { phase: "result", toolCallId: "fictional-call", state: "success", content: "Fictional cobalt evidence." });
-        await writer.finishRun(binding, "completed");
-      } finally { await writer.close(); }
-      const { createSessionHistoryRuntimeExtension } = await import("../request-tools/session-history.js");
-      const { createRequestScopedMcpRuntimeExtension } = await import("../mcp/request-scoped-mcp.js");
-      const failed = createRequestScopedMcpRuntimeExtension({ serverName: CONVERSATION_HISTORY_MCP_SERVER_NAME,
-        startingMessage: "Fictional endpoint starting", createServer: () => { throw new Error("Not reached"); },
-        listen: async () => { throw new Error("Fictional startup failure"); } });
-      let forwarded = "";
-      const responder = await createConfiguredAgentResponderForApp({ config, cwd, env: {}, historyStore: createInMemoryHistoryStore(),
-        runtimeOptionsForRequest: mode === "override" ? () => ({ toolPolicyOverride: createToolPolicy({ allowedTools: ["Read"] }) })
-          : mode === "session-only" ? createSessionHistoryRuntimeExtension({ historyRoot: join(cwd, "history") }) : () => ({}),
-        runtime: { async run(_prompt, options) {
-          forwarded = options.messages!.map(message => message.content).join("\n");
-          const availability = historyToolAvailabilityForRuntime(options);
-          expect(availability).toEqual({ conversationHistory: mode === "healthy", sessionHistory: mode === "session-only" });
-          return { text: "Fictional answer." };
-        } },
-      }, { ...(mode === "suppressed" ? { conversationHistoryExtension: null } : {}),
-        ...(mode === "startup-failure" ? { conversationHistoryExtension: failed } : {}) });
-      const result = await responder.respond({ conversationId, text: "Inspect fictional evidence", abortSignal: new AbortController().signal,
-        ...(mode === "disabled" ? { continuation: { continuationId: "fictional-continuation", originRunId: "old", originContextPolicy: "detached_latest" as const, toolsDisabled: true as const, deferHistoryCommit: true as const } } : {}) }, { append: async () => {} });
-      expect(result.text).toBe("Fictional answer."); expect(forwarded).toContain("Fictional cobalt evidence.");
-      if (mode === "healthy") expect(forwarded).toContain("Use ConversationHistory for retained details.");
-      else if (mode === "session-only") expect(forwarded).toContain("Use SessionHistory for retained details.");
-      else expect(forwarded).not.toMatch(/Use (ConversationHistory|SessionHistory)/u);
-    } finally { await rm(cwd, { recursive: true, force: true }); }
-  });
-
-it.each(["ConversationHistory", "conversation_history", `mcp__${CONVERSATION_HISTORY_MCP_SERVER_NAME}__ConversationHistory`, `mcp__${CONVERSATION_HISTORY_MCP_SERVER_NAME}__*`, "*"])(
-  "effective runtime deny alias %s wins over a live endpoint", deny => {
-    expect(historyToolAvailabilityForRuntime({ allowedTools: ["*"], disallowedTools: [deny],
-      mcpServers: { [CONVERSATION_HISTORY_MCP_SERVER_NAME]: { url: "http://127.0.0.1/fictional" } } }).conversationHistory).toBe(false);
-  });

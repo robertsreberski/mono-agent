@@ -43,14 +43,13 @@ function metadata(text) {
   if (typeof body.chunk === "string") result.chunkBytes = Buffer.byteLength(body.chunk);
   return result;
 }
-// Lookup scope of one offered History call; ConversationHistory is always said,
+// Lookup scope of one offered History call; historical ConversationHistory is said,
 // and a unified History call that fails scope validation is its own `invalid` attempt.
 function lookupScope(name, input) {
   return e2AbLookupScope(name, input) ?? (typeof name === "string" && name.endsWith("__ConversationHistory") ? "said" : undefined);
 }
 /**
- * `allScopes` (pack-withheld A/B only) captures every History scope and the
- * ConversationHistory surface, names the tool and scope on each call, and closes
+ * `allScopes` (pack-withheld A/B only) captures every History scope, names the tool and scope on each call, and closes
  * every probe with a `settled` receipt so an absent lookup is provable, not inferred.
  * Omitted, the said-only receipt stream is byte-identical.
  */

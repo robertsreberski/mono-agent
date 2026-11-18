@@ -1,6 +1,7 @@
+import { historyToolAvailabilityForRuntime } from "../request-tools/history-policy.js";
 import * as presentation from "../request-tools/history-presentation.js";
-import { handleRunHistoryRequest } from "../request-tools/run-history.js";
-import { requestScopedNestedResult } from "../mcp/request-scoped-mcp.js";
+import { handleRunsHistoryRequest } from "./fixtures/history-scopes.js";
+import { isAppOwnedHistoryResult } from "../mcp/request-scoped-mcp.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,9 +14,9 @@ import { ToolHistoryReader, ToolHistoryWriter, continuityGenerationId, continuit
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import { afterEach, expect, it, vi } from "vitest";
 import { createHistoryServer, createHistoryRuntimeExtension, handleHistoryRequest, historyDescription, HISTORY_INPUT_SCHEMA } from "../request-tools/history.js";
-import { HISTORY_SCOPES, HISTORY_SCOPE_ALIASES, HISTORY_MCP_SERVER_NAME, historyPolicyAliases, resolveHistoryScopes, unifiedHistoryAvailability } from "../request-tools/history-policy.js";
-import { handleConversationHistoryRequest, historyToolAvailabilityForRuntime } from "../request-tools/conversation-history.js";
-import { handleSessionHistoryRequest } from "../request-tools/session-history.js";
+import { HISTORY_SCOPES, HISTORY_MCP_SERVER_NAME, resolveHistoryScopes } from "../request-tools/history-policy.js";
+import { handleSaidHistoryRequest } from "./fixtures/history-scopes.js";
+import { handleToolsHistoryRequest } from "./fixtures/history-scopes.js";
 import { appOwnedMcpServerSpec } from "../mcp/app-owned-tool-policy.js";
 
 const { createMcpToolPolicyGuard } = await import(new URL("../../../turn/dist/tools/mcp/tool-policy.js", import.meta.url).href) as typeof import("../../../turn/dist/tools/mcp/tool-policy.js");
@@ -36,12 +37,6 @@ it.each(unifiedNames)("%s grants all scopes and its deny removes everything", na
   expect(resolveHistoryScopes({ allowedTools: [name] })).toEqual(HISTORY_SCOPES);
   expect(resolveHistoryScopes({ allowedTools: ["*"], disallowedTools: [name] })).toEqual([]);
 });
-for (const scope of HISTORY_SCOPES) {
-  it.each(HISTORY_SCOPE_ALIASES[scope])("old policy alias %s grants/denies only its scope", name => {
-    expect(resolveHistoryScopes({ allowedTools: [name] })).toEqual([scope]);
-    expect(resolveHistoryScopes({ allowedTools: ["History"], disallowedTools: [name] })).toEqual(HISTORY_SCOPES.filter(s => s !== scope));
-  });
-}
 it("said requires continuity; tools/runs do not", () => {
   expect(resolveHistoryScopes({ allowedTools: ["History"] }, { said: false, tools: true, runs: true })).toEqual(["tools", "runs"]);
   expect(resolveHistoryScopes({ allowedTools: [] })).toEqual([]);
@@ -90,27 +85,17 @@ it.each([undefined, "compact", "directive"] as const)("offers the internal %s de
   if (variant !== "compact") expect(expected).toBe(historyDescription(HISTORY_SCOPES));
 });
 
-const allDenies = [...unifiedNames, ...HISTORY_SCOPES.flatMap(s => HISTORY_SCOPE_ALIASES[s])];
+const allDenies = unifiedNames;
 it.each(allDenies)("late deny %s matches Pi and removes all advertising", deny => {
-  const spec = appOwnedMcpServerSpec(HISTORY_MCP_SERVER_NAME, {}, { History: historyPolicyAliases(HISTORY_SCOPES) });
+  const spec = appOwnedMcpServerSpec(HISTORY_MCP_SERVER_NAME, {}, { said: true, tools: true, runs: true });
   const runtime = { allowedTools: ["History"], disallowedTools: [deny], mcpServers: { [HISTORY_MCP_SERVER_NAME]: structuredClone(spec) } };
   expect(createMcpToolPolicyGuard(runtime.mcpServers[HISTORY_MCP_SERVER_NAME], HISTORY_MCP_SERVER_NAME, runtime.allowedTools, runtime.disallowedTools)("History")).toBe(false);
-  expect(unifiedHistoryAvailability(runtime)).toEqual({ conversationHistory: false, sessionHistory: false, history: { said: false, tools: false, runs: false } });
+  expect(historyToolAvailabilityForRuntime(runtime)).toEqual({ said: false, tools: false, runs: false });
 });
-it("config-denied aliases are excluded from the frozen Pi/advertising snapshot", async () => {
-  const f = await fixture();
-  const allowedTools = ["*"], disallowedTools = ["SessionHistory"];
-  const extension = createHistoryRuntimeExtension({ historyRoot: join(f.root, "history"), artifactDir: f.binding.artifactDir, policy: { allowedTools, disallowedTools }, capabilities: { said: true, tools: true, runs: true } })!;
-  allowedTools.length = 0; disallowedTools.push("History");
-  const result = await extension(input()); cleanup.push(() => result.cleanup?.());
-  const servers = result.runtimeOptions!.mcpServers as Record<string, any>;
-  const spec = servers[HISTORY_MCP_SERVER_NAME];
-  expect(Object.isFrozen(spec.appOwnedTools.aliases.History)).toBe(true);
-  expect(spec.appOwnedTools.aliases.History).not.toContain("SessionHistory");
-  const runtime = { allowedTools: ["*"], disallowedTools: ["SessionHistory"], mcpServers: servers };
-  expect(createMcpToolPolicyGuard(structuredClone(spec), HISTORY_MCP_SERVER_NAME, runtime.allowedTools, runtime.disallowedTools)("History")).toBe(true);
-  expect(historyToolAvailabilityForRuntime(runtime, true).history).toEqual({ said: true, tools: false, runs: true });
-  expect(historyToolAvailabilityForRuntime({ allowedTools: ["*"], mcpServers: {} }, true).history).toEqual({ said: false, tools: false, runs: false });
+it("advertises only frozen explicit scope metadata", () => {
+  const spec = appOwnedMcpServerSpec(HISTORY_MCP_SERVER_NAME, {}, {said:true, tools:false, runs:true});
+  expect(historyToolAvailabilityForRuntime({allowedTools:["History"], mcpServers:{[HISTORY_MCP_SERVER_NAME]:structuredClone(spec)}})).toEqual({said:true,tools:false,runs:true});
+  expect(historyToolAvailabilityForRuntime({allowedTools:["*"], mcpServers:{}})).toEqual({said:false,tools:false,runs:false});
 });
 
 it.each([undefined, "bogus", "", "SAID", "tools"])("real MCP tools/call returns invalid_scope for %s, not SDK diagnostics", async scope => {
@@ -135,7 +120,7 @@ it.each([
 });
 it("wraps all readers without changing their evidence/error contracts", async () => {
   const f = await fixture();
-  for (const [scope, legacy] of [["said", handleConversationHistoryRequest(f.binding, { action: "get" })], ["tools", handleSessionHistoryRequest(f.binding, { action: "get" })]] as const) {
+  for (const [scope, legacy] of [["said", handleSaidHistoryRequest(f.binding, { action: "get" })], ["tools", handleToolsHistoryRequest(f.binding, { action: "get" })]] as const) {
     const result = await handleHistoryRequest(f.binding, { scope, action: "get" });
     expect(body(result).error).toEqual(body(legacy).error);
     expect(body(result).scope).toBe(scope);
@@ -207,26 +192,29 @@ it.each(["absent", "damaged"])("runs → tools recovers isolated mixed-state can
 it("uses the actual stateless HTTP MCP boundary for invalid scopes", async () => {
   const f = await fixture();
   const extension = await createHistoryRuntimeExtension({ historyRoot: join(f.root, "history"), artifactDir: f.binding.artifactDir,
-    policy: { allowedTools: ["RunHistory"] }, capabilities: { said: false, tools: true, runs: true } })!(input());
+    policy: { allowedTools: ["History"] }, capabilities: { said: false, tools: true, runs: true } })!(input());
   cleanup.push(() => extension.cleanup?.());
   const client = new Client({ name: "fictional-http", version: "1" });
   await client.connect(new StreamableHTTPClientTransport(new URL((extension.runtimeOptions!.mcpServers as any)[HISTORY_MCP_SERVER_NAME].url)) as never);
   cleanup.push(() => client.close());
   const result = await client.callTool({ name: "History", arguments: { scope: "said" } });
-  expect(body(result).error).toMatchObject({ code: "invalid_scope", permittedScopes: ["runs"] });
+  expect(body(result).error).toMatchObject({ code: "invalid_scope", permittedScopes: ["tools", "runs"] });
   expect(body(await client.callTool({ name: "History", arguments: { scope: "runs" } })).scope).toBe("runs");
 });
 
 
 it("does not infer unified ownership from an external History server name in legacy mode", () => {
   expect(historyToolAvailabilityForRuntime({ allowedTools: ["*"], mcpServers: { "mono-agent-history": { url: "http://127.0.0.1/fictional" }, "mono-agent-conversation-history": {} } }))
-    .toEqual({ conversationHistory: true, sessionHistory: false });
+    .toEqual({ said: false, tools: false, runs: false });
 });
 
 
-it.each(["History", "mcp__mono-agent-history__History", "mcp__fictional-external__History"])("omits only owned nested history in unified readers: %s", tool => {
-  expect(requestScopedNestedResult(tool, [], "Fictional evidence", undefined, false)).toBe("Fictional evidence");
-  expect(requestScopedNestedResult(tool, [], "Fictional evidence", undefined, true) === "Fictional evidence").toBe(tool === "mcp__fictional-external__History");
+it.each([
+  ["History", false, false], ["History", true, true],
+  ["mcp__mono-agent-history__History", false, true], ["mcp__mono-agent-history__History", true, true],
+  ["mcp__fictional-external__History", true, false], ["mcp__mono-agent-history__HistorySuffix", true, false],
+] as const)("classifies current nested output for %s (app run: %s)", (tool, appOwned, nested) => {
+  expect(isAppOwnedHistoryResult(tool, appOwned)).toBe(nested);
 });
 
 
@@ -259,13 +247,14 @@ it("preserves runs evidence blocks byte-for-byte in list, search, overview and t
   const recorder = createJsonlRunRecorder({ artifactDir: f.binding.artifactDir, conversationId, runId: "old-chunked", userInput: "Fictional cobalt evidence." });
   recorder.onEvent({ type: "assistant", message: { content: [{ type: "text", text: "Fictional exact evidence " + "λ\\\"".repeat(3000) }] } });
   await recorder.finish({ text: "Fictional completed result." });
-  const overview = await handleRunHistoryRequest(f.binding, { runId: "old-chunked" });
+  const overview = await handleRunsHistoryRequest(f.binding, { runId: "old-chunked" });
   for (const input of [{}, { query: "cobalt" }, { runId: "old-chunked" }, { runId: "old-chunked", cursor: body(overview).nextCursor }]) {
-    const legacy = await handleRunHistoryRequest(f.binding, input);
+    const legacy = await handleRunsHistoryRequest(f.binding, input);
     const unified = await handleHistoryRequest(f.binding, { scope: "runs", ...input });
     expect(unified.content.slice(1)).toEqual(legacy.content.slice(1));
-    const { navigation: _old, ...oldEvidence } = body(legacy);
-    const { navigation: _new, scope: _scope, ...newEvidence } = body(unified);
+    const { navigation: _old, action: oldAction, ...oldEvidence } = body(legacy);
+    const { navigation: _new, action: newAction, scope: _scope, ...newEvidence } = body(unified);
+    expect(newAction).toBe(oldAction === "inspect" ? "get" : "search");
     expect(newEvidence).toEqual(oldEvidence);
   }
 });
@@ -287,7 +276,7 @@ it("keeps said/tools record bytes identical through multi-block scoped envelopes
   expect(toolRecordId).toBeDefined();
   for (const scope of ["said", "tools"] as const) {
     const args = { action: "get" as const, recordId: scope === "said" ? recordId : toolRecordId!, chunkBytes: 8192 };
-    const legacy = scope === "said" ? handleConversationHistoryRequest(f.binding, args) : handleSessionHistoryRequest(f.binding, args);
+    const legacy = scope === "said" ? handleSaidHistoryRequest(f.binding, args) : handleToolsHistoryRequest(f.binding, args);
     const unified = await handleHistoryRequest(f.binding, { scope, ...args });
     const decode = (result: typeof unified) => {
       const envelope = result.content.slice(1).map(block => block.text.replace(/^\[continued section \d+ of \d+\]\n/u, "")).join("");
@@ -296,9 +285,10 @@ it("keeps said/tools record bytes identical through multi-block scoped envelopes
     const scopedBody = decode(unified);
     expect(unified.content.length, `${scope}: ${JSON.stringify(scopedBody).length} envelope chars`).toBeGreaterThan(2);
     expect(unified.content.every(block => block.text.length <= 10000)).toBe(true);
-    expect(scope === "said" ? scopedBody.chunk : scopedBody.record.chunk).toBe(scope === "said" ? body(legacy).chunk : body(legacy).record.chunk);
-    const { scope: _scope, navigation: _new, ...newEvidence } = scopedBody;
+    expect(scopedBody).toEqual(unified.structuredContent);
+    const { scope: actualScope, navigation: _new, ...newEvidence } = scopedBody;
     const { navigation: _old, ...oldEvidence } = body(legacy);
+    expect(actualScope).toBe(scope);
     expect(JSON.stringify(newEvidence)).toBe(JSON.stringify(oldEvidence));
   }
 });

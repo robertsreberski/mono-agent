@@ -41,8 +41,8 @@ function toolEvents(name, args, count) {
     .map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
 }
 function proofReply(body, count) {
-  const name = codexWireTools(body).find(t => (t.name?.endsWith("ConversationHistory") || t.name === "History"))?.name;
-  const args = input => name === "History" ? { scope: "said", ...input } : input;
+  const name = codexWireTools(body).find(t => (t.name?.endsWith("History") || t.name === "History"))?.name;
+  const args = input => ({ scope: "said", ...input });
   if (!name) return events("Fictional compacted context; retrieve archival evidence before answering.");
   const output = body.input.filter(i => i.type === "function_call_output").at(-1)?.output;
   // Parse the actual notice-framed response, independent of JSON key order.
@@ -65,10 +65,10 @@ it.each([false, true])("fictional backend reads search navigation without assumi
     items: [{ kind: "tool", recordId }], navigation, untrusted: true, notice: HISTORY_NOTICE };
   const output = [HISTORY_HEADER, HISTORY_NOTICE, navigation.guidance,
     `${action.description} Exact arguments: ${JSON.stringify(action.arguments)}`, HISTORY_NOTICE, JSON.stringify(history)].join("\n");
-  const wire = proofReply({ tools: [{ name: "ConversationHistory" }], input: [{ type: "function_call_output", output }] }, 1);
+  const wire = proofReply({ tools: [{ name: "History" }], input: [{ type: "function_call_output", output }] }, 1);
   const events = wire.trim().split("\n\n").map(frame => JSON.parse(frame.slice(6)));
   const call = events.find(event => event.type === "response.output_item.done").item;
-  expect(JSON.parse(call.arguments)).toEqual(action.arguments);
+  expect(JSON.parse(call.arguments)).toEqual({scope:"said",...action.arguments});
 });
 
 async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", model: SOL }], capUnits, reuse = false, crossOutputReuse = false, production = false, fault, arm = "pressure", replay = false, probeLookupRounds = 1, probeLookups = false, phaseStartupDelayMs = 0, historySurface, deadlines, expectedControllerError, retryOnce = false, failOdd = false, failAfter = 0 } = {}) {
@@ -117,8 +117,8 @@ async function run({ scenario = "probe", requests = 1, rows = [{ role: "probe", 
       }
       if (["cancel", "cancel-then-refuse"].includes(scenario) || ["crash", "containment", "request-timeout"].includes(responseFault)) { response.flushHeaders(); return; }
       if (replay) {
-        const tool = codexWireTools(received.at(-1)).find(t => t.name === "ConversationHistory");
-        response.end(probeLookups && tool ? toolEvents(tool.name, { action: "search", query: "Fictional response", limit: 1 }, received.length) : events("Fictional response"));
+        const tool = codexWireTools(received.at(-1)).find(t => t.name === "History");
+        response.end(probeLookups && tool ? toolEvents(tool.name, { scope:"said", action: "search", query: "Fictional response", limit: 1 }, received.length) : events("Fictional response"));
       }
       else if (scenario === "proof") {
         const body = received.at(-1), current = body.input.filter(i => i.role === "user").at(-1)?.content;
@@ -404,8 +404,8 @@ it("funds R=3 and withdraws native tools on each fourth C1 probe request", async
   const probes = result.received.filter(body => JSON.stringify(body.input).includes("PRIVATE-FROZEN-FICTIONAL-QUESTION"));
   expect(probes).toHaveLength(8);
   expect(probes.map(body => codexWireTools(body).map(t => t.name))).toEqual([
-    ["ConversationHistory"], ["ConversationHistory"], ["ConversationHistory"], [],
-    ["ConversationHistory"], ["ConversationHistory"], ["ConversationHistory"], [],
+    ["History"], ["History"], ["History"], [],
+    ["History"], ["History"], ["History"], [],
   ]);
   expect(result.funded.filter(b => b.paidRole !== "summary").reduce((n, b) => n + b.maxRequests, 0)).toBe(8);
   expect(result.report.phases[0].calls.settled).toBe(result.received.length);
@@ -649,7 +649,7 @@ it("carries unified registration through the real phase child and guarded SDK to
   const result = await run({ production: true, scenario: "proof", arm: "switch", rows: productionRows, historySurface: "unified" });
   expect(result.report.stop, JSON.stringify(result.report)).toBe("completed");
   expect(result.report.historySurface).toBe("unified");
-  const historyOffers = result.received.flatMap(body => codexWireTools(body)).filter(t => ["ConversationHistory", "History"].includes(t.name));
+  const historyOffers = result.received.flatMap(body => codexWireTools(body)).filter(t => ["History", "History"].includes(t.name));
   expect(historyOffers.length).toBeGreaterThan(0);
   expect(historyOffers.every(t => t.name === "History")).toBe(true);
 }, E2_NATIVE_TEST_TIMEOUT_MS);

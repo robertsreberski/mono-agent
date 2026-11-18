@@ -130,7 +130,7 @@ This is a composition excerpt, not a complete server: install matching package v
 
 ## Inspect the work, not just the answer
 
-The browser exposes model changes, tool activity and retained results. `RunHistory` reads settled runs; `SessionHistory` reads separately retained tool invocations and results. Curated memory is a different source.
+The browser exposes model changes, tool activity and retained results. `History` uses required scopes: `said` for retained text, `tools` for prior calls/results, and `runs` for settled-run evidence. Curated memory is a different source.
 
 Durable-history preparation, commit and retention can scan the shared root while
 holding its publication lock; quotas do not guarantee scan latency. Damaged

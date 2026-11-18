@@ -1,3 +1,4 @@
+import { scopedCall } from "./fixtures/history-scopes.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -17,12 +18,12 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  createSessionHistoryRuntimeExtension,
-  handleSessionHistoryRequest,
-  isSessionHistoryToolAllowed,
-  SESSION_HISTORY_MCP_SERVER_NAME,
-  SESSION_HISTORY_TOOL_NAME,
-} from "../request-tools/session-history.js";
+  createToolsHistoryExtension,
+  handleToolsHistoryRequest,
+  isHistoryAllowed,
+  HISTORY_MCP_SERVER_NAME,
+  HISTORY_TOOL_NAME,
+} from "./fixtures/history-scopes.js";
 
 const tempDirs: string[] = [];
 const STORAGE_TEST_PERSISTENCE_CEILING_MS = 5_000;
@@ -107,7 +108,7 @@ interface OpenClient {
 }
 
 async function openClient(root: string, conversationId: string, runId: string): Promise<OpenClient> {
-  const extension = await createSessionHistoryRuntimeExtension({ historyRoot: root, rollover: "daily" })({
+  const extension = await createToolsHistoryExtension({ historyRoot: root, rollover: "daily" })({
     runId,
     request: {
       conversationId,
@@ -117,8 +118,8 @@ async function openClient(root: string, conversationId: string, runId: string): 
     context: {} as never,
   });
   const servers = extension.runtimeOptions?.mcpServers as Record<string, unknown> | undefined;
-  const spec = servers?.[SESSION_HISTORY_MCP_SERVER_NAME] as { readonly url?: unknown } | undefined;
-  if (typeof spec?.url !== "string") throw new Error("SessionHistory MCP server was not registered.");
+  const spec = servers?.[HISTORY_MCP_SERVER_NAME] as { readonly url?: unknown } | undefined;
+  if (typeof spec?.url !== "string") throw new Error("History MCP server was not registered.");
   const url = new URL(spec.url);
   const client = new Client({ name: "session-history-test", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(url) as never);
@@ -153,25 +154,7 @@ async function requestStatusWithHost(url: URL, host: string): Promise<number> {
   });
 }
 
-describe("isSessionHistoryToolAllowed", () => {
-  it.each([
-    SESSION_HISTORY_TOOL_NAME,
-    "session_history",
-    `mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__${SESSION_HISTORY_TOOL_NAME}`,
-    `mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__*`,
-    "*",
-  ])("accepts the supported policy spelling %s", (name) => {
-    expect(isSessionHistoryToolAllowed({ allowedTools: [name], disallowedTools: [] })).toBe(true);
-  });
-
-  it("keeps explicit denial and an absent allow-list authoritative", () => {
-    expect(isSessionHistoryToolAllowed({ allowedTools: ["*"], disallowedTools: [SESSION_HISTORY_TOOL_NAME] })).toBe(false);
-    expect(isSessionHistoryToolAllowed({ allowedTools: ["Read"], disallowedTools: [] })).toBe(false);
-    expect(isSessionHistoryToolAllowed(undefined)).toBe(false);
-  });
-});
-
-describe("SessionHistory request handler", () => {
+describe("History tools request handler", () => {
   it("keeps ordinary tool context inspectable while host paths stay opaque in search previews and get chunks", async () => {
     const root = await tempRoot();
     const writer = await openStorageTestWriter({ root });
@@ -217,8 +200,8 @@ describe("SessionHistory request handler", () => {
       runId: "current-run",
     };
 
-    const search = handleSessionHistoryRequest(requestBinding, { action: "search", limit: 10 });
-    const gets = recordIds.map((recordId) => handleSessionHistoryRequest(requestBinding, {
+    const search = handleToolsHistoryRequest(requestBinding, { action: "search", limit: 10 });
+    const gets = recordIds.map((recordId) => handleToolsHistoryRequest(requestBinding, {
       action: "get",
       recordId,
       chunkBytes: 8 * 1024,
@@ -238,7 +221,7 @@ describe("SessionHistory request handler", () => {
     }
   });
 
-  it("keeps path-key collisions opaque and lossless through SessionHistory get pagination", async () => {
+  it("keeps path-key collisions opaque and lossless through tools get pagination", async () => {
     const root = await tempRoot();
     const macPath = "/Users/example/work/repo/src/a.ts";
     const linuxPath = "/home/example/work/repo/src/a.ts";
@@ -275,14 +258,14 @@ describe("SessionHistory request handler", () => {
     };
     const search = body<{
       readonly items: ReadonlyArray<{ readonly preview: string }>;
-    }>(handleSessionHistoryRequest(requestBinding, { action: "search", query: "needle" }));
+    }>(handleToolsHistoryRequest(requestBinding, { action: "search", query: "needle" }));
     expect(search.items).toHaveLength(1);
 
     let cursor: string | undefined;
     let pagedJson = "";
     const pages: unknown[] = [];
     for (let pageCount = 0; pageCount < 100; pageCount += 1) {
-      const result = handleSessionHistoryRequest(requestBinding, cursor === undefined
+      const result = handleToolsHistoryRequest(requestBinding, cursor === undefined
         ? { action: "get", recordId: invocationRecordId, chunkBytes: 48 }
         : { action: "get", cursor, chunkBytes: 48 });
       pages.push(result);
@@ -345,7 +328,7 @@ describe("SessionHistory request handler", () => {
       readonly items: ReadonlyArray<{ readonly toolCallId: string }>;
       readonly nextCursor?: string;
       readonly untrusted: boolean;
-    }>(handleSessionHistoryRequest(requestBinding, {
+    }>(handleToolsHistoryRequest(requestBinding, {
       action: "search",
       query: "needle",
       tools: ["Read", "Bash"],
@@ -355,7 +338,7 @@ describe("SessionHistory request handler", () => {
     expect(firstPage).toMatchObject({ items: [{ toolCallId: expect.stringMatching(/^prior-/u) }], untrusted: true });
     expect(firstPage.nextCursor).toEqual(expect.any(String));
     const secondPage = body<{ readonly items: ReadonlyArray<{ readonly toolCallId: string }> }>(
-      handleSessionHistoryRequest(requestBinding, {
+      handleToolsHistoryRequest(requestBinding, {
         action: "search",
         query: "needle",
         tools: ["Read", "Bash"],
@@ -367,7 +350,7 @@ describe("SessionHistory request handler", () => {
     expect(new Set([...firstPage.items, ...secondPage.items].map((item) => item.toolCallId)))
       .toEqual(new Set(["prior-a", "prior-b"]));
 
-    expect(body(handleSessionHistoryRequest(requestBinding, {
+    expect(body(handleToolsHistoryRequest(requestBinding, {
       action: "search",
       query: "substituted",
       tools: ["Read", "Bash"],
@@ -375,20 +358,20 @@ describe("SessionHistory request handler", () => {
       limit: 1,
       cursor: firstPage.nextCursor,
     }))).toMatchObject({ error: { code: "invalid_cursor" }, untrusted: true });
-    expect(body(handleSessionHistoryRequest(requestBinding, { action: "get", recordId: current.invocationId })))
+    expect(body(handleToolsHistoryRequest(requestBinding, { action: "get", recordId: current.invocationId })))
       .toMatchObject({ error: { code: "record_unavailable" }, untrusted: true });
-    expect(body(handleSessionHistoryRequest(requestBinding, { action: "get", recordId: reusedPrior.invocationId })))
+    expect(body(handleToolsHistoryRequest(requestBinding, { action: "get", recordId: reusedPrior.invocationId })))
       .toMatchObject({ record: { toolCallId: "reused-prior", runId: "current-run" }, untrusted: true });
     expect(body<{ readonly items: ReadonlyArray<{ readonly toolCallId: string }> }>(
-      handleSessionHistoryRequest(requestBinding, { action: "search", runIds: ["current-run"] }),
+      handleToolsHistoryRequest(requestBinding, { action: "search", runIds: ["current-run"] }),
     ).items.map((item) => item.toolCallId)).toEqual(["reused-prior"]);
-    expect(body(handleSessionHistoryRequest(requestBinding, { action: "get", recordId: foreign.invocationId })))
+    expect(body(handleToolsHistoryRequest(requestBinding, { action: "get", recordId: foreign.invocationId })))
       .toMatchObject({ error: { code: "record_unavailable" }, untrusted: true });
     expect(body<{ readonly items: ReadonlyArray<{ readonly toolCallId: string }> }>(
-      handleSessionHistoryRequest(requestBinding, { action: "search", runIds: ["isolated-run"] }),
+      handleToolsHistoryRequest(requestBinding, { action: "search", runIds: ["isolated-run"] }),
     ).items).toEqual([]);
     expect(body<{ readonly items: ReadonlyArray<{ readonly toolCallId: string }> }>(
-      handleSessionHistoryRequest(requestBinding, { action: "search", runIds: ["isolated-run"], includeIsolated: true }),
+      handleToolsHistoryRequest(requestBinding, { action: "search", runIds: ["isolated-run"], includeIsolated: true }),
     ).items.map((item) => item.toolCallId)).toEqual(["isolated"]);
     expect(first.invocationId).toMatch(/^sth1_/u);
     expect(second.resultId).toMatch(/^sth1_/u);
@@ -416,7 +399,7 @@ describe("SessionHistory request handler", () => {
         readonly toolCallId: string;
         readonly state: string;
       }>;
-    }>(handleSessionHistoryRequest(requestBinding, {
+    }>(handleToolsHistoryRequest(requestBinding, {
       action: "search",
       runIds: ["failed-run"],
       states: ["error"],
@@ -424,7 +407,7 @@ describe("SessionHistory request handler", () => {
     expect(search.items).toEqual([
       expect.objectContaining({ runId: "failed-run", toolCallId: "failed-call", state: "error" }),
     ]);
-    expect(body(handleSessionHistoryRequest(requestBinding, {
+    expect(body(handleToolsHistoryRequest(requestBinding, {
       action: "get",
       recordId: failed.resultId,
     }))).toMatchObject({
@@ -465,7 +448,7 @@ describe("SessionHistory request handler", () => {
     const hidden = body<{
       readonly items: readonly unknown[];
       readonly navigation: { readonly guidance: string; readonly nextActions: readonly unknown[] };
-    }>(handleSessionHistoryRequest(requestBinding, {
+    }>(handleToolsHistoryRequest(requestBinding, {
       action: "search",
       runIds: ["cancelled-isolated"],
     }));
@@ -473,7 +456,7 @@ describe("SessionHistory request handler", () => {
     expect(hidden.navigation.nextActions).toEqual([]);
     expect(hidden.navigation.guidance).toContain("Do not remove the runIds filter");
 
-    const searchResult = handleSessionHistoryRequest(requestBinding, {
+    const searchResult = handleToolsHistoryRequest(requestBinding, {
       action: "search",
       runIds: ["cancelled-isolated"],
       includeIsolated: true,
@@ -501,7 +484,7 @@ describe("SessionHistory request handler", () => {
     expect(search.items[0]!.preview).not.toContain(resultEnd);
     expect(search.navigation.guidance).toContain("preview is bounded and is not the full record");
     expect((searchResult as { readonly content: ReadonlyArray<{ readonly text?: string }> }).content[0]?.text)
-      .toContain("SessionHistory navigation (tool-authored guidance)");
+      .toContain("History navigation (tool-authored guidance)");
 
     const resultAction = search.navigation.nextActions.find((action) => action.kind === "get_result");
     const invocationAction = search.navigation.nextActions.find((action) => action.kind === "get_invocation");
@@ -531,7 +514,7 @@ describe("SessionHistory request handler", () => {
     });
 
     const invocation = body<{ readonly record: { readonly phase: string; readonly chunk: string } }>(
-      handleSessionHistoryRequest(requestBinding, invocationAction!.arguments as never),
+      handleToolsHistoryRequest(requestBinding, invocationAction!.arguments as never),
     );
     expect(invocation.record.phase).toBe("invocation");
     expect(invocation.record.chunk).toContain("large-cancelled-call");
@@ -548,7 +531,7 @@ describe("SessionHistory request handler", () => {
             readonly arguments: Readonly<Record<string, unknown>>;
           }>;
         };
-      }>(handleSessionHistoryRequest(requestBinding, nextArguments as never));
+      }>(handleToolsHistoryRequest(requestBinding, nextArguments as never));
       pages += 1;
       retainedResult += page.record.chunk;
       expect(page.record.phase).toBe("result");
@@ -571,7 +554,7 @@ describe("SessionHistory request handler", () => {
     expect(retainedResult).toContain(resultEnd);
   });
 
-  it.each([`mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__${SESSION_HISTORY_TOOL_NAME}`, "mcp__mono-agent-conversation-history__ConversationHistory", "conversation_history"])("returns bounded chunks and hides nested %s results", async (nestedTool) => {
+  it.each(["mcp__mono-agent-session-history__SessionHistory", "mcp__mono-agent-conversation-history__ConversationHistory", "conversation_history"])("returns bounded chunks and hides nested %s results", async (nestedTool) => {
     const root = await tempRoot();
     const writer = await openStorageTestWriter({ root });
     const large = await writeCall(writer, binding("large-run"), "large", { content: "x".repeat(12_000) });
@@ -585,12 +568,12 @@ describe("SessionHistory request handler", () => {
     const first = body<{
       readonly record: { readonly chunk: string; readonly nextCursor?: string };
       readonly untrusted: boolean;
-    }>(handleSessionHistoryRequest(requestBinding, {
+    }>(handleToolsHistoryRequest(requestBinding, {
       action: "get", recordId: large.resultId, chunkBytes: 1_000,
     }));
     expect(Buffer.byteLength(first.record.chunk, "utf8")).toBeLessThanOrEqual(1_000);
     expect(first).toMatchObject({ record: { nextCursor: expect.any(String) }, untrusted: true });
-    expect(body(handleSessionHistoryRequest(requestBinding, {
+    expect(body(handleToolsHistoryRequest(requestBinding, {
       action: "get",
       cursor: Buffer.from(JSON.stringify({
         version: 1,
@@ -600,7 +583,7 @@ describe("SessionHistory request handler", () => {
         digest: "irrelevant",
       }), "utf8").toString("base64url"),
     }))).toMatchObject({ error: { code: "invalid_cursor" } });
-    expect(body(handleSessionHistoryRequest(requestBinding, {
+    expect(body(handleToolsHistoryRequest(requestBinding, {
       action: "get", recordId: nested.resultId,
     }))).toMatchObject({
       record: { chunk: "[nested history-tool result omitted; inspect the referenced record directly]" },
@@ -639,7 +622,7 @@ describe("SessionHistory request handler", () => {
       for (let page = 0; page < 32; page += 1) {
         const result = body<{
           readonly record: { readonly chunk: string; readonly chunkOffset: number; readonly nextCursor?: string };
-        }>(handleSessionHistoryRequest(requestBinding, cursor === undefined
+        }>(handleToolsHistoryRequest(requestBinding, cursor === undefined
           ? { action: "get", recordId: expected.recordId, chunkBytes: 1 }
           : { action: "get", cursor, chunkBytes: 1 }));
         expect(result.record.chunkOffset).toBe(currentOffset);
@@ -662,7 +645,7 @@ describe("SessionHistory request handler", () => {
   });
 });
 
-describe("SessionHistory MCP tool", () => {
+describe("History tools scope", () => {
   it("re-sanitizes compound credential assignments through model-visible MCP reads", async () => {
     const root = await tempRoot();
     const awsSecretAccessKey = [
@@ -701,7 +684,7 @@ describe("SessionHistory MCP tool", () => {
     await writer.close();
 
     const databasePath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
-    // Exercise SessionHistory's reader-side guard with raw vulnerable content.
+    // Exercise the tools reader-side guard with raw vulnerable content.
     const raw = new DatabaseSync(databasePath);
     try {
       raw.prepare("UPDATE tool_records SET payload_json=?, search_text=? WHERE record_id=?")
@@ -712,12 +695,12 @@ describe("SessionHistory MCP tool", () => {
 
     const opened = await openClient(root, "chat:42#2026-08-14", "current-run");
     try {
-      const search = await opened.client.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
+      const search = await scopedCall(opened.client, "tools", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "search", query: safeContext.marker },
       });
-      const get = await opened.client.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
+      const get = await scopedCall(opened.client, "tools", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "get", recordId: stored.resultId, chunkBytes: 8 * 1024 },
       });
       const visible = JSON.stringify({ search, get });
@@ -848,16 +831,16 @@ describe("SessionHistory MCP tool", () => {
 
     const opened = await openClient(root, "chat:42#2026-08-14", "current-run");
     try {
-      const search = await opened.client.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
+      const search = await scopedCall(opened.client, "tools", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "search", query: "serialized-redaction-mcp-marker" },
       });
-      const invocationGet = await opened.client.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
+      const invocationGet = await scopedCall(opened.client, "tools", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "get", recordId: stored.invocationId, chunkBytes: 8 * 1024 },
       });
-      const resultGet = await opened.client.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
+      const resultGet = await scopedCall(opened.client, "tools", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "get", recordId: stored.resultId, chunkBytes: 8 * 1024 },
       });
       const visible = JSON.stringify({ search, invocationGet, resultGet });
@@ -910,13 +893,8 @@ describe("SessionHistory MCP tool", () => {
     const opened = await openClient(root, "chat:42#2026-08-14", "current-run");
     try {
       const tools = await opened.client.listTools();
-      expect(tools.tools[0]?.description).toContain("settled as succeeded, failed, cancelled, or interrupted");
-      expect(tools.tools[0]?.description).toContain('{action:"search",runIds:[runId],includeIsolated:true}');
-      expect(tools.tools[0]?.description).toContain("resultRecordId identifies the result payload");
-      expect(tools.tools[0]?.description).toContain("A search preview is bounded and is not the full record");
-      expect(tools.tools[0]?.description).toContain("does not resume provider state");
       expect(opened.client.getServerVersion()).toEqual({
-        name: SESSION_HISTORY_MCP_SERVER_NAME,
+        name: HISTORY_MCP_SERVER_NAME,
         version: "1.0.0",
       });
       const wrongPath = new URL("/mcp/not-the-capability", opened.url);
@@ -925,13 +903,13 @@ describe("SessionHistory MCP tool", () => {
       // capability guard receives and conceals an explicitly foreign host.
       expect(await requestStatusWithHost(opened.url, "example.invalid")).toBe(404);
 
-      const search = await opened.client.callTool({ name: SESSION_HISTORY_TOOL_NAME, arguments: { action: "search" } });
+      const search = await scopedCall(opened.client, "tools", { name: HISTORY_TOOL_NAME, arguments: { action: "search" } });
       const searched = body<{ readonly items: ReadonlyArray<{ readonly toolCallId: string }>; readonly untrusted: boolean; readonly notice: string }>(search);
       expect(searched.items.map((item) => item.toolCallId)).toEqual(["prior"]);
       expect(searched).toMatchObject({ untrusted: true, notice: expect.stringContaining("untrusted") });
 
-      const currentGet = await opened.client.callTool({ name: SESSION_HISTORY_TOOL_NAME, arguments: { action: "get", recordId: current.invocationId } });
-      const foreignGet = await opened.client.callTool({ name: SESSION_HISTORY_TOOL_NAME, arguments: { action: "get", recordId: foreign.invocationId } });
+      const currentGet = await scopedCall(opened.client, "tools", { name: HISTORY_TOOL_NAME, arguments: { action: "get", recordId: current.invocationId } });
+      const foreignGet = await scopedCall(opened.client, "tools", { name: HISTORY_TOOL_NAME, arguments: { action: "get", recordId: foreign.invocationId } });
       expect(body(currentGet)).toMatchObject({ error: { code: "record_unavailable" }, untrusted: true });
       expect(body(foreignGet)).toEqual(body(currentGet));
       expect(prior.invocationId).toMatch(/^sth1_/u);
@@ -951,8 +929,8 @@ describe("SessionHistory MCP tool", () => {
       const seen: string[] = [];
       let cursor: string | undefined;
       do {
-        const result = await opened.client.callTool({
-          name: SESSION_HISTORY_TOOL_NAME,
+        const result = await scopedCall(opened.client, "tools", {
+          name: HISTORY_TOOL_NAME,
           arguments: { action: "search", query: "needle", limit: 1, ...(cursor === undefined ? {} : { cursor }) },
         });
         const page = body<{
@@ -961,8 +939,8 @@ describe("SessionHistory MCP tool", () => {
         }>(result);
         seen.push(...page.items.map((item) => item.toolCallId));
         if (cursor === undefined && page.nextCursor !== undefined) {
-          const substituted = await opened.client.callTool({
-            name: SESSION_HISTORY_TOOL_NAME,
+          const substituted = await scopedCall(opened.client, "tools", {
+            name: HISTORY_TOOL_NAME,
             arguments: { action: "search", query: "different", limit: 1, cursor: page.nextCursor },
           });
           expect(body(substituted)).toMatchObject({ error: { code: "invalid_cursor" } });
@@ -976,20 +954,20 @@ describe("SessionHistory MCP tool", () => {
     }
   });
 
-  it("returns bounded untrusted get chunks, omits nested SessionHistory payloads, and reports tombstones", async () => {
+  it("returns bounded untrusted get chunks, omits nested historical retrieval payloads, and reports tombstones", async () => {
     const root = await tempRoot();
     const writer = await openStorageTestWriter({ root });
     const large = await writeCall(writer, binding("large-run"), "large", { content: "x".repeat(12_000) });
     const nested = await writeCall(writer, binding("nested-run"), "nested", {
-      toolName: `mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__${SESSION_HISTORY_TOOL_NAME}`,
+      toolName: "mcp__mono-agent-session-history__SessionHistory",
       content: "do not recursively reveal me",
     });
     await writer.close();
 
     const opened = await openClient(root, "chat:42#2026-08-14", "current-run");
     try {
-      const first = await opened.client.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
+      const first = await scopedCall(opened.client, "tools", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "get", recordId: large.resultId, chunkBytes: 1_000 },
       });
       const firstBody = body<{
@@ -1004,14 +982,14 @@ describe("SessionHistory MCP tool", () => {
         if (content.type === "text") expect(content.text.length).toBeLessThanOrEqual(10_000);
       }
 
-      const next = await opened.client.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
+      const next = await scopedCall(opened.client, "tools", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "get", cursor: firstBody.record.nextCursor, chunkBytes: 1_000 },
       });
       expect(body(next)).toMatchObject({ record: { recordId: large.resultId, chunkOffset: 1_000 } });
 
-      const nestedGet = await opened.client.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
+      const nestedGet = await scopedCall(opened.client, "tools", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "get", recordId: nested.invocationId },
       });
       expect(body(nestedGet)).toMatchObject({
@@ -1019,9 +997,9 @@ describe("SessionHistory MCP tool", () => {
           chunk: "[nested history-tool result omitted; inspect the referenced record directly]",
         },
       });
-      const nestedSearch = await opened.client.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
-        arguments: { action: "search", tools: [`mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__${SESSION_HISTORY_TOOL_NAME}`] },
+      const nestedSearch = await scopedCall(opened.client, "tools", {
+        name: HISTORY_TOOL_NAME,
+        arguments: { action: "search", tools: [`mcp__${HISTORY_MCP_SERVER_NAME}__${HISTORY_TOOL_NAME}`] },
       });
       expect(JSON.stringify(body(nestedSearch))).not.toContain("do not recursively reveal me");
     } finally {
@@ -1037,8 +1015,8 @@ describe("SessionHistory MCP tool", () => {
     await pruningWriter.close();
     const tombstoneClient = await openClient(tombstoneRoot, "chat:42#2026-08-14", "current-run");
     try {
-      const result = await tombstoneClient.client.callTool({
-        name: SESSION_HISTORY_TOOL_NAME,
+      const result = await scopedCall(tombstoneClient.client, "tools", {
+        name: HISTORY_TOOL_NAME,
         arguments: { action: "get", recordId: removed.invocationId },
       });
       expect(body(result)).toMatchObject({ tombstone: { recordId: removed.invocationId, reason: "count" }, untrusted: true });

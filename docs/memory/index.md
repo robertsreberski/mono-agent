@@ -53,9 +53,9 @@ Route by the evidence the question needs:
 | What was just said in this exchange? | Active conversation history |
 | What specific durable preference, fact, or decision was recorded? | `MemoryRecall` targeted indexed search |
 | What did we broadly work on over explicit dates? | `MemoryJournal` bounded curated chronology, when local support is available |
-| What exactly ran, failed, returned, or was interrupted? | `RunHistory`, then `SessionHistory` for exact managed-tool lifecycle evidence |
+| What exactly ran, failed, returned, or was interrupted? | `History`, then `History` for exact managed-tool lifecycle evidence |
 
-An unhinted interrupted-work recovery request still begins with `RunHistory {}`.
+An unhinted interrupted-work recovery request still begins with `History {scope:"runs"}`.
 
 ### `lite`
 

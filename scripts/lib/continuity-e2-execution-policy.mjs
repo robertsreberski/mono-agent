@@ -71,7 +71,7 @@ function requestTools(pilot, planned, p, probeRequest) {
   need((e2ReplayArm(pilot.registration.replayArm) === E2_AB_REPLAY_ARM) === (ab !== undefined), "e2_registration_invalid");
   return probeRequest === rounds + 1 ? tools.replayFinal : ab === undefined ? tools.replay : tools.abReplay[ab];
 }
-// The registered arm's offered History description (B compact, C directive, A ConversationHistory).
+// The registered arm's offered History description (B compact, C directive).
 function abDescriptionSha256(pilot, ab) {
   const value = pilot.registration.historyAb?.arms?.find(a => a?.arm === ab)?.description?.sha256;
   need(typeof value === "string" && /^[a-f0-9]{64}$/u.test(value), "e2_registration_invalid");

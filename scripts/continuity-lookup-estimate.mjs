@@ -18,7 +18,7 @@ export const ESTIMATE_PROFILES = Object.freeze([
  * ConversationHistory calls per slot, 116.8 output tokens per request, 7,362.5
  * later-request input tokens above the slot's first request and 32.5% uncached input.
  * Each takes a 1.25 margin, rounded conservatively. The first request keeps the frozen,
- * model-independent inventory bound initialTokens + 900, where initialTokens is the larger
+ * model-independent inventory bound initialTokens + 910, where initialTokens is the larger
  * of ceil(observed initial context bytes / 3) and a trace-shape floor (pack paths: cold
  * estimate + 12,000; native paths: max(150,000, full trace-shape estimate)). Each later request is a flat
  * +laterInputIncrementTokens over the first request, not cumulative.
@@ -82,13 +82,13 @@ export async function estimateLookup({ workload, profiles = ESTIMATE_PROFILES, p
       const shape = shapes.get(`${corpus.suite}/${trace.id}`);
       requireLookup(shape, "lookup_estimate_unknown_trace");
       const n = trace.probes.length * workload.repeats;
-      const reference = LOOKUP_BUDGET.paths.filter(path => path.traceId === trace.id && path.arm === role.arm);
+      const reference = (LOOKUP_BUDGET.paths ?? []).filter(path => path.traceId === trace.id && path.arm === role.arm);
       const observed = Math.max(0, ...reference.map(path => Math.ceil(path.initialContextBytes / 3)));
       const measuredBound = Math.max(0, ...reference.map(path => path.initialTokens));
       const soulDelta = Math.max(0, Math.ceil((soulBytes[role.soul] - soulBytes.S0) / 3));
-      // Frozen B2 clause: 270 bytes / 90 conservative tokens. These additions are
+      // Current scoped clause: 273 bytes / 91 conservative tokens. These additions are
       // estimator allowances, not a remeasurement or change to the registered budget.
-      const guidanceDelta = role.code === "Rpack" ? 90 : 0;
+      const guidanceDelta = role.code === "Rpack" ? 91 : 0;
       const fallback = role.arm === "native-lookup" ? Math.max(150000, shape.full) : shape.cold + 12000;
       const initial = Math.max(observed, measuredBound, fallback) + soulDelta + guidanceDelta;
       probes += n; initialTokens += n * initial;
@@ -116,7 +116,7 @@ export async function estimateLookup({ workload, profiles = ESTIMATE_PROFILES, p
   return { schema: "continuity-lookup-estimate-v1", executionKind: "offline-estimate", authorizedSpend: false,
     purpose: "Workload and sensitivity only; not power, significance, model benefit, an invoice guarantee or spending authorization",
     assumptions: { tokenHeuristic: "max(frozen observed context bytes/3, frozen initial bound, source shape); not a model tokenizer",
-      packAllowanceTokens: 12000, nativeFloorTokens: 150000, rpackGuidanceAllowanceTokens: 90, soulDeltaTokens: Math.ceil((soulBytes.S1 - soulBytes.S0) / 3),
+      packAllowanceTokens: 12000, nativeFloorTokens: 150000, rpackGuidanceAllowanceTokens: 91, soulDeltaTokens: Math.ceil((soulBytes.S1 - soulBytes.S0) / 3),
       outputTokensPerRound: 300, assistantHistoryInput: "rounds^2 * 300 across each probe",
       returnedBytes: "one token per returned byte; replay all returned bytes in every subsequent input round",
       cacheFractions: [0, 0.5, 0.9], prices: "local Pi catalog USD per million tokens; per-call tiers use total input including cache; absent/invalid rates stay unknown",

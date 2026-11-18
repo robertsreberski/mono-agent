@@ -180,7 +180,7 @@ it.each([true, false])("native preparation freezes the late resolved projection 
   const projection = { blocks: [{ callId: "sth1_fictional", lines: ["<tool_record>Fictional cobalt evidence.</tool_record>"] }],
     recordCount: 1, truncated: false };
   f.context.mockResolvedValueOnce({ ...base, toolProjection: projection } as never);
-  const resolver = vi.fn(() => ({ conversationHistory: available, sessionHistory: false }));
+  const resolver = vi.fn(() => ({ said: available, tools: false, runs: false }));
   const { ToolHistoryReader } = await import("../tool-history/reader.js");
   const options = { ...f.input.options, toolHistory: {
     reader: new ToolHistoryReader(join(f.root, "empty")), logicalConversationId: (id: string) => id,
@@ -191,8 +191,8 @@ it.each([true, false])("native preparation freezes the late resolved projection 
   expect(resolver).toHaveBeenCalledOnce();
   const replay = lease.snapshot.messages.map(message => message.content).join("\n");
   expect(replay).toContain("Fictional cobalt evidence.");
-  expect(replay.includes("Use ConversationHistory")).toBe(available);
-  expect(replay).not.toContain("Use SessionHistory");
+  expect(replay.includes('Use History (scope "said")')).toBe(available);
+  expect(replay).not.toContain('Use History (scope "tools")');
   expect(lease.context.toolHistoryProjection).toContain("Fictional cobalt evidence.");
   expect(Object.isFrozen(lease.context.context)).toBe(true);
   expect(Object.isFrozen(lease.context.toolProjection?.blocks)).toBe(true);

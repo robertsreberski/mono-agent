@@ -21,12 +21,12 @@ it("compare:88 isolates main's real check from the downstream parser", async () 
   await expect(compare(["fictional-invalid-command"])).rejects.toThrow("lookup_invalid_command");
 });
 it("benchmark:165 refuses real lookup before modules load", async () => {
-  const modulesLoader = vi.fn(); await expect(benchmark(["--probe-mode", "lookup-allowed-v1", "--real"], { modulesLoader, env: {} })).rejects.toThrow("lookup_real_not_authorized"); expect(modulesLoader).not.toHaveBeenCalled();
+  const modulesLoader = vi.fn(); await expect(benchmark(["--probe-mode", "lookup-allowed-v3", "--real"], { modulesLoader, env: {} })).rejects.toThrow("lookup_real_not_authorized"); expect(modulesLoader).not.toHaveBeenCalled();
 });
 it("benchmark:282 execute refuses non-offline mode before modules load", async () => {
-  const modulesLoader = vi.fn(); await expect(execute({ flags: {}, plan: { probeMode: "lookup-allowed-v1" }, mode: "real", modulesLoader })).rejects.toThrow("lookup_real_not_authorized"); expect(modulesLoader).not.toHaveBeenCalled();
+  const modulesLoader = vi.fn(); await expect(execute({ flags: {}, plan: { probeMode: "lookup-allowed-v3" }, mode: "real", modulesLoader })).rejects.toThrow("lookup_real_not_authorized"); expect(modulesLoader).not.toHaveBeenCalled();
 });
-const plan = { probeMode: "lookup-allowed-v1", lookup: { budget: { callBudget: 8 }, maxTurns: 10, deadlineMs: 600000, cleanupAllowanceMs: 1, childWatchdogMs: 720000 }, limits: { perLiveTurnTimeoutMs: 690000 } };
+const plan = { probeMode: "lookup-allowed-v3", lookup: { budget: { callBudget: 8 }, maxTurns: 10, deadlineMs: 600000, cleanupAllowanceMs: 1, childWatchdogMs: 720000 }, limits: { perLiveTurnTimeoutMs: 690000 } };
 it("runner:350 non-offline liveRoute bypass remains unreachable to lookup", async () => {
   // liveRoute is private and its non-offline branch is NOT an authorization guard.
   // Keep this pin: deleting the private branch still hits the independent enclosing refusal.

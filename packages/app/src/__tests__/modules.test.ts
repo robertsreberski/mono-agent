@@ -116,15 +116,15 @@ describe("known-tools", () => {
     expect(isKnownToolName("NodeRepl")).toBe(true);
     expect(isKnownToolName("read")).toBe(false);
     expect(isKnownToolName("AskUser")).toBe(true);
-    expect(APP_TOOL_NAMES).toEqual(["RunHistory", "SessionHistory", "ConversationHistory", "SetConversationTitle",
+    expect(APP_TOOL_NAMES).toEqual(["History", "SetConversationTitle",
       "SuggestReplies", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule", "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "MemoryJournal", "PeerAgent", "Remember"]);
-    expect(isKnownToolName("RunHistory")).toBe(true);
-    expect(isKnownToolName("run_history")).toBe(true);
-    expect(isKnownToolName("SessionHistory")).toBe(true);
-    expect(isKnownToolName("session_history")).toBe(true);
-    expect(isKnownToolName("ConversationHistory")).toBe(true);
-    expect(isKnownToolName("conversation_history")).toBe(true);
-    expect(DEFAULT_SAFE_TOOLS).toContain("ConversationHistory");
+    expect(isKnownToolName("RunHistory")).toBe(false);
+    expect(isKnownToolName("run_history")).toBe(false);
+    expect(isKnownToolName("SessionHistory")).toBe(false);
+    expect(isKnownToolName("session_history")).toBe(false);
+    expect(isKnownToolName("ConversationHistory")).toBe(false);
+    expect(isKnownToolName("conversation_history")).toBe(false);
+    expect(DEFAULT_SAFE_TOOLS).toContain("History");
     expect(isKnownToolName("SetConversationTitle")).toBe(true);
     expect(isKnownToolName("MemoryJournal")).toBe(true);
     expect(isKnownToolName("Remember")).toBe(true);
@@ -139,7 +139,7 @@ describe("known-tools", () => {
       expect(isKnownToolName(name)).toBe(true);
     }
     // The deprecated snake_case aliases stay accepted for backwards-compat.
-    for (const alias of ["read_skill", "ask_collaborator", "memory_recall", "run_history"]) {
+    for (const alias of ["read_skill", "ask_collaborator", "memory_recall"]) {
       expect(isKnownToolName(alias)).toBe(true);
     }
     // The retired loopback tool was deleted — its dead alias no longer resolves.

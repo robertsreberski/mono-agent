@@ -6,7 +6,7 @@ import type { RuntimeModelReference } from "@mono-agent/turn/host/types";
 
 import { readChoice } from "@mono-agent/contracts";
 
-import { ALLOW_ALL_TOOLS, EFFORT_LEVELS, renamedToolMessage, renamedToolName } from "../enums.js";
+import { ALLOW_ALL_TOOLS, EFFORT_LEVELS, renamedToolMessage, renamedToolName, retiredHistoryToolMessage } from "../enums.js";
 
 import type {
   EffortLevel,
@@ -235,6 +235,10 @@ function readSubagentTools(value: unknown, subject: string, field: string): read
   if (field !== "mcpServers") {
     // A renamed tool has no alias, so a stale entry would grant or deny
     // nothing. Name the migration instead of accepting it silently.
+    tools.forEach((tool, index) => {
+      const message = retiredHistoryToolMessage(tool, `${subject} ${field}[${index}]`);
+      if (message) throw invalidSubagents(message);
+    });
     const retired = tools.find((tool) => renamedToolName(tool) !== undefined);
     if (retired !== undefined) {
       throw invalidSubagents(renamedToolMessage(retired, `${subject} ${field}`));

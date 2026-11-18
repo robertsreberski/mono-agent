@@ -390,8 +390,8 @@ mono-agent web run --loopback</code></pre>
             <details>
               <summary>What can I inspect after a run?</summary>
               <div class="faq-answer">
-                <code>RunHistory</code> reads settled run evidence; <code>SessionHistory</code>
-                reads separately retained tool invocations and results, including failures
+                <code>History</code> uses required scopes for retained text, prior tool calls/results,
+                and settled run evidence, including failures
                 and interruptions. Curated memory is a different source. Retention is
                 bounded and records can be incomplete: inspection helps you decide what
                 to do next, but does not automatically resume work or prove that

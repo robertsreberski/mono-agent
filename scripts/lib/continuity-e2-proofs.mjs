@@ -1,4 +1,4 @@
-import { historySurfaceBinding, historyToolName, historyServerName, historyConfig, historyArguments, assertHistorySurfaceBinding } from "./continuity-e2-history.mjs";
+import { e2HistorySurface, historySurfaceBinding, historyToolName, historyServerName, historyConfig, historyArguments, assertHistorySurfaceBinding } from "./continuity-e2-history.mjs";
 // Live-path proofs: faux by default, or bound paid phase actor under one controller.
 // Production owns context, sessions, packs, compaction and effect containment.
 import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
@@ -58,7 +58,8 @@ export function proofHistoryWarningClass(message) {
     if (message.startsWith(`Continuity is degraded (${reason});`)) return `continuity_${reason}`;
   }
   for (const [prefix, kind] of [
-    ["ConversationHistory endpoint could not start;", "endpoint_unavailable"],
+    ["History endpoint could not start;", "endpoint_unavailable"],
+    ["ConversationHistory endpoint could not start;", "endpoint_unavailable"], // Historical warning.
     ["Tool lifecycle persistence failed (history_persistence_timeout)", "lifecycle_timeout"],
     ["Tool lifecycle persistence failed (", "lifecycle_failed"],
     ["Tool history writer acquisition failed (history_persistence_timeout)", "writer_acquisition_timeout"],
@@ -85,7 +86,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
   const pressureArm = E2_PROOF_PRESSURE_ARMS.find(row => row.restart === (variant === "restart"));
   const seedReceipt = resumed ? JSON.parse(await readFile(join(base, "seed.json"), "utf8")) : null;
   if (resumed) {
-    assertHistorySurfaceBinding({ historySurface }, seedReceipt);
+    assertHistorySurfaceBinding({ historySurface: e2HistorySurface(historySurface) }, seedReceipt);
     requireProof(seedReceipt.pid !== process.pid && seedReceipt.sentinel.completed && !seedReceipt.sentinel.repeated, "E2_PROOF_RESTART_MISSING");
     if (fault !== "legacy-evidence") requireProof(seedReceipt.absenceEstablished === true, "E2_PROOF_INITIAL_PRESENT");
     if (arm === "cancel") requireProof(seedReceipt.forwarded === true, "E2_PROOF_CANCEL_NOT_FORWARDED");
@@ -258,7 +259,7 @@ export async function runProofPhase({ base, arm, phase = "whole", variant = "cei
     answer = response.text ?? response.content ?? "";
     if (typeof answer !== "string") answer = JSON.stringify(answer);
     safe &&= !answer.includes(CANARY) && !answer.includes(FOREIGN);
-    // Separate post-boundary probes have ConversationHistory only, even on cancel.
+    // Separate post-boundary probes have History only, even on cancel.
     mode = "probe";
     for (const [ordinal, { prompt, required }] of PROBES.entries()) {
       probeOrdinal = ordinal;

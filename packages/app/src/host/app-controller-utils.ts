@@ -240,15 +240,15 @@ export function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function historyToolRouteSupport(_config: MonoAgentConfig): {
-  readonly runHistory: boolean;
-  readonly sessionHistory: boolean;
-  readonly conversationHistory: boolean;
+export function historyToolRouteSupport(): {
+  readonly runs: boolean;
+  readonly tools: boolean;
+  readonly said: boolean;
 } {
   return {
-    runHistory: true,
-    sessionHistory: true,
-    conversationHistory: true,
+    runs: true,
+    tools: true,
+    said: true,
   };
 }
 

@@ -93,19 +93,19 @@ Deterministic cold packs make a bounded selection available without retrieval.
 This partial configuration opts out; keep the usual model and identity settings.
 Explicit false preserves legacy paths: no participant, sidecar probe or v3
 upgrade for continuity. Under normal tool policy every default-enabled agent
-gets `ConversationHistory`: `"*"` allows it, a restrictive allowlist must include
+gets `History`: `"*"` allows it, a restrictive allowlist must include
 its name, and an explicit deny wins. The tool is constructed for standalone
 configured harnesses as well as channel controllers. Denying retrieval alone
-does not turn capture off. Unlike SessionHistory's prior-run tool evidence,
+does not turn capture off. Unlike History's prior-run tool evidence,
 positively finalized/fsynced current-run conversation records are eligible;
 partial streams and prepared publications remain unavailable.
 Stop older writers and back up canonical history and the sidecar together before
 the first enabled start: the first capable writer upgrades the sidecar from SQLite v2 to v3 in place; older binaries refuse the upgraded store.
 Disabled operation does not perform that upgrade. Existing v3 evidence stays on disk for doctor, stats and purge;
-ConversationHistory is not registered while capture is disabled. Binary rollback requires stopped writers
+History is not registered while capture is disabled. Binary rollback requires stopped writers
 and a consistent backup; disabling a flag does not downgrade storage.
 
-`ConversationHistory`, when allowed by tool policy, searches and retrieves only
+`History`, when allowed by tool policy, searches and retrieves only
 the current logical conversation (including configured rollover buckets).
 Chunks are at most 8192 UTF-8 bytes and identify the retained text's digest,
 redaction and truncation. Retained records are bounded at 1 MiB; oversized text
@@ -115,7 +115,7 @@ never silently expire: exhausted pinned capacity reports degraded continuity
 rather than invalidating references. Conversation reset and
 `restart --clear-sessions` remove this evidence with the existing sidecar.
 
-Every returned `ConversationHistory` NOTICE includes this bounded rule, even on
+Every returned `History` NOTICE includes this bounded rule, even on
 empty searches, unavailable gets, degraded scans and errors:
 
 > Historical alternatives need a specific distinguishing record/edit, not nearby work. If unfound, say so; don't pick or deny either. Answer if evidence suffices.
@@ -135,7 +135,7 @@ skips Codex; default Codex stream abort cannot bound hidden reasoning or quota.
 
 ### Bounded relevance discovery and recovery
 
-New lexical `ConversationHistory` searches default to **ranking version 3**.
+New lexical `History` searches default to **ranking version 3**.
 Issued v1/v2 continuations retain their original parser, eligibility, scoring,
 tie/anchor comparison and traversal. The v2 behavior described below is retained
 for issued v2 cursors; the content-first v3 scoring differences are described after the
@@ -338,22 +338,22 @@ text, so failed/unknown effects without such a record are not inferred as sent.
 Owner entries are explicitly requests, not proof that an action happened. Only
 captured tool records show outcomes; absent an outcome, status remains unknown.
 A nonempty pack adds exact-value retrieval guidance only when the effective
-request can use `ConversationHistory`. Its `Tool evidence id` (`chr1_…`) is a
+request can use the `said` scope of `History`. Its `Tool evidence id` (`chr1_…`) is a
 get `recordId`, not the `invocation_id` or tool-projection `sth1_…` lifecycle id;
-those lifecycle ids are not valid for `ConversationHistory` get. Get before
+those lifecycle ids are not valid for `History` get. Get before
 guessing exact values or claiming absence, search without a record id, and
 follow search/get cursors. Pack omission may be retrievable, but source
 redaction/truncation is irreversible here. Omitted arguments have no retrieval
-promise. The 270-byte / 90-estimate-token guidance is charged to selection,
+promise. The 273-byte / 91-estimated-token guidance is charged to selection,
 fallback and final size, outside the unchanged ledger-prefix admission rule.
 This can displace evidence at 4k–16k budgets without changing selection policy.
 An empty snapshot with no ledger, omission, gap or degradation emits nothing.
 
 Projection record blocks are bounded before exclusions and never refilled.
-Both history-tool availabilities are resolved per request after merged policy,
-authoritative overrides and tools-disabled handling. The healthy header is
-unchanged: use `ConversationHistory`, or retain `SessionHistory` when it alone is
-available. Neither-tool and manual-compaction routes omit tool-directed guidance.
+History scope availability is resolved per request after merged policy,
+authoritative overrides and tools-disabled handling. Projection headers name
+only the available `said` and `tools` scopes. When neither is available,
+or during manual compaction, the header omits tool-directed guidance.
 Boundary facts report the resolved replay's bytes and record count, including
 post-pack projection exclusions, not the pre-resolution configured header.
 Reconstruction boundary events can follow `run_config`, `turn_context` and provider
@@ -458,7 +458,7 @@ by identity proof; `toolReserved` counts tool entries selected in the reserved
 occurs in replay, or whose overlap cannot be ruled out because identities are
 absent. Remaining uncertain overlap is retained, not guessed away.
 
-Set `packEnabled: false` to retain recording and `ConversationHistory` retrieval
+Set `packEnabled: false` to retain recording and `History` retrieval
 without pack injection. `enabled: false` takes precedence and preserves the
 legacy path, with no pack read. No pack supplier is offered without prior
 canonical replay or an explicit cold reason. There is no upkeep/model extraction
@@ -486,7 +486,7 @@ reachable again. A prepared summary is invisible until the owner verifies
 the actual synced native checkpoint and its covered-source/retained-text digests.
 An interrupted acknowledgement can recover without another summary call.
 Canonical hashes alone cannot prove a native reduction occurred.
-`SessionHistory` keeps its prior-run tool-lifecycle contract.
+`History` keeps its prior-run tool-lifecycle contract.
 
 Moving or forking an agent root with an existing sidecar preserves its pinned
 artifact root. Tool-history and continuity writes degrade if that root differs;
@@ -966,8 +966,7 @@ Warm in-memory sessions are lost on restart. To resume across restarts, use the 
 `rolloverNotice` is adapter-local and default-off. It does not enable rollover by itself and does not add a new IPC channel or change provider resume behavior. When daily rollover is already enabled and a base conversation crosses into a new day bucket, the responder streams `New session bucket started: <bucket>.` before the model answer and includes the same prelude in the returned final text for final-only transports.
 
 Daily rollover partitions active conversation/provider history, but it does not
-partition retained exploration: the app-owned `RunHistory` and `SessionHistory`
-tools strip the daily bucket only for their request-scoped authorization match,
+partition retained exploration: the `runs` and `tools` scopes of `History` strip the daily bucket only for their request-scoped authorization match,
 so completed runs and tool records from earlier buckets of the same logical
 conversation remain searchable. Reset clears both message history and tool
 records across every daily bucket exposed as that logical session. Custom
@@ -1008,7 +1007,7 @@ by the web console; its stable protocol/source id remains `tui`). A console thre
 explicit, reader-owned session boundary: it has a permanent conversation id and
 a visible "new thread" action. Bucketing it by day on top of that severed a live
 conversation at midnight, so the next morning's follow-up in the same visible
-thread woke with no transcript and had to reconstruct it through `RunHistory`.
+thread woke with no transcript and had to reconstruct it through `History`.
 Every other channel — Telegram, Slack, cron, webhook, OpenAI-API — takes the
 configured policy unchanged. Both history tools still use the *configured*
 policy for their scope match, so runs and tool records a console thread already
@@ -1181,7 +1180,7 @@ session is an unreceipted failure: the native branch rolls back to its baseline,
 recovery-pending tail or successful receipt is created. This native repair is not
 P2 adoption of dirty host turns. Canonical history keeps
 the existing continuity account, including bounded partial prose and error detail;
-SessionHistory retains the same tool evidence. No cancelled/failed memory capture occurs.
+History retains the same tool evidence. No cancelled/failed memory capture occurs.
 
 ### Explicit native reconciliation contracts
 
@@ -1447,17 +1446,16 @@ a switch and when authorizing an existing pending switch. This guard lasts only
 while those states are retained: a later completed switch garbage-collects old
 billing states. Pending messages are never queued or replayed.
 
-## Unified history surface (opt-in)
+## History scopes
 
-With `tools.history.unified: true`, retained conversation evidence is retrieved
-through `History` with `scope: "said"`; managed-tool lifecycle evidence through
-`scope: "tools"`; and run settlement evidence through `scope: "runs"`. The flag
-defaults to false, leaving the existing tools and routing unchanged. No storage,
-retention or cursor migration is needed. Disabling or damaging continuity does
-not disable the independent tool-lifecycle and run-artifact readers.
+History is the only conversation-history tool. Required `scope: "said"` reads
+retained conversation evidence; `scope: "tools"` reads managed-tool evidence;
+`scope: "runs"` reads run settlement. There is no mode flag or alias. Storage,
+retention and cursor formats are unchanged. Disabling or damaging continuity
+removes said, not the independent tools/runs readers. Host routes determine
+which scopes are available; policy grants or denies the whole supported tool.
 
-For isolated proactive recovery, start with `History {scope:"runs"}`, inspect
-a cancelled/interrupted candidate, and follow its exact tools-scope action with
-`includeIsolated: true`. Current-run and foreign-conversation restrictions remain.
-Evidence recovery never automatically resumes or reruns interrupted work.
-See [the unified reader](/tools/mcp/#opt-in-history-one-scoped-reader).
+For isolated proactive recovery, start with `History {scope:"runs"}`, choose a
+cancelled/interrupted candidate, then follow its exact tools-scope action with
+`includeIsolated:true`. Current-run and foreign-conversation restrictions remain.
+Evidence recovery never resumes or reruns work. See [History](/tools/mcp/#history).

@@ -280,7 +280,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       let contextResolutionReady = !preparation;
       let resolvedReplay = { history, toolHistoryProjection, toolProjectionRecords };
       const useUnavailableReplayFacts = () => {
-        const projection = renderToolHistoryProjection(toolProjection, { conversationHistory: false, sessionHistory: false });
+        const projection = renderToolHistoryProjection(toolProjection, { said: false, tools: false, runs: false });
         resolvedReplay = { history, toolHistoryProjection: projection?.text, toolProjectionRecords: projection?.recordCount ?? 0 };
       };
       let contextResolutionPublished = false;
@@ -370,11 +370,8 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         delete merged.mcpConfigPath;
       }
       const availability = request.continuation?.toolsDisabled === true
-        ? { conversationHistory: false, sessionHistory: false }
-        : options.toolHistory?.historyToolAvailabilityForRuntime?.(merged) ?? {
-          conversationHistory: options.toolHistory?.conversationHistoryAvailable === true,
-          sessionHistory: options.toolHistory?.sessionHistoryAvailable !== false,
-        };
+        ? { said: false, tools: false, runs: false }
+        : options.toolHistory?.historyToolAvailabilityForRuntime?.(merged) ?? { said: false, tools: false, runs: false };
       const projection = renderToolHistoryProjection(toolProjection, availability);
       toolHistoryProjection = projection?.text;
       toolProjectionRecords = projection?.recordCount ?? 0;
@@ -572,7 +569,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           const replayedHistory = hasCanonicalReplay ? continuityHistory : [];
           const rendered = routing.continuityPack!.render(replayedHistory, budget.maxTokens,
             budget.reason === "detached_context" ? budget.reason : routing.boundaryReason ?? budget.reason, emitRuntimeEvent,
-            ids => { toolIds = ids; }, availability.conversationHistory, availability.history);
+            ids => { toolIds = ids; }, availability);
           const messages = rendered.messages;
           // Per-call metadata stays with these exact messages, never read from
           // the supplier's shared last-rendered accessor across attempts.
@@ -654,7 +651,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
             runId, isolated: sessionIsolated,
             ...(options.toolHistory?.continuityEnabled === true ? { continuityEnabled: true as const } : {}),
             ...(owned ? { finalizedContinuity: true as const } : {}),
-            ...(options.toolHistory?.unifiedHistory === true ? { unifiedHistory: true as const } : {}),
+            ...(options.toolHistory?.appOwnedHistory === true ? { appOwnedHistory: true as const } : {}),
           })(event);
           const owner = routing.withContinuityOwner ?? reconciliation?.withContinuityOwner;
           // Borrow the owner through admission to the existing worker queue.

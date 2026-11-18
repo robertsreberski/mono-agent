@@ -41,7 +41,7 @@ function displacementFixture() {
 
 it.each([false, true])("keeps early AND late owner evidence, charging ledger to middle history (available=%s)", available => {
   const { records, snapshot } = displacementFixture(), withLedger = ledger(records, 14, 70);
-  const plain = renderContinuityPack(snapshot, [], 8000, undefined, false, available), pack = renderContinuityPack(snapshot, [], 8000, withLedger, false, available);
+  const plain = renderContinuityPack(snapshot, [], 8000, undefined, false, { said: available, tools: false, runs: false }), pack = renderContinuityPack(snapshot, [], 8000, withLedger, false, { said: available, tools: false, runs: false });
   expect(plain.text).toContain(ownerLine(LATE)); expect(shownOwners(plain.text, records)).toHaveLength(48); // genuine no-ledger backbone: every owner
   expect(pack.text).toBeTruthy(); expect(pack.ledgerEntries).toBe(14); expect(pack.toolReserved).toBeGreaterThan(0);
   expect(pack.text).toContain("### Continuity ledger"); expect(fitsLedgerPrefix(pack.text!.slice(PACK_HEADER.length, available ? pack.text!.indexOf(PACK_RETRIEVAL_GUIDANCE) : pack.text!.indexOf("Historical owner request")), 8000)).toBe(true);
@@ -128,15 +128,15 @@ it("discloses an oversized ledger without admitting it, demoting owners or reord
 it.each([false, true])("does not emit an empty pack or change ledger admission (available=%s)", available => {
   const { records, snapshot } = displacementFixture(), withLedger = ledger(records, 14, 70);
   const plain = renderContinuityPack(snapshot, [], 8000, withLedger);
-  const pack = renderContinuityPack(snapshot, [], 8000, withLedger, false, available);
+  const pack = renderContinuityPack(snapshot, [], 8000, withLedger, false, { said: available, tools: false, runs: false });
   expect(pack.ledgerEntries).toBe(plain.ledgerEntries); expect(pack.ledgerEntries).toBe(14);
   const empty = { records: [], omitted: 0, gaps: 0 };
-  expect(renderContinuityPack(empty, [], 8000, undefined, false, available).text).toBeUndefined();
-  expect(renderContinuityPack(empty, [], 8000, undefined, false, available).tokens).toBe(0);
+  expect(renderContinuityPack(empty, [], 8000, undefined, false, { said: available, tools: false, runs: false }).text).toBeUndefined();
+  expect(renderContinuityPack(empty, [], 8000, undefined, false, { said: available, tools: false, runs: false }).tokens).toBe(0);
   // A real derived ledger remains evidence even with no deterministic entries.
-  expect(renderContinuityPack(empty, [], 8000, withLedger, false, available).ledgerEntries).toBe(14);
+  expect(renderContinuityPack(empty, [], 8000, withLedger, false, { said: available, tools: false, runs: false }).ledgerEntries).toBe(14);
   const huge = ledger(records, 60, 80);
-  expect(renderContinuityPack(empty, [], 8000, huge, false, available).text).toBeUndefined();
+  expect(renderContinuityPack(empty, [], 8000, huge, false, { said: available, tools: false, runs: false }).text).toBeUndefined();
 });
 
 

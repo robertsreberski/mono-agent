@@ -8,9 +8,9 @@ exports[`freezes available=true retrieval pack (headroom=4000) 1`] = `
     "summary": 0,
     "tool": 20,
   },
-  "hash": "bd73a271bda80f9b0dc94bcb0bf52235db85b3183fe708bb8a50fb9ac7498302",
+  "hash": "92324bc32a03f282196d49bf6aa27ad5abff7d6a6412bc2cf7b0cc8c69a3c56d",
   "omitted": 18,
-  "tokens": 3837,
+  "tokens": 3838,
 }
 `;
 
@@ -22,9 +22,9 @@ exports[`freezes available=true retrieval pack (headroom=8000) 1`] = `
     "summary": 0,
     "tool": 20,
   },
-  "hash": "ad13e90b9d86c7316730cc33e0e9ca933e6d2fa125e9339f7db2f4beedb222a9",
+  "hash": "543efcb09477c09dacdba32b41fa3b45db729620a5c214d09b39f8984bdf90c3",
   "omitted": 0,
-  "tokens": 4682,
+  "tokens": 4683,
 }
 `;
 

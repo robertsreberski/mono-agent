@@ -12,41 +12,29 @@
   resolution, pickers, guided setup and validation, with long-input pricing
   and the same effort and `context1M` support as their sibling models.
 
-- Add an opt-in, observational `--replay-arm history-ab` mode to the offline
-  continuity E2 harness: probe-only runs from a frozen committed snapshot with
-  the continuity pack withheld, comparing split `ConversationHistory` against
-  unified `History` with compact or directive descriptions in one registration.
-  It never replays the source, makes no summary requests and is never the gate.
-  Restored snapshots are relocated to the new run's root and refused if any
-  decoded value still names the old root. History store or endpoint
-  unavailability refuses the probe, while a model's own lookup mistakes are
-  recorded and scored; a call with an invalid scope still counts as a lookup
-  attempt. Lookups are scored only from probe receipts bound to the
-  registration, slot, arm, row and checkpoint, with every capture's hash and
-  length recomputed.
+- Remove the split conversation-history tool surface.
 
-- Restore lookup directives in the unified `History` tool's `said` scope:
-  check `History` for exact earlier values, identifiers or quotations instead
-  of relying on summaries or memory, read hits before reformulating, finish
-  every get cursor and page before declaring evidence insufficient. The
-  previous compact wording remains available as a description variant.
+  **Breaking: History replaces ConversationHistory, SessionHistory, and RunHistory without aliases or an opt-out.** Remove `tools.history` entirely, including `tools.history.unified`. Replace removed names and their former snake_case/MCP spellings in allowlists and denylists with `History`; allowing History grants all host-supported history scopes, while denying it blocks the whole tool. Update custom souls and prompts to call History with required scope `"said"` for retained conversation text, `"tools"` for prior tool calls/results, or `"runs"` for run outcomes. Use `search`/`get`; run inspection uses `get`, not `inspect`, and `run_id` is unsupported. Stale configuration and soul references fail validation. Run `mono-agent validate` before restarting. Stored history and historical tool names are not rewritten or deleted.
+
+  **Programmatic API:** Remove `ConversationHarnessOptions.defaultCore`, `toolHistory.conversationHistoryAvailable`, `toolHistory.sessionHistoryAvailable`, `toolHistory.unifiedHistory`, and `ToolHistoryRunBinding.unifiedHistory`. The `UnifiedHistoryAvailability` export and the legacy `HistoryToolAvailability` shape are removed. Removed JavaScript options fail explicitly. Hosts report availability as `{said, tools, runs}` and pass positive `appOwnedHistory` ownership for app-tool capture. Custom hosts without the app History tool get no-tool guidance.
+
+  Any `tools.history` key is rejected, including `{}` and `{unified:false}`. Reword even prose mentions of retired tool names in custom souls before upgrading; identity, skills and subagent prompts receive doctor warnings. New agents default to History in the safe-tools list, granting tools and runs as well as said when supported by the host. Allowing History may broaden an old single-scope policy; no per-scope replacement policy exists. Rollback restores the complete previous binary/config/soul set, not a flag. There is no history-storage migration.
+
+  The `said` scope directs readers to retrieve exact earlier values, identifiers,
+  and quotations before relying on summaries. Read promising hits before
+  reformulating, finish get cursors, and page before declaring evidence
+  insufficient. The observational `--replay-arm history-ab` harness compares
+  compact (B) and directive (C) descriptions of `History` from the same frozen
+  snapshot with the continuity pack withheld. It neither replays the source nor
+  requests summaries, and does not qualify a release. Store and endpoint
+  failures refuse the probe; invalid lookup scopes still count as attempts in
+  bound, digest-checked probe receipts. Split arm A is retired.
 
 - Let web console scheduled wake-ups finish silently: the wake prompt offers
   `FinishSilently({})` with an exact `NOTHING_TO_REPORT` fallback, and a
   sentinel-only or certified silent wake shows only its **Scheduled wake-up**
   item and sends no response push. Steered operator messages, rich parts and
   ordinary chat turns stay visible.
-
-- Add opt-in unified `History` selection to the offline continuity E2 harness,
-  preserving split defaults and accepting registered 500K Sol summary envelopes.
-
-- Add the opt-in `History` tool behind `tools.history.unified` (default false),
-  with required `said`, `tools` and `runs` scopes, legacy-name policy aliases,
-  and mode-aware history guidance and diagnostics.
-
-- Add the internal unified-`History` conversation seams (scope-aware text
-  variants, default-soul selection, app-owned name recognition). Behaviour is
-  unchanged unless the unified mode is selected.
 
 - Keep embedded NUL characters intact in stored web content, cron results and
   offline continuity audits on all supported Node versions.

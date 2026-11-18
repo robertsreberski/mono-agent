@@ -52,3 +52,18 @@ export function renamedToolMessage(name: string, field: string): string {
   return `${field} lists ${name}, which was renamed to ${String(renamedToolName(name))}. `
     + `There is no alias: rename the entry to ${String(renamedToolName(name))}.`;
 }
+
+/** Retired request names, including exact former first-party MCP policy entries.
+ * This is a retirement registry, never an alias resolver. */
+const RETIRED_HISTORY_SCOPES: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(
+  ([['ConversationHistory', 'conversation_history', 'conversation', 'said'],
+    ['SessionHistory', 'session_history', 'session', 'tools'],
+    ['RunHistory', 'run_history', 'run', 'runs']] as const).flatMap(([name, snake, server, scope]) =>
+    [name, snake, `mcp__mono-agent-${server}-history__${name}`, `mcp__mono-agent-${server}-history__${snake}`, `mcp__mono-agent-${server}-history__*`]
+      .map(name => [name, scope])),
+));
+
+export function retiredHistoryToolMessage(name: string, field: string): string | undefined {
+  const scope = Object.hasOwn(RETIRED_HISTORY_SCOPES, name) ? RETIRED_HISTORY_SCOPES[name] : undefined;
+  return scope === undefined ? undefined : `${field} lists removed tool ${name}. Replace it with History (scope:"${scope}"); there are no aliases. Allowing History grants all host-supported scopes; denying it blocks the whole tool.`;
+}

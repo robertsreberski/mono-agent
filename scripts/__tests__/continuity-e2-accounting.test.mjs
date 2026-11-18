@@ -20,7 +20,7 @@ beforeEach(async () => {
   const catalogs = await historicalPi12Catalog();
   pilot = { descriptor: { capUnits: "900719925474099312345" }, registration: { catalog: catalogs,
     roles: ["summary", "continuation", "probe"].flatMap(role => (role === "summary" ? [SOL, LUNA] : [SOL]).map(model => ({ role, model, maxInputTokens: 272000, maxOutputTokens: 128000, expectedOutputTokens: 512 }))),
-    toolPolicies: { summary: [], replay: ["ConversationHistory"], proof: ["ConversationHistory"], cancelContinuation: ["ConversationHistory", "ProofSentinel"] } } };
+    toolPolicies: { summary: [], replay: ["History"], proof: ["History"], cancelContinuation: ["History", "ProofSentinel"] } } };
   planned = { kind: "proof", arm: "switch", budgets: pilot.registration.roles.map(r => ({ checkpoint: 0, paidRole: r.role, model: r.model, maxRequests: 2 })) };
 });
 afterEach(async () => { if (root) await rm(root, { recursive: true, force: true }); vi.unstubAllEnvs(); });
@@ -150,10 +150,10 @@ it.each([1, 3, 4])("derives per-probe admission ordinal and final wire tool poli
     const p = request(i === 1 ? "probe" : "continuation");
     const admitted = policy.admission(pilot, planned, slot, p);
     expect(admitted.metadata.probeRequest).toBe(i);
-    expect(admitted.metadata.tools).toEqual(i === rounds + 1 ? [] : ["ConversationHistory"]);
-    const body = { model: SOL.split(":")[1], store: false, stream: true, input: [], tools: i === rounds + 1 ? [] : [{ type: "function", name: "ConversationHistory" }] };
+    expect(admitted.metadata.tools).toEqual(i === rounds + 1 ? [] : ["History"]);
+    const body = { model: SOL.split(":")[1], store: false, stream: true, input: [], tools: i === rounds + 1 ? [] : [{ type: "function", name: "History" }] };
     expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), admitted.metadata)).not.toThrow();
-    body.tools = i === rounds + 1 ? [{ type: "function", name: "ConversationHistory" }] : [];
+    body.tools = i === rounds + 1 ? [{ type: "function", name: "History" }] : [];
     expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), admitted.metadata)).toThrow("e2_tools_forbidden");
     slot.holds.push({ ...admitted.metadata, settlement: { kind: "settled" } });
   }
@@ -166,12 +166,12 @@ it.each([1, 3, 4])("derives per-probe admission ordinal and final wire tool poli
 
 it("applies the same E2 tool allowlist to native additional_tools, rejecting unlisted declarations", () => {
   const body = { model: SOL.split(":")[1], store: false, stream: true, input: [{ type: "additional_tools", role: "developer",
-    tools: [{ type: "function", name: "ConversationHistory", parameters: { type: "object", properties: {} } }] }] };
-  const hold = { model: SOL, tools: ["ConversationHistory"], probeRequest: 1 };
+    tools: [{ type: "function", name: "History", parameters: { type: "object", properties: {} } }] }] };
+  const hold = { model: SOL, tools: ["History"], probeRequest: 1 };
   expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), hold)).not.toThrow();
   body.input[0].tools[0].name = "UnapprovedTool";
   expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), hold)).toThrow("e2_tools_forbidden");
-  body.input[0].tools[0].name = "ConversationHistory";
+  body.input[0].tools[0].name = "History";
   body.input[0].tools[0].unlisted = true;
   expect(() => policy.assertBody(Buffer.from(JSON.stringify(body)), hold)).toThrow("e2_payload_forbidden");
 });

@@ -2,7 +2,7 @@ import { e2HistorySurface, historyToolName, historyServerName, lookupToolAllowli
 import { lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
-export { LOOKUP_TOOL_ALLOWLIST_V1, LOOKUP_TOOL_ALLOWLIST_V2, lookupToolAllowlist } from "./continuity-e2-history.mjs";
+export { LOOKUP_TOOL_ALLOWLIST_V3, lookupToolAllowlist } from "./continuity-e2-history.mjs";
 // Scripts-only, fail-closed policy. No credential resolution, provider or send factory.
 const need = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code, outcome: "refused_pre_send" }); };
 export const lookupCacheKey = key => typeof key === "string" && /^[\x21-\x7e]{1,64}$/u.test(key);
@@ -39,7 +39,7 @@ export function assertResolvedLookupSafety({ plan, config, arm, captureUpkeepOut
     need(url?.protocol === "http:" && url.hostname === "127.0.0.1" && Number(url.port) > 0 && !url.username && !url.password && !url.hash, "lookup_tools_forbidden");
   }
   const surface = e2HistorySurface(historySurface), tool = historyToolName(surface), server = historyServerName(surface);
-  need((config.tools?.history?.unified === true) === (surface === "unified"), "lookup_tools_forbidden");
+  need(!Object.hasOwn(config.tools ?? {}, "history"), "lookup_tools_forbidden");
   const allowed = config.tools?.allowedTools ?? [];
   need(allowed.every(name => lookupToolAllowlist(surface).tools.includes(name) && name === tool) && !config.tools?.mcpConfigPath, "lookup_tools_forbidden");
   if (options) {
@@ -152,8 +152,8 @@ export function createLookupPilotRoute({ pilot, forwarder, noteOffered }) {
   }
   return async options => {
     const forwarded = forwarder ? await forwarder.rewrite(options) : null;
-    const server = forwarded?.mcpServers?.["mono-agent-conversation-history"];
-    if (Object.hasOwn(forwarded?.mcpServers ?? {}, "mono-agent-conversation-history")) need(server?.url === historyEndpoint, "lookup_tools_forbidden");
+    const server = forwarded?.mcpServers?.["mono-agent-history"];
+    if (Object.hasOwn(forwarded?.mcpServers ?? {}, "mono-agent-history")) need(server?.url === historyEndpoint, "lookup_tools_forbidden");
     noteOffered(options);
     return { piModelsDecorator: pilot.send.decorator, ...(forwarded ? { mcpServers: forwarded.mcpServers } : {}) };
   };

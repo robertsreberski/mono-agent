@@ -180,6 +180,7 @@ export class ToolHistoryWriter {
   }
 
   createSink(binding: ToolHistoryRunBinding): RuntimeToolLifecycleSink {
+    assertCurrentBinding(binding);
     return async (event) => await this.persist(binding, event);
   }
 
@@ -187,6 +188,7 @@ export class ToolHistoryWriter {
     binding: ToolHistoryRunBinding,
     event: RuntimeToolLifecycleEvent,
   ): Promise<RuntimeToolLifecyclePersistence> {
+    assertCurrentBinding(binding);
     const foreground = await this.persistenceCoordinator.track(
       toolHistoryRunKey(binding),
       this.request(
@@ -210,6 +212,7 @@ export class ToolHistoryWriter {
     failureKind?: string,
     cancellationReasonCode?: string,
   ): Promise<void> {
+    assertCurrentBinding(binding);
     const payload = { binding, status, failureKind, cancellationReasonCode };
     const startedAt = performance.now();
     const boundary = this.persistenceCoordinator.boundaryForRun(toolHistoryRunKey(binding));
@@ -474,4 +477,8 @@ function workerErrorCode(error: Error): string {
   if (message.includes("schema is newer or foreign")) return "history_schema_unsupported";
   if (message.includes("unsupported entry")) return "history_entry_unsupported";
   return "history_writer_start_failed";
+}
+
+function assertCurrentBinding(binding: ToolHistoryRunBinding): void {
+  if (Object.hasOwn(binding, "unifiedHistory")) throw new TypeError("ToolHistoryRunBinding.unifiedHistory was removed; use appOwnedHistory for positive app ownership.");
 }

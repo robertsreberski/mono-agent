@@ -11,9 +11,9 @@ let root, args, pilot;
 beforeEach(async () => {
   vi.clearAllMocks(); vi.stubEnv("CI", undefined); vi.stubEnv("CONTINUITY_DEBUG", undefined);
   root = await realpath(await mkdtemp(join(tmpdir(), "e2-entry-selection-"))); vi.stubEnv("HOME", join(root, "home")); await mkdir(join(root, "home"), { mode: 0o700 });
-  pilot = { registration: { schedule: [{ kind: "replay", index: 0 }, { kind: "proof", index: 1 }] } };
+  pilot = { registration: { historySurface:"unified", schedule: [{ kind: "replay", index: 0 }, { kind: "proof", index: 1 }] } };
   const registrationPath = join(root, "registration.json"), raw = JSON.stringify(pilot); await writeFile(registrationPath, raw, { mode: 0o600 });
-  args = { command: "run", registrationPath, registrationSha256: digest(raw), authorizationPath: join(root, "missing-authorization.json"), credentialPath: join(root, "missing-credential.json"), outputRoot: join(root, "output") };
+  args = { historySurface:"unified", command: "run", registrationPath, registrationSha256: digest(raw), authorizationPath: join(root, "missing-authorization.json"), credentialPath: join(root, "missing-credential.json"), outputRoot: join(root, "output") };
   await mkdir(args.outputRoot, { mode: 0o700 });
 });
 afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });

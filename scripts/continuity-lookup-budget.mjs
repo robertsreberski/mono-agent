@@ -21,7 +21,7 @@ export function freezeBudget(inventory) {
   const largestResponse = Math.max(...paths.flatMap(path => path.responseBytes));
   const maxPathBytes = Math.max(...paths.map(path => path.bytes));
   const byteBudget = Math.min(BYTE_CAP, Math.ceil((maxPathBytes + 2 * largestResponse) / 1024) * 1024);
-  const budget = { schema: "continuity-lookup-budget-v1", status: "frozen", protocol: "query-first-packed-id-otherwise-one-source-query-10-and-8192-get-v1",
+  const budget = { schema: "continuity-lookup-budget-v3", status: "frozen", protocol: "query-first-packed-id-otherwise-one-source-query-10-and-8192-get-v1",
     callBudget, byteBudget, contextWindowTokens: 272000, contextMarginTokens: 16000,
     feasibilityTokenBound: "observed-initial-context-json-bytes/3-or-trace-estimate; one-token-per-response-byte-plus-300-per-round; native-at-least-150000-every-round",
     corpus: inventory.corpus, soul: SOUL_BINDING, inventorySha256: digest(inventory),
@@ -52,7 +52,7 @@ function retainedInventory(modules, checkpoint) {
 }
 
 /** Fictional-only sizing regression, independent of any corpus-loading loops. */
-export async function measureSizingRegressions({ modules, root, handleConversationHistoryRequest }) {
+export async function measureSizingRegressions({ modules, root, handleSaidHistoryRequest }) {
   // Regression records use the real writer, handler and wire response splitter too.
   const { ToolHistoryWriter, ToolHistoryReader, continuityRecordId, continuityGenerationId } = modules.conversation;
 
@@ -75,7 +75,7 @@ export async function measureSizingRegressions({ modules, root, handleConversati
           recordId: record.recordId, retainedBytes: Buffer.byteLength(record.text), initialContextBytes: null, initialTokens: arm === "native-lookup" ? 150000 : 12000, admissionCap: 6000000,
           calls: 0, bytes: 0, cumulativeBytes: 0, responseBytes: [], responseSha256: [], searchPages: 0, getChunks: 0, discovered: false };
         // No packed id in these regression fixtures: one query-first search then get.
-        let result = handleConversationHistoryRequest(binding, { action: "search", query: index === 0 ? "Cobalt" : '\"', limit: 10 });
+        let result = handleSaidHistoryRequest(binding, { action: "search", query: index === 0 ? "Cobalt" : '\"', limit: 10 });
         const measure = result => { const serialized = JSON.stringify(result.content), bytes = Buffer.byteLength(serialized); path.calls++; path.bytes += bytes; path.cumulativeBytes += path.bytes; path.responseBytes.push(bytes); path.responseSha256.push(sha256(serialized)); };
         measure(result); path.searchPages++;
         const found = result.structuredContent.items?.find(item => item.sha256 === path.retainedSha256);
@@ -85,7 +85,7 @@ export async function measureSizingRegressions({ modules, root, handleConversati
         path.recordId = found.recordId;
         let args = { action: "get", recordId: found.recordId, chunkBytes: 8192 }, recovered = "";
         do {
-          result = handleConversationHistoryRequest(binding, args); measure(result); path.getChunks++;
+          result = handleSaidHistoryRequest(binding, args); measure(result); path.getChunks++;
           recovered += result.structuredContent.chunk;
           args = result.structuredContent.navigation.nextActions[0]?.arguments;
         } while (args);
@@ -149,8 +149,8 @@ export async function measureBudget({ output, onProgress = () => {} }) {
       }
     }
   }
-  const { handleConversationHistoryRequest } = await import(pathToFileURL(join(ROOT, "packages/app/dist/request-tools/conversation-history.js")).href);
-  const regressions = await measureSizingRegressions({ modules, root: join(output, "scratch", "regressions"), handleConversationHistoryRequest });
+  const { handleSaidHistoryRequest } = await import(pathToFileURL(join(ROOT, "packages/app/dist/request-tools/history-said.js")).href);
+  const regressions = await measureSizingRegressions({ modules, root: join(output, "scratch", "regressions"), handleSaidHistoryRequest });
   inventory.corpus.regressions = regressions.corpus.regressions;
   inventory.paths.push(...regressions.paths); inventory.retained.push(...regressions.retained);
   const budget = freezeBudget(inventory);

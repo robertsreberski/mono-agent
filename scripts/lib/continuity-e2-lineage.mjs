@@ -220,7 +220,7 @@ export function e2BodySummaryRepresentations(body) {
     const parts = typeof item.content === "string" ? [item.content] : (item.content ?? [])
       .filter(p => ["input_text", "output_text", "reasoning_text", "refusal"].includes(p.type)).map(p => p.type === "refusal" ? p.refusal : p.text);
     // These fields can be supplied by a child/SDK transcript, not solely by a
-    // durable ConversationHistory read. Apply the same complete-claim checks.
+    // durable History read. Apply the same complete-claim checks.
     if (item.type === "function_call_output" && typeof item.output === "string") parts.push(item.output);
     if (item.type === "reasoning") parts.push(...(item.summary ?? []).filter(p => p.type === "summary_text").map(p => p.text));
     for (const text of parts) {

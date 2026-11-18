@@ -3,7 +3,7 @@
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { sha256 } from "./lib/continuity-lookup.mjs";
+import { LOOKUP_ROLE_PROTOCOL, sha256 } from "./lib/continuity-lookup.mjs";
 import { digest } from "./lib/continuity-dataset.mjs";
 import { registerLookup, readRegistration, runLookupRoles, aggregateRoleFiles, requireLookup } from "./lib/continuity-lookup-roles.mjs";
 
@@ -87,7 +87,7 @@ External workload: --suites holdout --corpus-manifest FILE --manifest-sha256 SHA
   --selection-seed N [--per-group 2] --lookup-policy FILE --lookup-policy-sha256 SHA
   --output-limit N --output-limit-source enforced|catalog_max --catalog-cap-usd C (register)
   External registration uses one repeat, fixed-policy feasibility and a run-wide proposed cap; no legacy gates.
-Both checkouts must implement continuity-lookup-role-v1. Registration always builds the app closure.
+Both checkouts must implement ${LOOKUP_ROLE_PROTOCOL}. Registration always builds the app closure.
 Registration/run output directories must be outside both checkouts (symlinks resolved).
 No provider calls, fetch, checkout, cherry-pick, significance claims or spending authorization.`;
 export async function main(argv = process.argv.slice(2), { stdout = console.log } = {}) {
