@@ -31,6 +31,20 @@ async function linkDependencies(source, target) {
     }
   }
 }
+export function stripPackRetrievalGuidance(render, implementation) {
+  const declaration = /^export const PACK_RETRIEVAL_GUIDANCE = .*;\n/mu;
+  const usage = 'const guidance = historyScopes?.said ? PACK_RETRIEVAL_GUIDANCE : "";';
+  const guidanceImport = /^(import \{ [^\n]*?)PACK_RETRIEVAL_GUIDANCE, ([^\n]+ \} from "\.\/render-fit\.js";)$/mu;
+  const parameter = "historyScopes?: HistoryToolAvailability): ContinuityPack";
+  if (!declaration.test(render) || !implementation.includes(usage) || !guidanceImport.test(implementation) || !implementation.includes(parameter)) {
+    throw Error("proof_guidance_baseline_changed");
+  }
+  return {
+    render: render.replace(declaration, ""),
+    implementation: implementation.replace(guidanceImport, "$1$2").replace(parameter, `_${parameter}`).replace(usage, 'const guidance = "";'),
+  };
+}
+
 export const configuredDependencyRoots = root => [join(root, "node_modules"), join(root, "packages/web/webapp/node_modules")];
 export async function fullConfiguredFixture(root, base) {
   const leaves = configuredDependencyRoots(root), leafBefore = await dependencyLeafSnapshot(leaves);
@@ -52,11 +66,10 @@ export async function fullConfiguredFixture(root, base) {
     }
     const render = "packages/conversation/src/continuity/render-fit.ts", implementation = "packages/conversation/src/continuity/pack.ts";
     const original = await fs.readFile(join(f.repo, render), "utf8");
-    if (!/^export const PACK_RETRIEVAL_GUIDANCE = .*;$/mu.test(original)) throw Error("proof_guidance_baseline_changed");
-    await fs.writeFile(join(f.repo, render), original.replace(/^export const PACK_RETRIEVAL_GUIDANCE = .*;\n/mu, ""));
     const source = await fs.readFile(join(f.repo, implementation), "utf8");
-    if (!source.includes('const guidance = historyScopes?.said ? PACK_RETRIEVAL_GUIDANCE : "";')) throw Error("proof_guidance_baseline_changed");
-    await fs.writeFile(join(f.repo, implementation), source.replace("historyScopes?: HistoryToolAvailability): ContinuityPack", "_historyScopes?: HistoryToolAvailability): ContinuityPack").replace('const guidance = historyScopes?.said ? PACK_RETRIEVAL_GUIDANCE : "";', 'const guidance = "";'));
+    const stripped = stripPackRetrievalGuidance(original, source);
+    await fs.writeFile(join(f.repo, render), stripped.render);
+    await fs.writeFile(join(f.repo, implementation), stripped.implementation);
     for (const path of [f.repo, pack]) {
       // The real app closure includes web. Its explicit install step is not
       // permitted in a shared-dependency proof; retain the actual build only.
