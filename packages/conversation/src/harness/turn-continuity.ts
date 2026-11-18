@@ -11,7 +11,7 @@ import {
   TOOL_HISTORY_RESULT_MAX_BYTES,
   utf8Prefix,
 } from "../tool-history/payload.js";
-import { isNestedHistoryTool, NESTED_HISTORY_OMISSION } from "../tool-history/nested-history.js";
+import { shouldOmitCapturedHistoryResult, NESTED_HISTORY_OMISSION } from "../tool-history/nested-history.js";
 import { senderLabel } from "./speaker-context.js";
 
 export const CANCELLED_TURN_HISTORY_KEY_PREFIX = "cancelled-turn:v1:";
@@ -183,10 +183,10 @@ function captureToolCategory(name: string): MemoryCaptureEvidence["toolOutcomes"
 }
 
 export class UncommittedTurnCollector {
-  private readonly omitNestedHistoryResults: boolean;
+  private readonly continuityEnabled: boolean;
   private readonly appOwnedHistory: boolean;
   constructor(continuityEnabled = false, appOwnedHistory = false) {
-    this.omitNestedHistoryResults = continuityEnabled;
+    this.continuityEnabled = continuityEnabled;
     this.appOwnedHistory = appOwnedHistory;
   }
   private readonly nativeEvents = new WeakSet<object>();
@@ -368,8 +368,7 @@ export class UncommittedTurnCollector {
         truncated: payload.truncated,
       };
     } else {
-      const nested = this.omitNestedHistoryResults && isNestedHistoryTool(event.toolName ?? call.toolName,
-        this.appOwnedHistory ? { appOwnedHistory: true } : undefined);
+      const nested = shouldOmitCapturedHistoryResult(event.toolName ?? call.toolName, this.continuityEnabled, this.appOwnedHistory);
       const payload = boundedToolHistoryPayload(nested ? { omitted: NESTED_HISTORY_OMISSION } : event.content ?? null, TOOL_HISTORY_RESULT_MAX_BYTES);
       const hadInvocation = call.invocation !== undefined;
       if (call.invocation === undefined) {

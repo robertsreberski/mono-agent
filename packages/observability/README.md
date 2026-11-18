@@ -151,6 +151,11 @@ inspection when the applicable run evidence is degraded.
 
 ### Recorder checkpoints and reads
 
+Configured app conversation runs stamp positive History ownership in new run
+summaries. The History runs projection uses it to omit nested bare History
+output without reclassifying unmarked historical third-party calls. Existing
+artifacts are not rewritten.
+
 The JSONL recorder writes an initial `running` snapshot, then schedules a
 checkpoint of the redacted event trail after 25 new events or five seconds
 from the first uncheckpointed event, whichever comes first. Checkpoints are

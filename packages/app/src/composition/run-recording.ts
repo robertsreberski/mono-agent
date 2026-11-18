@@ -35,6 +35,7 @@ export function composeRunRecorder(
     conversationId: args.conversationId,
     artifactDir: deps.artifactDir,
     ...(args.runKind === "memory" ? { artifactKind: "memory" as const } : {}),
+    ...(args.runKind === "channel" ? { appOwnedHistory: true as const } : {}),
     ...(args.isolated === undefined ? {} : { isolated: args.isolated }),
     ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
     ...(args.systemPrompt === undefined ? {} : { systemPrompt: args.systemPrompt }),

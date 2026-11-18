@@ -15,6 +15,8 @@ import {
 import * as z from "zod/v4";
 
 import {
+  isAppOwnedHistoryResult,
+  REQUEST_SCOPED_MCP_NESTED_RESULT_OMISSION,
   requestScopedConversationMatches,
   requestScopedCurrentRunBlocked,
   requestScopedNestedResult,
@@ -994,7 +996,7 @@ function projectRun(
   artifactDir: string,
 ): ProjectedRun {
   const timeline: ProjectedTimelineEntry[] = [];
-  const callsById = new Map<string, ProjectedToolEntry>();
+  const callsById = new Map<string, { readonly entry: ProjectedToolEntry; readonly appOwnedHistory: boolean }>();
   const trigger = triggerFromUserInput(summary.userInput, MAX_PROJECTED_STRING_BYTES, artifactDir);
   let finalOutputParts: string[] = [];
   let previousEventIndex: number | undefined;
@@ -1042,15 +1044,16 @@ function projectRun(
         }
         if (block.type !== "tool_use") continue;
         const toolUseId = boundedString(stringField(block, "id") ?? `tool-${event.index}-${blockIndex}`, 512);
+        const name = stringField(block, "name") ?? "tool";
         const entry: ProjectedToolEntry = {
           kind: "tool",
           ...(timestamp === undefined ? {} : { timestamp }),
           toolUseId: sanitizeVisibleText(toolUseId, artifactDir, 512),
-          name: sanitizeVisibleText(stringField(block, "name") ?? "tool", artifactDir, 256),
+          name: sanitizeVisibleText(name, artifactDir, 256),
           input: boundedProjectedValue(block.input, artifactDir),
         };
         timeline.push(entry);
-        callsById.set(toolUseId, entry);
+        callsById.set(toolUseId, { entry, appOwnedHistory: isAppOwnedHistoryResult(name, summary.appOwnedHistory === true) });
       }
       if (visibleOutputParts.length > 0) finalOutputParts.push(...visibleOutputParts);
       continue;
@@ -1064,11 +1067,11 @@ function projectRun(
         const toolUseId = stringField(block, "tool_use_id");
         const linked = toolUseId === undefined ? undefined : callsById.get(boundedString(toolUseId, 512));
         if (linked !== undefined) {
-          linked.result = {
-            content: requestScopedNestedResult(
-              linked.name,
+          linked.entry.result = {
+            content: linked.appOwnedHistory ? REQUEST_SCOPED_MCP_NESTED_RESULT_OMISSION : requestScopedNestedResult(
+              linked.entry.name,
               ["RunHistory", "run_history"],
-              requestScopedNestedResult(linked.name, ["ConversationHistory", "conversation_history"],
+              requestScopedNestedResult(linked.entry.name, ["ConversationHistory", "conversation_history"],
                 boundedProjectedValue(normalizeToolResultContent(block.content, artifactDir), artifactDir)),
               NESTED_RUN_HISTORY_RESULT_OMISSION,
             ),

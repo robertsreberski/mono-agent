@@ -1,7 +1,7 @@
 import { historyToolAvailabilityForRuntime } from "../request-tools/history-policy.js";
 import * as presentation from "../request-tools/history-presentation.js";
 import { handleRunsHistoryRequest } from "./fixtures/history-scopes.js";
-import { requestScopedNestedResult } from "../mcp/request-scoped-mcp.js";
+import { isAppOwnedHistoryResult } from "../mcp/request-scoped-mcp.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -209,9 +209,12 @@ it("does not infer unified ownership from an external History server name in leg
 });
 
 
-it.each(["History", "mcp__mono-agent-history__History", "mcp__fictional-external__History"])("omits only owned nested history in unified readers: %s", tool => {
-  expect(requestScopedNestedResult(tool, [], "Fictional evidence")).toBe("Fictional evidence");
-  expect(requestScopedNestedResult(tool, [], "Fictional evidence")).toBe("Fictional evidence");
+it.each([
+  ["History", false, false], ["History", true, true],
+  ["mcp__mono-agent-history__History", false, true], ["mcp__mono-agent-history__History", true, true],
+  ["mcp__fictional-external__History", true, false], ["mcp__mono-agent-history__HistorySuffix", true, false],
+] as const)("classifies current nested output for %s (app run: %s)", (tool, appOwned, nested) => {
+  expect(isAppOwnedHistoryResult(tool, appOwned)).toBe(nested);
 });
 
 

@@ -5,12 +5,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { appOwnedMcpServerSpec } from "./app-owned-tool-policy.js";
 import { createLoopbackMcpEndpoint } from "./loopback-transport.js";
+import { HISTORY_MCP_TOOL_NAME, HISTORY_TOOL_NAME } from "../request-tools/history-policy.js";
 import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 
 /** Pi bounds MCP text content at 12,000 characters; leave framing headroom. */
 const REQUEST_SCOPED_MCP_MODEL_TEXT_MAX_CHARS = 10_000;
 const REQUEST_SCOPED_MCP_MAX_CURSOR_BYTES = 2_048;
-const REQUEST_SCOPED_MCP_NESTED_RESULT_OMISSION =
+export const REQUEST_SCOPED_MCP_NESTED_RESULT_OMISSION =
   "[nested history-tool result omitted; inspect the referenced record directly]";
 
 interface RequestScopedMcpEndpointOptions {
@@ -76,6 +77,11 @@ export function requestScopedNestedResult(
   return aliases.some((alias) => toolName === alias || toolName.endsWith(`__${alias}`))
     ? omission
     : value;
+}
+
+/** Exact current History identity; the bare name needs positive host provenance. */
+export function isAppOwnedHistoryResult(toolName: string, appOwnedHistory: boolean): boolean {
+  return toolName === HISTORY_MCP_TOOL_NAME || (appOwnedHistory && toolName === HISTORY_TOOL_NAME);
 }
 
 export function splitRequestScopedModelText(

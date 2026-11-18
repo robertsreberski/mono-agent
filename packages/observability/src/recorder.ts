@@ -69,6 +69,7 @@ class JsonlRunRecorder implements RunRecorder {
   private readonly userInput: string | undefined;
   private readonly systemPrompt: string | undefined;
   private readonly isolated: boolean | undefined;
+  private readonly appOwnedHistory: boolean;
   private readonly source: string | undefined;
   private readonly sourceDetail: string | undefined;
   private preparePromise: Promise<void> | undefined;
@@ -101,6 +102,7 @@ class JsonlRunRecorder implements RunRecorder {
         ? redactArtifactValue(options.systemPrompt, SYSTEM_PROMPT_MAX_BYTES)
         : undefined;
     this.isolated = typeof options.isolated === "boolean" ? options.isolated : undefined;
+    this.appOwnedHistory = options.appOwnedHistory === true;
     this.source =
       typeof options.source === "string" && options.source.length > 0
         ? redactArtifactValue(options.source, this.maxStringBytes)
@@ -324,6 +326,7 @@ class JsonlRunRecorder implements RunRecorder {
               : result.providerSessionId,
           }),
       ...(isolated === undefined ? {} : { isolated }),
+      ...(this.appOwnedHistory ? { appOwnedHistory: true as const } : {}),
       eventCount: this.events.length,
       artifactPaths: this.artifactPaths(),
       ...(this.userInput === undefined ? {} : { userInput: this.userInput }),

@@ -18,4 +18,10 @@ export function isNestedHistoryTool(name: string, options?: NestedHistoryOptions
   if (name === HISTORY_MCP_TOOL_NAME || name === HISTORY_TOOL_NAME) return options?.appOwnedHistory === true;
   return LEGACY_HISTORY_TOOL_ALIASES.some(alias => name === alias || name.endsWith(`__${alias}`));
 }
+/** Current app-owned output is never retained; split-era names keep the legacy continuity gate. */
+export function shouldOmitCapturedHistoryResult(name: string, continuityEnabled: boolean, appOwnedHistory: boolean): boolean {
+  return name === HISTORY_MCP_TOOL_NAME || name === HISTORY_TOOL_NAME
+    ? appOwnedHistory
+    : continuityEnabled && isNestedHistoryTool(name);
+}
 export const NESTED_HISTORY_OMISSION = "[nested history-tool result omitted; inspect the referenced source directly]";

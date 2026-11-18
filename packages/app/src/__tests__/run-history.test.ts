@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import * as observability from "@mono-agent/observability";
 import { createJsonlRunRecorder, type RunSummary, type RuntimeEventLike } from "@mono-agent/observability";
+import { composeRunRecorder } from "../composition/run-recording.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@mono-agent/observability", async (importOriginal) => {
@@ -44,11 +45,14 @@ interface WriteRunOptions {
   readonly events?: readonly RuntimeEventLike[];
   readonly result?: Record<string, unknown>;
   readonly running?: boolean;
+  readonly appRecorded?: boolean;
 }
 
 async function writeRun(options: WriteRunOptions): Promise<RunSummary> {
   let now = Date.parse(options.startedAt);
-  const recorder = createJsonlRunRecorder({
+  const recorder = options.appRecorded === true ? composeRunRecorder({ artifactDir: options.artifactDir }, {
+    runId: options.runId, conversationId: options.conversationId, runKind: "channel",
+  }) : createJsonlRunRecorder({
     runId: options.runId,
     conversationId: options.conversationId,
     artifactDir: options.artifactDir,
@@ -1242,13 +1246,18 @@ describe("History runs scope", () => {
     { toolName: "mcp__mono-agent-run-history__RunHistory", omission: "[nested RunHistory result omitted; inspect the referenced run directly]" },
     { toolName: "mcp__mono-agent-conversation-history__ConversationHistory", omission: "[nested history-tool result omitted; inspect the referenced record directly]" },
     { toolName: "conversation_history", omission: "[nested history-tool result omitted; inspect the referenced record directly]" },
-  ])("summarizes tool activity and omits nested $toolName result bodies", async ({ toolName, omission }) => {
+    { toolName: "mcp__mono-agent-history__History", omission: "[nested history-tool result omitted; inspect the referenced record directly]" },
+    { toolName: "History", appRecorded: true, omission: "[nested history-tool result omitted; inspect the referenced record directly]" },
+    { toolName: "History" },
+    { toolName: "mcp__fictional-external__History", appRecorded: true },
+  ])("projects $toolName result bodies with ownership ($appRecorded), keeping tool activity", async ({ toolName, omission, appRecorded }) => {
     const artifactDir = await tempDir();
     const conversationId = "webhook:nested-history";
     await writeRun({
       artifactDir,
       runId: "nested-history-run",
       conversationId,
+      ...(appRecorded === undefined ? {} : { appRecorded }),
       startedAt: "2026-07-12T08:00:00.000Z",
       events: [
         {
@@ -1301,10 +1310,15 @@ describe("History runs scope", () => {
       const tool = inspected.timeline.find((entry) => entry.kind === "tool") as {
         readonly result: { readonly content: unknown };
       };
-      expect(tool.result.content).toBe(omission);
       const serialized = JSON.stringify([inspected.overviewResult, ...inspected.pageResults]);
-      expect(serialized).not.toContain("nested-result-marker");
-      expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(40 * 1_024);
+      if (omission === undefined) {
+        expect(JSON.stringify(tool.result.content)).toContain("nested-result-marker");
+        expect(serialized).toContain("nested-result-marker");
+      } else {
+        expect(tool.result.content).toBe(omission);
+        expect(serialized).not.toContain("nested-result-marker");
+        expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(40 * 1_024);
+      }
     } finally {
       await history.close();
     }

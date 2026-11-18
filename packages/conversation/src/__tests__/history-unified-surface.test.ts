@@ -103,10 +103,10 @@ it.each([
   expect(gap.includes('History search/get (scope "said")')).toBe(retrieves);
 });
 
-it("omits the app-owned History output from writer retention only with positive app ownership", async () => {
+it.each([true, false])("omits the app-owned History output from writer retention (continuity=%s)", async continuityEnabled => {
   const root = await mkdtemp(join(tmpdir(), "history-unified-writer-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
-  const writer = await ToolHistoryWriter.open({ root, continuityEnabled: true });
+  const writer = await ToolHistoryWriter.open({ root, continuityEnabled });
   cleanups.push(() => writer.close());
   const reader = new ToolHistoryReader(root);
   const id = "web:fiction";
@@ -114,7 +114,7 @@ it("omits the app-owned History output from writer retention only with positive 
   const text = "Fictional unified-body-cobalt evidence must not recursively accumulate.";
   async function persist(toolName: string, runId: string, appOwned: boolean) {
     const binding = { conversationId: id, logicalConversationId: id, runId, isolated: false,
-      continuityEnabled: true as const, ...(appOwned ? { appOwnedHistory: true as const } : {}) };
+      ...(continuityEnabled ? { continuityEnabled: true as const } : {}), ...(appOwned ? { appOwnedHistory: true as const } : {}) };
     await writer.persist(binding, { phase: "invocation", toolCallId: `${runId}-call`, toolName, arguments: { action: "search" } });
     await writer.persist(binding, { phase: "result", toolCallId: `${runId}-call`, toolName, state: "success", content: [{ type: "text", text }] });
     await writer.finishRun(binding, "completed");
@@ -127,21 +127,23 @@ it("omits the app-owned History output from writer retention only with positive 
   expect((await persist("mcp__mono-agent-history__History", "unified-namespaced", true)).chunk).not.toContain(text);
   const external = await persist("mcp__fictional-agent__History", "external-run", true);
   expect(external.chunk).toContain(text);
+  expect(reader.search({ ...scope, query: "unified-body-cobalt", tools: ["History"], limit: 10 }).items.map(item => item.runId))
+    .toEqual(["legacy-run"]);
   expect(reader.search({ ...scope, tools: ["History"], limit: 10 }).items.map(item => item.runId).sort())
     .toEqual(["legacy-run", "unified-run"]);
 });
 
-it("omits the app-owned History output from turn-continuity capture only with positive app ownership", async () => {
+it.each([true, false])("omits app-owned History from cancelled-turn evidence (continuity=%s)", async continuityEnabled => {
   const root = await mkdtemp(join(tmpdir(), "history-unified-collector-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
-  const writer = await ToolHistoryWriter.open({ root, continuityEnabled: true });
+  const writer = await ToolHistoryWriter.open({ root, continuityEnabled });
   cleanups.push(() => writer.close());
   const id = "web:fiction";
   const text = "Fictional unified-capture-cobalt evidence must not recursively accumulate.";
   async function capture(toolName: string, appOwned: boolean) {
     const binding = { conversationId: id, logicalConversationId: id, runId: "positive", isolated: false,
-      continuityEnabled: true as const, ...(appOwned ? { appOwnedHistory: true as const } : {}) };
-    const collector = new UncommittedTurnCollector(true, appOwned);
+      ...(continuityEnabled ? { continuityEnabled: true as const } : {}), ...(appOwned ? { appOwnedHistory: true as const } : {}) };
+    const collector = new UncommittedTurnCollector(continuityEnabled, appOwned);
     const sink = collector.wrapToolLifecycleSink(writer.createSink(binding));
     await sink({ phase: "invocation", toolCallId: "fixture-call", toolName, arguments: { action: "search" } });
     await sink({ phase: "result", toolCallId: "fixture-call", toolName, state: "success", content: [{ type: "text", text }] });

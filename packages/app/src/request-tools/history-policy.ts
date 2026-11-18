@@ -4,7 +4,8 @@ export const HISTORY_TOOL_NAME = "History";
 export const HISTORY_SCOPES = ["said", "tools", "runs"] as const;
 export type HistoryScope = (typeof HISTORY_SCOPES)[number];
 type Policy = Pick<ToolPolicyInput, "allowedTools" | "disallowedTools">;
-const NAMES = [HISTORY_TOOL_NAME, `mcp__${HISTORY_MCP_SERVER_NAME}__History`, `mcp__${HISTORY_MCP_SERVER_NAME}__*`];
+export const HISTORY_MCP_TOOL_NAME = `mcp__${HISTORY_MCP_SERVER_NAME}__${HISTORY_TOOL_NAME}`;
+const NAMES = [HISTORY_TOOL_NAME, HISTORY_MCP_TOOL_NAME, `mcp__${HISTORY_MCP_SERVER_NAME}__*`];
 export function resolveHistoryScopes(policy: Policy, capabilities: HistoryToolAvailability = { said: true, tools: true, runs: true }): readonly HistoryScope[] {
   const allowed = policy.allowedTools ?? [], denied = policy.disallowedTools ?? [];
   return Object.freeze(denied.includes("*") || NAMES.some(name => denied.includes(name))
