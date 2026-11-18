@@ -583,7 +583,7 @@ describe("runProactiveCompaction — trigger math", () => {
   it("compacts, records diagnostics, and re-anchors the baseline when the estimate crosses the trigger", async () => {
     // Large fixed overhead pushes the estimate over triggerTokens.
     const fixture = hookHarness();
-    const runState = freshRunState(fixture.session, { policy: policy() });
+    const runState = freshRunState(fixture.session, { policy: policy({ contextWindow: 20_000 }) });
     await runProactiveCompaction(runState, {
       harness: fixture.harness, systemPrompt: "s",
       options: { compaction: {} }, // fixed overhead ON
@@ -866,7 +866,7 @@ describe("host envelopes at compaction boundaries", () => {
 });
 
 describe("terminal compaction accounting", () => {
-  it.each(["length", "empty", "aborted", "error", "throw", "no_savings", "success"])("retains operation accounting for %s and preserves context on rejection", async (mode) => {
+  it.each(["length", "empty", "aborted", "error", "throw", "no_savings", "success"])("retains operation accounting for %s and commits only usable replies", async (mode) => {
     const fixture = hookHarness();
     const original = [...fixture.messages];
     const events: CompactionEvent[] = [];
@@ -877,16 +877,17 @@ describe("terminal compaction accounting", () => {
     });
     await (tryCompact as TryCompact)(fixture.harness, { trigger: "proactive", session: fixture.session, onEvent: (event) => events.push(event), runtimeWarnings: [], fixedOverheadTokens: 321,
       policy: { keepRecentTokens: 4000, summaryMaxTokens: 2000, compactionMinSavingsTokens: mode === "no_savings" ? 500000 : 0 } });
-    expect(events.map((event) => event.status)).toEqual(["running", mode === "success" ? "succeeded" : mode === "no_savings" ? "skipped" : "failed"]);
+    const applied = mode === "success" || mode === "length";
+    expect(events.map((event) => event.status)).toEqual(["running", applied ? "succeeded" : mode === "no_savings" ? "skipped" : "failed"]);
     const terminal = events[1]!;
     expect(terminal.accounting.requests).toHaveLength(1);
     expect(terminal.accounting.requests[0]!.costUsd).toBe(mode === "throw" ? null : 0.03);
     expect(terminal.accounting.fullRequestBefore - terminal.accounting.transcriptBefore).toBe(321);
     expect(terminal.accounting.policy.summaryMaxTokens).toBe(2000);
-    expect(terminal.accounting.afterSource).toBe(mode === "success" ? "persisted" : mode === "no_savings" ? "preview" : null);
+    expect(terminal.accounting.afterSource).toBe(applied ? "persisted" : mode === "no_savings" ? "preview" : null);
     expect(JSON.stringify(events)).not.toMatch(/PRIVATE|secret|private generated/u);
-    expect(fixture.persistedCount()).toBe(mode === "success" ? 1 : 0);
-    if (mode !== "success") expect(fixture.messages).toEqual(original);
+    expect(fixture.persistedCount()).toBe(applied ? 1 : 0);
+    if (!applied) expect(fixture.messages).toEqual(original);
     expect(fixture.handlerCount()).toBe(0);
   });
 });

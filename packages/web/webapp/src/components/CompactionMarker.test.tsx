@@ -19,6 +19,17 @@ describe("persisted compaction marker divider", () => {
 });
 
 it.each([
+  ["protected_tuples_missing", "Some protected details were not preserved. · "],
+  ["summary_budget_exceeded", "Summary was longer than the target. · "],
+  ["output_truncated", "The summary was cut off. · "],
+  ["provider_error", ""],
+] as const)("renders a successful cut with only allow-listed %s notes", (reason, note) => {
+  render(<CompactionMarkerRow marker={{ type: "conversation-marker", kind: "compaction", at: "2026-01-15T10:00:00Z",
+    operationId: "fictional", status: "succeeded", trigger: "automatic", reason, httpStatus: 500 }} />);
+  expect(screen.getByRole("note", { name: `Context compacted · ${note}automatic` })).toBeVisible();
+});
+
+it.each([
   ["provider_overloaded", "Provider overloaded (HTTP 529).", 529],
   ["timeout", "Summary request timed out.", undefined],
   ["cancelled", "Compaction was cancelled.", undefined],

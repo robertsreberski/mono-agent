@@ -16,13 +16,14 @@ import { createMidRunCompaction } from "../../execution/pi/compaction/mid-run-co
 import { createCompactionUsage, manualCompactionAccounting } from "../../telemetry/compaction-usage.js";
 import { tryCompact, runReactiveCompaction } from "../../execution/pi/compaction/compaction-driver.js";
 
-import { historicalTuples, protectedHistoricalInput } from "../../engine/compaction-kit/historical-preservation.js";
+import { createSummaryBudget, historicalTuples, protectedHistoricalInput } from "../../engine/compaction-kit/historical-preservation.js";
+import { formatFileOperations } from "../../engine/compaction-kit/utils.js";
 
 const tuple = "- Permit; m1; pending; no approval.";
 const history = `## Historical events and corrections\n${tuple}\n## Pending items\n- None`;
 const answer = (text: string) => ({ role: "assistant", stopReason: "stop", content: [{ type: "text", text }], usage: { input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
 
-async function fixture(summary = history, inherited = false, admitted: boolean | "carry" = false, seedText?: string) {
+async function fixture(summary = history, inherited = false, admitted: boolean | "carry" = false, seedText?: string, strictRecording = false) {
   const inheritedProjection = { messages: [{ role: "user", content: "Fictional inherited prefix.", timestamp: 1 }], coverage: { version: 1, sources: [{ journalId: "frozen", sourceTipId: "tip", sourceSeq: 7, sourceDigest: "3".repeat(64) }] } };
   const root = await mkdtemp(join(tmpdir(), "historical-liveness-"));
   const repo = new JsonlSessionRepo({ sessionsRoot: root });
@@ -58,11 +59,14 @@ async function fixture(summary = history, inherited = false, admitted: boolean |
     on: (_type: string, handler: any) => driver.hooks.on("before_compaction", handler), compact: () => driver.compact(), prompt: vi.fn((text: string) => driver.prompt(text)) };
   const events: any[] = [], warnings: any[] = [];
   const policy = { enabled: true, summaryMaxTokens: 1000, keepRecentTokens: 1000, compactionMinSavingsTokens: 0, effort: "none", failureCooldownMs: 900000 };
-  const compact = (trigger: string, abortSignal?: AbortSignal) => tryCompact(harness, { trigger, abortSignal, onEvent: (event: any) => events.push(event), runtimeWarnings: warnings, session, policy });
+  const compact = (trigger: string, abortSignal?: AbortSignal) => tryCompact(harness, { trigger, abortSignal, ...(strictRecording ? { continuityRecording: true } : {}), onEvent: (event: any) => events.push(event), runtimeWarnings: warnings, session, policy });
   const grow = async () => { for (let i = 0; i < 2; i++) await raw.appendMessage({ role: "user", content: "Fictional context. ".repeat(2000), timestamp: 2 }); };
   return { root, raw, session, harness, driver, faux, completeSimple, events, warnings, policy, compact, grow, access,
     close: async () => { await driver.close(); await raw.close(); await repo.close(); await rm(root, { recursive: true, force: true }); } };
 }
+
+// Exercise the old refusal/retry guard in its explicitly strict recording lane.
+const strictFixture = (summary = history) => fixture(summary, false, false, undefined, true);
 
 it("the real checkpoint scheduler ignores pre-cut usage in its retained tail", async () => {
   const f = await fixture();
@@ -81,7 +85,7 @@ it("the real checkpoint scheduler ignores pre-cut usage in its retained tail", a
 });
 
 it("a real journal/driver refusal never suppresses reactive overflow: bypass, commit, and continue the run", async () => {
-  const f = await fixture();
+  const f = await strictFixture();
   try {
     await f.grow();
     expect((await f.compact("proactive")).applied).toBe(false);
@@ -104,7 +108,7 @@ it("a real journal/driver refusal never suppresses reactive overflow: bypass, co
 });
 
 it("monotone protected growth in real driver cuts reaches unfits and bypasses instead of dead-ending", async () => {
-  const f = await fixture();
+  const f = await strictFixture();
   try {
     let current = history;
     f.completeSimple.mockImplementation(async (_model?: any, context?: any) => {
@@ -141,7 +145,7 @@ it.each(["manual", "reactive_overflow"])("%s reuses oversized protected output w
 });
 
 it("idle proactive pays once per growth step, but changed protected history permits another attempt", async () => {
-  const f = await fixture();
+  const f = await strictFixture();
   try {
     await f.grow();
     for (let attempt = 0; attempt < 3; attempt++) expect((await f.compact("proactive")).applied).toBe(false);
@@ -168,7 +172,7 @@ it.each(["", "(none)", "- (none)", "None", "- None"])("healthy zero-tuple sectio
   } finally { await f.close(); }
 });
 it.each(["manual", "reactive_overflow"].flatMap(trigger => [false, true].map(split => ({ trigger, split }))))("protected truncation bypasses in $trigger split=$split with at most one extra request", async ({ trigger, split }) => {
-  const f = await fixture();
+  const f = await strictFixture();
   try {
     await f.grow();
     if (split) await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fictional suffix. ".repeat(2000) }], timestamp: 3 });
@@ -180,7 +184,7 @@ it.each(["manual", "reactive_overflow"].flatMap(trigger => [false, true].map(spl
   } finally { await f.close(); }
 });
 it("a protected length refusal is not cached as a failed provider request before reactive recovery", async () => {
-  const f = await fixture();
+  const f = await strictFixture();
   try {
     await f.grow();
     f.completeSimple.mockResolvedValueOnce({ ...answer(history), stopReason: "length" });
@@ -205,7 +209,7 @@ it.each([false, true])("ready inherited-prefix admission bypasses its actual pro
   } finally { await f.close(); }
 });
 it("a changed split prefix cannot repay an idle refusal below the shared growth threshold", async () => {
-  const f = await fixture();
+  const f = await strictFixture();
   try {
     await f.grow();
     expect((await f.compact("proactive")).applied).toBe(false);
@@ -218,7 +222,7 @@ it("a changed split prefix cannot repay an idle refusal below the shared growth 
   } finally { await f.close(); }
 });
 it("successful manual recovery clears the idle refusal baseline even with unchanged protected tuples", async () => {
-  const f = await fixture();
+  const f = await strictFixture();
   try {
     await f.grow();
     await f.compact("proactive");
@@ -232,7 +236,7 @@ it("successful manual recovery clears the idle refusal baseline even with unchan
 });
 
 it.each(["manual", "reactive_overflow"])("%s retries only a truncated split prefix with legacy caps", async trigger => {
-  const f = await fixture();
+  const f = await strictFixture();
   try {
     await f.grow();
     await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fictional suffix. ".repeat(2000) }], timestamp: 3 });
@@ -245,7 +249,7 @@ it.each(["manual", "reactive_overflow"])("%s retries only a truncated split pref
   } finally { await f.close(); }
 });
 it("legacy truncation after the single extra retry fails normally without looping", async () => {
-  const f = await fixture();
+  const f = await strictFixture();
   try {
     await f.grow();
     f.completeSimple.mockResolvedValue({ ...answer(history), stopReason: "length" });
@@ -261,10 +265,10 @@ it("legacy truncation after the single extra retry fails normally without loopin
 });
 
 it("shares a single paid refusal across idle, threshold checkpoints and new run controllers until real transcript growth", async () => {
-  const f = await fixture();
+  const f = await strictFixture();
   const runState = { session: f.session, sessionBaselineCount: 0, compaction: { policy: { ...f.policy, contextWindow: 100000, triggerTokens: 10000 },
     diagnostics: { context_fixed_overhead_tokens: 10000, context_user_message_tokens: 0 }, applied: false, compactedThisRun: false, reactiveAttempted: false } };
-  const arm = () => createMidRunCompaction(runState, { harness: f.harness, options: {}, reference: "faux:liveness", onEvent: (event: any) => f.events.push(event), runtimeWarnings: f.warnings });
+  const arm = () => createMidRunCompaction(runState, { harness: f.harness, options: { continuityRecording: true }, reference: "faux:liveness", onEvent: (event: any) => f.events.push(event), runtimeWarnings: f.warnings });
   let controller = arm();
   try {
     f.faux.setResponses(Array.from({ length: 4 }, () => fauxAssistantMessage([fauxText("Fictional continuation.")])));
@@ -293,7 +297,7 @@ it("shares a single paid refusal across idle, threshold checkpoints and new run 
   } finally { await controller.disarm(); await f.close(); }
 });
 it("bounds split-cut refusals across idle and advancing mid-run tool steps by shared transcript growth", async () => {
-  const f = await fixture();
+  const f = await strictFixture();
   const runState = { session: f.session, sessionBaselineCount: 0, compaction: { policy: { ...f.policy, contextWindow: 100000, triggerTokens: 10000 },
     diagnostics: { context_fixed_overhead_tokens: 0, context_user_message_tokens: 0 }, applied: false, compactedThisRun: false, reactiveAttempted: false } };
   const cuts: { tokens: number; prefix: string; firstKeptId: string; splitTurn: boolean }[] = [];
@@ -306,7 +310,7 @@ it("bounds split-cut refusals across idle and advancing mid-run tool steps by sh
       prefix: JSON.stringify(prepared.turnPrefixMessages), splitTurn: prepared.isSplitTurn,
       firstKeptId: event.branchEntries.find((entry: any) => entry.type === "message" && entry.message === prepared.retainedTail[0])?.id });
   });
-  const controller = createMidRunCompaction(runState, { harness: f.harness, options: {}, reference: "faux:liveness",
+  const controller = createMidRunCompaction(runState, { harness: f.harness, options: { continuityRecording: true }, reference: "faux:liveness",
     onEvent: (event: any) => f.events.push(event), runtimeWarnings: f.warnings });
   const observed: { calls: number; tokens: number }[] = [];
   const step = vi.fn(async () => ({ content: [{ type: "text", text: "Fictional step completed." }] }));
@@ -355,7 +359,7 @@ it("bounds split-cut refusals across idle and advancing mid-run tool steps by sh
   } finally { await controller.disarm(); unobserve(); await f.close(); }
 });
 it("zero-tuple legacy truncation remains a cached provider failure", async () => {
-  const f = await fixture("## Goal\nFictional continuation without historical tuples.");
+  const f = await strictFixture("## Goal\nFictional continuation without historical tuples.");
   try {
     await f.grow();
     f.completeSimple.mockResolvedValue({ ...answer("Legacy partial output"), stopReason: "length" });
@@ -378,7 +382,7 @@ it("zero-tuple legacy truncation remains a cached provider failure", async () =>
   } finally { await f.close(); }
 });
 it("keeps partial native usage defined across durable reload without inventing a complete bill", async () => {
-  const f = await fixture();
+  const f = await strictFixture();
   try {
     await f.grow();
     f.completeSimple.mockResolvedValueOnce({ ...answer(history), stopReason: "length", usage: undefined }).mockResolvedValue(answer(history));
@@ -657,6 +661,105 @@ it("keeps the whole carry when only the dispatch frame-only input fallback fits"
   } finally { await high.close(); await low.close(); }
 });
 
+it.each([
+  { name: "fits", draftCount: 25, revisionCount: 28, revisionTokens: 10740, useRevision: true, note: undefined },
+  { name: "does not improve preservation", draftCount: 25, revisionCount: 25, revisionTokens: 10740, useRevision: false, note: "protected_tuples_missing" },
+  { name: "restores only some tuples", draftCount: 25, revisionCount: 26, revisionTokens: 10740, useRevision: true, note: "protected_tuples_missing" },
+  { name: "exceeds the composed target", draftCount: 25, revisionCount: 28, revisionTokens: 11100, useRevision: true, note: "summary_budget_exceeded" },
+  { name: "is not needed for a size-only overrun", draftCount: 28, revisionCount: 28, revisionTokens: 10740, useRevision: false, note: "summary_budget_exceeded" },
+])("commits a warm 12k cut when the draft revision $name", async ({ draftCount, revisionCount, revisionTokens, useRevision, note }) => {
+  const tuples = Array.from({ length: 28 }, (_, i) => `- Fictional archive item ${i + 1}; version A superseded by B; review pending.`);
+  const section = (count: number) => `## Historical events and corrections\n${tuples.slice(0, count).join("\n")}`;
+  const sized = (count: number, tokens: number) => {
+    const text = `${section(count)}\n\n## Critical Context\n`;
+    return text + "x".repeat(tokens * 4 - text.length);
+  };
+  const f = await fixture(section(28));
+  try {
+    f.policy.summaryMaxTokens = 12000;
+    const model = { ...f.harness.getModel(), provider: "openai-codex", api: "openai-codex-responses" };
+    f.harness.getModel = () => model;
+    const budget = createSummaryBudget(12000, estimateTokens);
+    const file = "/fictional/inventory";
+    const extraChars = 4 * (964 - budget.estimate(formatFileOperations([file], [])));
+    const readFile = file + "/archive".repeat(Math.floor(extraChars / 8)) + "x".repeat(extraChars % 8);
+    const metadata = formatFileOperations([readFile], []);
+    await f.raw.appendCompaction({ summary: section(28), tokensBefore: 10000, retainedTail: [], details: { readFiles: [readFile] } });
+    await f.grow();
+    await f.grow(); // Leave real savings even after retaining one recent message.
+    const draft = sized(draftCount, 11510);
+    const revision = sized(revisionCount, revisionTokens);
+    expect(budget.estimate(draft + metadata)).toBe(12474);
+    if (revisionTokens === 10740) expect(budget.estimate(revision + metadata)).toBe(11704);
+    f.completeSimple.mockResolvedValueOnce(answer(draft)).mockResolvedValueOnce(answer(revision));
+    expect((await f.compact("proactive")).applied).toBe(true);
+    const attempted = draftCount < 28;
+    const missingTupleCount = 28 - (useRevision ? revisionCount : draftCount);
+    expect(f.completeSimple).toHaveBeenCalledTimes(attempted ? 2 : 1);
+    const event = f.events.at(-1);
+    expect(event).toMatchObject({ type: "context_compaction", status: "succeeded",
+      accounting: { splitTurn: false, preservation: { protectedTupleCount: 28, missingTupleCount,
+        bypassReason: note ?? null, finalSummaryEstimateTokens: (useRevision ? revisionTokens : 11510) + 964 } } });
+    expect(event.reason).toBe(note);
+    expect(event.accounting.requests[0]).toMatchObject({ textTargetTokens: 9380, generatedSummaryTokens: 11510 });
+    expect(event.accounting.preservation.revision).toEqual(!attempted ? undefined : useRevision ? { status: "accepted" }
+      : { status: "rejected", reason: "tuples_missing", missingTupleCount: 28 - revisionCount });
+    if (attempted) {
+      expect(event.accounting.requests[1]).toMatchObject({ textTargetTokens: 8828, generatedSummaryTokens: revisionTokens, recoveryReason: "protected_tuples_missing" });
+      expect(f.completeSimple.mock.calls[1]![1].systemPrompt).toContain("at most 35312 UTF-16 characters");
+    }
+    const checkpoints = (await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction");
+    expect(checkpoints).toHaveLength(3);
+    expect(checkpoints.at(-1).summary).toBe((useRevision ? revision : draft) + metadata);
+  } finally { await f.close(); }
+});
+
+it.each(["proactive", "manual"])("keeps the paid split prefix and best history for warm %s", async trigger => {
+  const f = await fixture();
+  try {
+    await f.grow();
+    await f.raw.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fictional suffix. ".repeat(2000) }], timestamp: 3 });
+    const draft = "## Goal\n- Review archived crates.";
+    const prefix = "## Context for Suffix\n- Count the crates.";
+    f.completeSimple.mockResolvedValueOnce(answer(draft)).mockResolvedValueOnce(answer(prefix)).mockResolvedValueOnce(answer(history));
+    expect((await f.compact(trigger)).applied).toBe(true);
+    expect(f.completeSimple).toHaveBeenCalledTimes(3);
+    const event = f.events.at(-1);
+    expect(event).toMatchObject({ status: "succeeded", accounting: { splitTurn: true, preservation: { revision: { status: "accepted" }, missingTupleCount: 0 } } });
+    expect(event.accounting.requests[2].recoveryReason).toBe("protected_tuples_missing");
+    const checkpoint = (await f.raw.getEntries()).at(-1);
+    expect(checkpoint.summary).toBe(history + "\n\n---\n\n**Turn Context (split turn):**\n\n" + prefix);
+  } finally { await f.close(); }
+});
+
+it("keeps a nonempty truncated warm draft with all protected tuples", async () => {
+  const f = await fixture();
+  try {
+    await f.grow();
+    f.completeSimple.mockResolvedValueOnce({ ...answer(history), stopReason: "length" });
+    expect((await f.compact("manual")).applied).toBe(true);
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.events.at(-1)).toMatchObject({ status: "succeeded", reason: "output_truncated" });
+    expect((await f.raw.getEntries()).at(-1).summary).toBe(history);
+  } finally { await f.close(); }
+});
+
+it("keeps the warm model window as a hard bound even for a paid summary that saves tokens", async () => {
+  const f = await fixture();
+  try {
+    const model = { ...f.harness.getModel(), contextWindow: 40_000 };
+    f.harness.getModel = () => model;
+    await f.grow();
+    await f.grow();
+    f.completeSimple.mockResolvedValueOnce(answer(`${history}\n## Critical Context\n${"x".repeat(80_000)}`));
+    expect((await tryCompact(f.harness, { trigger: "proactive", onEvent: (event: any) => f.events.push(event),
+      runtimeWarnings: f.warnings, session: f.session, policy: f.policy, fixedOverheadTokens: 12_000 })).applied).toBe(false);
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.events.at(-1)).toMatchObject({ status: "skipped", reason: "context_too_large" });
+    expect((await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction")).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
 it("corrects a missing occurrence with one summary-only request and commits the exact provider revision", async () => {
   const predecessor = history.replace(tuple, `${tuple}\n${tuple}\n- Fictional independent event.`);
   const draft = history.replace(tuple, `${tuple}\n- Fictional independent event.`);
@@ -677,7 +780,7 @@ it("corrects a missing occurrence with one summary-only request and commits the 
     expect(f.events.at(-1)).toMatchObject({ status: "succeeded", accounting: { requests: [
       { requestOrdinal: 1, providerInvoked: true, status: "succeeded", output: 1 },
       { requestOrdinal: 2, providerInvoked: true, status: "succeeded", recoveryReason: "protected_tuples_missing", output: 1 },
-    ], preservation: { missingTupleCount: 0, bypassReason: null, hostCarriedBytes: 0 } } });
+    ], preservation: { missingTupleCount: 0, bypassReason: null, hostCarriedBytes: 0, revision: { status: "accepted" } } } });
     const usage = createCompactionUsage();
     usage.observe(f.events.at(-1));
     expect(usage.slice()).toMatchObject({ input_tokens: 2, output_tokens: 2, cost_usd: 0 });
@@ -687,7 +790,16 @@ it("corrects a missing occurrence with one summary-only request and commits the 
   } finally { await f.close(); }
 });
 
-it.each(["oversized", "provider error", "abort before correction", "abort during correction"])("retains the original refusal on %s", async failure => {
+it.each([
+  ["over byte limit", "over_length"],
+  ["provider throws", "provider_error"],
+  ["provider error reply", "provider_error"],
+  ["truncated reply", "not_stop"],
+  ["empty reply", "empty"],
+  ["abort before correction", "aborted"],
+  ["abort during correction", "aborted"],
+  ["aborted reply", "aborted"],
+])("records %s and reports %s for an unusable revision", async (failure, reason) => {
   const f = await fixture();
   const abort = new AbortController();
   try {
@@ -696,17 +808,25 @@ it.each(["oversized", "provider error", "abort before correction", "abort during
       if (failure === "abort before correction") abort.abort();
       return answer("Fictional omission.");
     }).mockImplementationOnce(async (_model, _context, options) => {
-      if (failure === "provider error") throw new Error("Fictional provider error");
+      if (failure === "provider throws") throw new Error("Fictional provider error");
       if (failure === "abort during correction") {
         abort.abort();
         expect(options.signal.aborted).toBe(true);
       }
-      return answer(failure === "oversized" ? history + "\n## Next Steps\n" + "x".repeat(3999) : history);
+      if (failure === "provider error reply") return { ...answer(history), stopReason: "error", errorMessage: "Fictional provider error" };
+      if (failure === "truncated reply") return { ...answer(history), stopReason: "length" };
+      if (failure === "aborted reply") return { ...answer(history), stopReason: "aborted" };
+      return answer(failure === "over byte limit" ? "雪".repeat(350_000) : failure === "empty reply" ? " \n " : history);
     });
-    expect((await f.compact("proactive", abort.signal)).applied).toBe(false);
+    const result = await f.compact("proactive", abort.signal);
+    expect(result.applied).toBe(!abort.signal.aborted);
     expect(f.completeSimple).toHaveBeenCalledTimes(failure === "abort before correction" ? 1 : 2);
-    expect(f.events.at(-1)).toMatchObject({ status: "skipped", reason: "protected_tuples_missing",
-      accounting: { preservation: { missingTupleCount: 1, refusalReason: "protected_tuples_missing" } } });
-    expect((await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction")).toHaveLength(1);
+    const event = f.events.at(-1);
+    if (!abort.signal.aborted) expect(event).toMatchObject({ type: "context_compaction", status: "succeeded", reason: "protected_tuples_missing",
+      accounting: { preservation: { missingTupleCount: 1, bypassReason: "protected_tuples_missing", refusalReason: null } } });
+    expect(event.accounting.preservation.revision).toEqual({ status: "rejected", reason, ...(reason === "over_length" ? { summaryBytes: 1_050_000 } : {}) });
+    const checkpoints = (await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction");
+    expect(checkpoints).toHaveLength(abort.signal.aborted ? 1 : 2);
+    if (!abort.signal.aborted) expect(checkpoints.at(-1).summary).toBe("Fictional omission.");
   } finally { await f.close(); }
 });

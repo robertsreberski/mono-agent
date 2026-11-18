@@ -286,6 +286,7 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
       runtimeWarnings,
       fixedOverheadTokens,
       abortSignal: options.abortSignal,
+      allowWarmDegradation: !options.continuityRecording,
       beforeAttempt: (hookEvent: any) => {
         const contextBefore = projectContext(hookEvent.branchEntries || [], { includeFailed: true }).messages!;
         measured = {
@@ -342,7 +343,7 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
     }
 
     const decision = guarded.getDecision();
-    if (decision?.kind === "guard_skipped") {
+    if (decision?.kind === "guard_skipped" && !accounting.requests.some(row => row.providerInvoked)) {
       // Silent by design: no lifecycle event and no provider request. Pi resumes
       // the run on a declined threshold task.
       inFlight = false;
@@ -462,6 +463,7 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
       model: reference,
       tokensBefore: decision.tokensBefore,
       tokensAfter: decision.tokensAfter,
+      reason: decision.reason,
     });
     // The next attempt measures growth from the compacted transcript.
     lastAttempt = {

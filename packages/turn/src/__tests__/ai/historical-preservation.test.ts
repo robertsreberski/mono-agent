@@ -463,6 +463,7 @@ it.each(["after prefix", "before prefix", "before prefix but still over budget"]
     expect(context.messages[0].content).not.toContain("Fictional update");
     expect(context.messages[0].content).not.toContain("Fictional turn-prefix transcript");
     expect(options.maxTokens).toBeLessThanOrEqual(5763);
+    expect(p.preservation.revision).toEqual({ status: "accepted" });
     if (stage.endsWith("over budget")) {
       expect(result).toMatchObject({ ok: false, error: { code: "summary_refused" } });
       expect(p.preservation.refusalReason).toBe("summary_budget_exceeded");

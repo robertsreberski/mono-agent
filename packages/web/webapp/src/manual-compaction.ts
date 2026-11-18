@@ -59,3 +59,11 @@ export function compactionFailureDetail(payload: Record<string, unknown>): strin
   return typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
     ? `${label.replace(/\.$/, "")} (HTTP ${status}).` : label;
 }
+
+/** A successful cut can carry one allow-listed degradation note, never raw provider text. */
+export function compactionSuccessDetail(reason: unknown): string | undefined {
+  if (reason === "protected_tuples_missing") return "Some protected details were not preserved.";
+  if (reason === "summary_budget_exceeded") return "Summary was longer than the target.";
+  if (reason === "output_truncated") return "The summary was cut off.";
+  return undefined;
+}
