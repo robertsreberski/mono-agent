@@ -95,7 +95,7 @@ async function openHistoryClient(
   });
   const mcpServers = extension.runtimeOptions?.mcpServers as Record<string, unknown> | undefined;
   const spec = mcpServers?.[HISTORY_MCP_SERVER_NAME] as { readonly url: string } | undefined;
-  if (spec === undefined) throw new Error("RunHistory MCP server was not registered.");
+  if (spec === undefined) throw new Error("History MCP server was not registered.");
   const client = new Client({ name: "run-history-test", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
   return {
@@ -155,11 +155,11 @@ async function inspectWithTimeline(client: Client, runId: string): Promise<{
     timeline.push(...page.timeline);
     cursor = page.nextCursor;
   }
-  if (cursor !== undefined) throw new Error("RunHistory timeline pagination did not terminate.");
+  if (cursor !== undefined) throw new Error("History runs timeline pagination did not terminate.");
   return { overviewResult, overview, timeline, pageResults };
 }
 
-describe("RunHistory MCP tool", () => {
+describe("History runs scope", () => {
   it("accepts a second client initialize on the same per-run endpoint (model failover)", async () => {
     const artifactDir = await tempDir();
     const conversationId = "conversation-failover";
@@ -174,7 +174,7 @@ describe("RunHistory MCP tool", () => {
     });
     const mcpServers = extension.runtimeOptions?.mcpServers as Record<string, unknown> | undefined;
     const spec = mcpServers?.[HISTORY_MCP_SERVER_NAME] as { readonly url: string } | undefined;
-    if (spec === undefined) throw new Error("RunHistory MCP server was not registered.");
+    if (spec === undefined) throw new Error("History MCP server was not registered.");
     const first = new Client({ name: "run-history-test", version: "1.0.0" });
     try {
       await first.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
@@ -1536,7 +1536,7 @@ describe("RunHistory MCP tool", () => {
     }
   });
 
-  it("sanitizes structured object keys collision-safely at the RunHistory projection boundary", async () => {
+  it("sanitizes structured object keys collision-safely at the runs projection boundary", async () => {
     const artifactDir = await tempDir();
     const conversationId = "webhook:run-history-path-keys";
     const macPath = "/Users/example/work/repo/src/a.ts";

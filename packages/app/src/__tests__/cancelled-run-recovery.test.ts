@@ -111,7 +111,7 @@ async function writeToolCall(
 }
 
 describe("cancelled run recovery contract", () => {
-  it("walks from unhinted RunHistory discovery to exact isolated mixed-state SessionHistory evidence", async () => {
+  it("walks from unhinted runs discovery to exact isolated mixed-state tools evidence", async () => {
     const root = await tempRoot();
     const artifactDir = join(root, "artifacts");
     const historyRoot = join(root, "history");
@@ -256,7 +256,7 @@ describe("cancelled run recovery contract", () => {
     });
     const servers = extension.runtimeOptions?.mcpServers as Record<string, unknown> | undefined;
     const spec = servers?.[HISTORY_MCP_SERVER_NAME] as { readonly url?: string } | undefined;
-    if (spec?.url === undefined) throw new Error("RunHistory MCP server was not registered.");
+    if (spec?.url === undefined) throw new Error("History runs scope was not registered.");
     const sessionExtension = await createToolsHistoryExtension({ historyRoot, rollover: "daily" })({
       runId: currentRunId,
       request: {
@@ -268,7 +268,7 @@ describe("cancelled run recovery contract", () => {
     });
     const sessionServers = sessionExtension.runtimeOptions?.mcpServers as Record<string, unknown> | undefined;
     const sessionSpec = sessionServers?.[HISTORY_MCP_SERVER_NAME] as { readonly url?: string } | undefined;
-    if (sessionSpec?.url === undefined) throw new Error("SessionHistory MCP server was not registered.");
+    if (sessionSpec?.url === undefined) throw new Error("History tools scope was not registered.");
     const client = new Client({ name: "cancelled-recovery-run-test", version: "1.0.0" });
     const sessionClient = new Client({ name: "cancelled-recovery-session-test", version: "1.0.0" });
     try {

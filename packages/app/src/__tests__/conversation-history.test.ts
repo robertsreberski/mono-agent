@@ -51,7 +51,7 @@ function assertEvidenceNotice(result: ReturnType<typeof handleSaidHistoryRequest
   expect(result.content[0]!.text).toContain(EVIDENCE_RULE);
 }
 
-describe("ConversationHistory scoped evidence", () => {
+describe("History said scope evidence", () => {
   it("returns bounded evidence discipline on search, get, empty, degraded, unavailable and error responses", async () => {
     const f = await fixture(), input = preparation(["Fictional cobalt edit. ".repeat(600)]); await publish(f.writer, input);
     const call = (args: Parameters<typeof handleSaidHistoryRequest>[1]) => handleSaidHistoryRequest(f.binding, args);
@@ -94,7 +94,7 @@ describe("ConversationHistory scoped evidence", () => {
     } finally { get.mockRestore(); }
   });
 
-  it("exposes only committed evidence, includes finalized current-run records and preserves SessionHistory's exclusion", async () => {
+  it("exposes only committed evidence, includes finalized current-run records and preserves the tools scope exclusion", async () => {
     const f = await fixture(), input = preparation(["Morgan chose cobalt."]);
     await f.writer.prepareContinuity(input);
     expect(body(handleSaidHistoryRequest(f.binding, {}))).toMatchObject({ available: true, items: [], coverage: { complete: false } });

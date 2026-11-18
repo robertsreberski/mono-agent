@@ -119,7 +119,7 @@ async function openClient(root: string, conversationId: string, runId: string): 
   });
   const servers = extension.runtimeOptions?.mcpServers as Record<string, unknown> | undefined;
   const spec = servers?.[HISTORY_MCP_SERVER_NAME] as { readonly url?: unknown } | undefined;
-  if (typeof spec?.url !== "string") throw new Error("SessionHistory MCP server was not registered.");
+  if (typeof spec?.url !== "string") throw new Error("History MCP server was not registered.");
   const url = new URL(spec.url);
   const client = new Client({ name: "session-history-test", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(url) as never);
@@ -154,7 +154,7 @@ async function requestStatusWithHost(url: URL, host: string): Promise<number> {
   });
 }
 
-describe("SessionHistory request handler", () => {
+describe("History tools request handler", () => {
   it("keeps ordinary tool context inspectable while host paths stay opaque in search previews and get chunks", async () => {
     const root = await tempRoot();
     const writer = await openStorageTestWriter({ root });
@@ -221,7 +221,7 @@ describe("SessionHistory request handler", () => {
     }
   });
 
-  it("keeps path-key collisions opaque and lossless through SessionHistory get pagination", async () => {
+  it("keeps path-key collisions opaque and lossless through tools get pagination", async () => {
     const root = await tempRoot();
     const macPath = "/Users/example/work/repo/src/a.ts";
     const linuxPath = "/home/example/work/repo/src/a.ts";
@@ -645,7 +645,7 @@ describe("SessionHistory request handler", () => {
   });
 });
 
-describe("SessionHistory MCP tool", () => {
+describe("History tools scope", () => {
   it("re-sanitizes compound credential assignments through model-visible MCP reads", async () => {
     const root = await tempRoot();
     const awsSecretAccessKey = [
@@ -684,7 +684,7 @@ describe("SessionHistory MCP tool", () => {
     await writer.close();
 
     const databasePath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
-    // Exercise SessionHistory's reader-side guard with raw vulnerable content.
+    // Exercise the tools reader-side guard with raw vulnerable content.
     const raw = new DatabaseSync(databasePath);
     try {
       raw.prepare("UPDATE tool_records SET payload_json=?, search_text=? WHERE record_id=?")
@@ -954,7 +954,7 @@ describe("SessionHistory MCP tool", () => {
     }
   });
 
-  it("returns bounded untrusted get chunks, omits nested SessionHistory payloads, and reports tombstones", async () => {
+  it("returns bounded untrusted get chunks, omits nested historical retrieval payloads, and reports tombstones", async () => {
     const root = await tempRoot();
     const writer = await openStorageTestWriter({ root });
     const large = await writeCall(writer, binding("large-run"), "large", { content: "x".repeat(12_000) });

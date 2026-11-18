@@ -779,7 +779,6 @@ async function controllerSecurity(
 
 
 it("registers only History in the app controller", async () => {
-  const unified = true;
   const dir = await mkdtemp(join(tmpdir(), "controller-history-mode-")); tempDirs.push(dir);
   await writeFile(join(dir, "IDENTITY.md"), "Fictional history fixture.");
   const config = resolveJsonMonoAgentConfig({ cwd: dir, json: { runtime: { model: "openai-codex:gpt-5.5", session: { mode: "per-message", rollover: "daily" } },
@@ -799,27 +798,21 @@ it("registers only History in the app controller", async () => {
     calls++;
     const servers = options.mcpServers as Record<string, { url: string }>;
     const actual = Object.keys(servers).filter(name => name.includes("history")).sort();
-    const expected = unified ? ["mono-agent-history"] : ["mono-agent-conversation-history", "mono-agent-run-history", "mono-agent-session-history"];
-    expect(actual).toEqual(expected);
-    for (const name of expected) {
-      const client = new Client({ name: "fictional-controller", version: "1" });
-      try { await client.connect(new StreamableHTTPClientTransport(new URL(servers[name]!.url)) as never);
-        const names = (await client.listTools()).tools.map(tool => tool.name);
-        expect(names).toEqual([unified ? "History" : name === "mono-agent-conversation-history" ? "ConversationHistory" : name === "mono-agent-run-history" ? "RunHistory" : "SessionHistory"]);
-        const body = (result: unknown): any => (result as any).structuredContent;
-        if (unified || name === "mono-agent-run-history") {
-          const result = body(await client.callTool({ name: unified ? "History" : "RunHistory", arguments: unified ? { scope: "runs" } : {} }));
-          const legacy = body(await handleRunsHistoryRequest({ artifactDir: config.artifacts.dir, conversationId: "tui:fictional", runId: "current", rollover: "daily" }, {}));
-          expect(result.runs).toEqual(legacy.runs); expect(result.runs.map((run: any) => run.runId)).toEqual(["old-dated"]);
-        }
-        if (unified || name === "mono-agent-session-history") {
-          const result = body(await client.callTool({ name: unified ? "History" : "SessionHistory", arguments: unified ? { scope: "tools" } : {} }));
-          const legacy = body(handleToolsHistoryRequest({ reader: new ToolHistoryReader(join(dir, "history")), conversationId: "tui:fictional", logicalConversationId: "tui:fictional", runId: "current" }, {}));
-          expect(result.items).toEqual(legacy.items); expect(result.count).toBe(1);
-        }
-
-      } finally { await client.close(); }
-    }
+    expect(actual).toEqual(["mono-agent-history"]);
+    const client = new Client({ name: "fictional-controller", version: "1" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(servers["mono-agent-history"]!.url)) as never);
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["History"]);
+      const body = (result: unknown): any => (result as any).structuredContent;
+      const runs = body(await client.callTool({ name: "History", arguments: { scope: "runs" } }));
+      const directRuns = body(await handleRunsHistoryRequest({ artifactDir: config.artifacts.dir, conversationId: "tui:fictional", runId: "current", rollover: "daily" }, {}));
+      expect(runs.runs).toEqual(directRuns.runs);
+      expect(runs.runs.map((run: any) => run.runId)).toEqual(["old-dated"]);
+      const tools = body(await client.callTool({ name: "History", arguments: { scope: "tools" } }));
+      const directTools = body(handleToolsHistoryRequest({ reader: new ToolHistoryReader(join(dir, "history")), conversationId: "tui:fictional", logicalConversationId: "tui:fictional", runId: "current" }, {}));
+      expect(tools.items).toEqual(directTools.items);
+      expect(tools.count).toBe(1);
+    } finally { await client.close(); }
     return { text: "Fictional answer." };
   } };
   const controller: ResponderControllerPort = {

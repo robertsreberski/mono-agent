@@ -744,7 +744,7 @@ it("executes both arms in one guarded run from the frozen snapshot through the s
       const tools = codexWireTools(body), exact = prompt(body).includes(AB_ROWS[0]), answered = body.input.some(i => i.type === "function_call_output");
       response.writeHead(200, { "content-type": "text/event-stream" });
       // The exact row looks up once and answers; the control row answers from context alone.
-      response.end(exact && !answered && tools.length ? call(tools[0].name, { ...(tools[0].name.endsWith("ConversationHistory") ? {} : { scope: "said" }), action: "search", query: "Fictional", limit: 5 }, received.length)
+      response.end(exact && !answered && tools.length ? call(tools[0].name, { scope: "said", action: "search", query: "Fictional", limit: 5 }, received.length)
         : text(exact ? "Fictional response" : "Fictional other"));
     } catch (error) { listenerError = error; response.writeHead(500).end(); }
   }); servers.push(server); await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));

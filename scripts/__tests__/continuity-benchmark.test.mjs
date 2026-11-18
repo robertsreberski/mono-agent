@@ -224,7 +224,7 @@ describe("continuity arms and plan", () => {
     expect(verifyStore(arm, { checkpointContinuity, observed }).healthy).toBe(false);
   });
 
-  it("treats a degraded store as an invalid trial and classifies ConversationHistory results", () => {
+  it("treats a degraded store as an invalid trial and classifies History results", () => {
     const store = armById("continuity-store");
     const healthy = { toolsOffered: ["History"], historyWarnings: 0, conversationHistory: { unavailable: 0 } };
     expect(verifyStore(store, { checkpointContinuity: { records: 10, degraded: false }, observed: healthy }).healthy).toBe(true);
@@ -361,7 +361,7 @@ describe("continuity offline contract run (production harness, scripted provider
     expect(restart.restart.processRestart).toBe(true);
     expect(restart.boundaries[0]).toMatchObject({ reason: "model_change" });
     expect(restart.compactions).toEqual([expect.objectContaining({ status: "succeeded" })]);
-    // B1 store arm: healthy in-place fork, retained records, ConversationHistory offered and used.
+    // B1 store arm: healthy in-place fork, retained records, History offered and used.
     const store = units["continuity-store"];
     expect(store.checkpoint.continuity).toMatchObject({ degraded: false, replayHistoryWarnings: 0 });
     expect(store.checkpoint.continuity.records).toBeGreaterThan(0);

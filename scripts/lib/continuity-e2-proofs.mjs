@@ -58,7 +58,8 @@ export function proofHistoryWarningClass(message) {
     if (message.startsWith(`Continuity is degraded (${reason});`)) return `continuity_${reason}`;
   }
   for (const [prefix, kind] of [
-    ["ConversationHistory endpoint could not start;", "endpoint_unavailable"],
+    ["History endpoint could not start;", "endpoint_unavailable"],
+    ["ConversationHistory endpoint could not start;", "endpoint_unavailable"], // Historical warning.
     ["Tool lifecycle persistence failed (history_persistence_timeout)", "lifecycle_timeout"],
     ["Tool lifecycle persistence failed (", "lifecycle_failed"],
     ["Tool history writer acquisition failed (history_persistence_timeout)", "writer_acquisition_timeout"],
