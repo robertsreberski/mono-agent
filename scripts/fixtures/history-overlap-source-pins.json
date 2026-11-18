@@ -1,0 +1,58 @@
+{
+  "schema": "history-overlap-source-pins-v1",
+  "note": "Re-frozen public source overlap inputs after the scoped History cutover; not an external holdout freeze or semantic independence approval.",
+  "sources": [
+    {
+      "name": "scripts/lib/continuity-generator.mjs",
+      "sha256": "163f89c471d2a67f6c9507069244adac54d2beeb832494855827bd187e5748c1"
+    },
+    {
+      "name": "packages/conversation/src/continuity/ledger.ts",
+      "sha256": "59781ef86a073d2f67f1f96960adc56cb6ba93321ba363e936afeb590fc1c8d3"
+    },
+    {
+      "name": "packages/conversation/src/continuity/ranking.ts",
+      "sha256": "e8707db6d8be89003da581cf1186801b2eadcc3ae734e9a920e33eae9e47e3f5"
+    },
+    {
+      "name": "packages/conversation/src/continuity/pack.ts",
+      "sha256": "15bcd675fe83ada98952e97eca67982d6094f26e1efb9e1d2aa87d8ec8fb6f69"
+    },
+    {
+      "name": "packages/conversation/src/continuity/render-fit.ts",
+      "sha256": "e152c842c9fd302422adc78bdbf5535ce876a46f249e5a52be3459bb1341d906"
+    },
+    {
+      "name": "scripts/fixtures/continuity-soul-v1.md",
+      "sha256": "885b978ba3d1e894f5bc706a062ed49d59326426cebd88fc3c7a44ce80fe7cad"
+    },
+    {
+      "name": "scripts/fixtures/continuity-soul-v2.md",
+      "sha256": "e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9"
+    },
+    {
+      "name": "scripts/fixtures/continuity-soul-v3.md",
+      "sha256": "0695808249c686a53f89001236d3da9443fdcc70f852dbdf6cae964debc136df"
+    },
+    {
+      "name": "scripts/fixtures/continuity-soul-v4.md",
+      "sha256": "c4f684f265c31a1dd59b8a78bee7134e9c92495d767afe605b817dcfc1298bf5"
+    },
+    {
+      "name": "scripts/fixtures/continuity/brightline-return.json",
+      "sha256": "261b8adcf80b1f6433f34657030490403cc5508d1d76d17eed6b197386455f48"
+    },
+    {
+      "name": "scripts/fixtures/continuity/cedar-offsite.json",
+      "sha256": "5467c21318555280241e122cb39d75b22e59cdee6440b210b58a1408c900db6c"
+    },
+    {
+      "name": "scripts/fixtures/continuity/harbourline-talk.json",
+      "sha256": "70f252302ee5d31caa563b8d440ec85c7493469c5b07ce104ce0d8d71a3bb772"
+    },
+    {
+      "name": "scripts/fixtures/continuity/radiator-leak.json",
+      "sha256": "a1c6eb7dd5cdf75e282c38bc0f59ee3da44f22c784ca9674b4173fb2889441e2"
+    }
+  ]
+}

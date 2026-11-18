@@ -31,7 +31,6 @@ import { SOL, e2ReplayArm, protocolDigest } from "../lib/continuity-e2-protocol.
 import { guardedAuthorization } from "../lib/continuity-guarded-authorization.mjs";
 import { parseE2Args, main } from "../continuity-e2.mjs";
 import { codexWireTools } from "./fixtures/codex-wire-tools.mjs";
-import { e2ParityCases } from "./fixtures/e2-ab-parity-cases.mjs";
 import { abFrozenFixture, abNativeFixture, abKeys, AB_ROWS, AB_PRIMARY } from "./fixtures/e2-ab-fixture.mjs";
 import { E2_NATIVE_DEADLINES } from "./fixtures/e2-native-registration.mjs";
 const build = vi.hoisted(() => ({ state: vi.fn(() => ({ head: "b".repeat(40), dirty: false })), verify: vi.fn(async () => {}) }));
