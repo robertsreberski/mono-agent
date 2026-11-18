@@ -219,8 +219,8 @@ Core allow/deny policy is configured in JSON; former environment overrides are s
 ## Back-compat: legacy tool names
 
 Most tools were renamed to PascalCase, and the remaining snake_case send/file,
-skill, memory, and run-history spellings continue as deprecated policy-input
-aliases. Mono-agent cannot safely rewrite hand-authored deny-lists, so those
+skill and memory spellings continue as deprecated policy-input aliases. The
+retired history names are not aliases; see [History](#history). Mono-agent cannot safely rewrite hand-authored deny-lists, so those
 entries must not silently stop matching. `telegram_send_document` and
 `telegram_send_photo` both map to the single `TelegramSendFile` tool, so a
 `disallowedTools` entry for either name denies the whole file tool. Canonical

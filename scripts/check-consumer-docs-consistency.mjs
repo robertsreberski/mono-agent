@@ -87,7 +87,8 @@ const retiredDemoDocReferences = [
 
 const retiredHistoryDocReference = {
   label: "removed conversation-history tools",
-  pattern: /\b(?:ConversationHistory|SessionHistory|RunHistory|conversation_history|session_history|run_history)\b/gu,
+  // Underscores delimit MCP spellings; the set-aside warning is still a live wire identifier.
+  pattern: /(?<![A-Za-z0-9])(?!conversation_history_set_aside(?![A-Za-z0-9_]))(?:ConversationHistory|SessionHistory|RunHistory|conversation_history|session_history|run_history|mono-agent-(?:conversation|session|run)-history)(?![A-Za-z0-9])/gu,
 };
 
 const retiredDocReferences = [

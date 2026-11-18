@@ -1062,11 +1062,15 @@ async function tempDir(prefix) {
   return dir;
 }
 
-it.each(["ConversationHistory", "SessionHistory", "RunHistory", "conversation_history", "session_history", "run_history"])("rejects removed history guidance %s without matching storage identifiers", async name => {
+it.each([
+  "ConversationHistory", "SessionHistory", "RunHistory", "conversation_history", "session_history", "run_history",
+  "mcp__mono-agent-conversation-history__ConversationHistory", "mcp__fictional__SessionHistory", "mcp__fictional__run_history",
+  "mono-agent-conversation-history", "mono-agent-session-history", "mono-agent-run-history", "mcp__mono-agent-run-history__*",
+])("rejects removed history guidance %s without matching storage identifiers", async name => {
   const repoRoot = await tempRepo();
   await writeRepoDoc(repoRoot, "docs/history.md", `Use ${name}.\n`);
   expect((await checkConsumerDocsConsistency([], {repoRoot})).issues.join("\n")).toContain("removed conversation-history tools");
-  await writeRepoDoc(repoRoot, "docs/history.md", "ConversationHistoryStore ToolHistoryRunBinding RunHistoryCursor\nUse History with required scope.\n");
+  await writeRepoDoc(repoRoot, "docs/history.md", "ConversationHistoryStore ToolHistoryRunBinding RunHistoryCursor\nmono-agent-history mcp__mono-agent-history__History\nconversation_history_set_aside\nUse History with required scope.\n");
   expect((await checkConsumerDocsConsistency([], {repoRoot})).issues).toEqual([]);
 });
 it("permits only the exact path/line-bound breaking migration record, not arbitrary historical prose", async () => {

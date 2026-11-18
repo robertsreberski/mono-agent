@@ -165,8 +165,8 @@ count observed persisted events, including excluded turns. Deduplication is
 turn-local; journal counts stay separate, and unique sidecar matches can expose
 lifecycle conflicts but cannot establish semantic retrieval success. Only
 structured availability results establish success. The exact tool-authored
-History text format is also recognized: only its final notice-framed
-JSON body is parsed, with validated continuation sections, never navigation's
+History `said` text format and its historical predecessor are also recognized:
+only the final notice-framed JSON body is parsed, with validated continuation sections, never navigation's
 `Exact arguments` JSON. Malformed, clipped or ambiguous text remains unknown.
 Pack reason enums distinguish coverage `gap` from `boundedSelection` (overflow,
 snapshot bounds and headroom); unrecognized reasons count as `other`. The legacy
@@ -746,8 +746,8 @@ retrieval improves a model:
 
 ```bash
 pnpm --filter '@mono-agent/app...' run build
-node scripts/continuity-benchmark.mjs --dry-run --probe-mode lookup-allowed-v1 --no-judge
-node scripts/continuity-benchmark.mjs --probe-mode lookup-allowed-v1 --no-judge \
+node scripts/continuity-benchmark.mjs --dry-run --probe-mode lookup-allowed-v3 --no-judge
+node scripts/continuity-benchmark.mjs --probe-mode lookup-allowed-v3 --no-judge \
   --trace brightline-return --probe-limit 1
 ```
 
@@ -767,13 +767,19 @@ retained records, an offered tool and a healthy store; native must also prove
 absence of an injected pack. Lookup checkpoint keys are namespaced, so they
 cannot reuse recall-only capture-off checkpoints.
 
-The benchmark copies `scripts/fixtures/continuity-soul-v1.md` to every lookup
-workspace and sets `context.soulPath`. Its raw SHA-256 and production-normalized
-core SHA-256 are bound into the confirmation and frozen budget policy. Missing,
-modified or mismatched soul bytes fail; there is no checkout-default fallback.
-This freezes the original core independently of later default-soul changes.
+The ordinary lookup benchmark installs `scripts/fixtures/continuity-soul-v3.md`
+and sets `context.soulPath`. The raw and production-normalized core SHA-256
+digests are bound into confirmation and budget policy. Missing, modified or
+mismatched bytes fail; there is no checkout-default fallback. The tool calls
+use `History` with `scope: "said"`.
 
 ### Frozen sizing policy
+
+The current `scripts/fixtures/continuity-lookup-budget-v3.json` sets safety ceilings
+only: 8 calls and 126,976 returned bytes per arm/probe, not measured response
+sizes or per-slot feasibility. The v3 file has no measured paths. The offline
+benchmark can exercise mechanics; a numerical qualification requires fresh sizing
+and binding for the selected workload.
 
 `scripts/continuity-lookup-budget.mjs` measures a content-free inventory using
 real retained stores, configured replay and real loopback History
@@ -790,11 +796,12 @@ Only unambiguous literal tool-identifier sources are annotated in this version;
 other source provenance remains `unknown`. Redaction probes remain `protected`,
 even when a native transcript contained raw values. Sources are resolved
 independently against each arm's sanitized store, not borrowed from another arm.
-The measured inventory contains 112 paths, 9,370 retained-size observations and
-370 serialized response-size observations. Every measured path discovered its
-source and verified the concatenated retained UTF-8 digest.
+For comparison, the **historical v1 inventory** used the former said-scope tool.
+It contained 112 paths, 9,370 retained-size and 370 serialized response-size
+observations. Every measured path discovered its source and verified the
+concatenated retained UTF-8 digest. These figures are not measurements of History.
 
-| Binding | Frozen value |
+| Historical binding | Frozen value |
 | --- | --- |
 | Call budget, identical per arm/probe | 8 dispatched calls |
 | Byte budget, identical per arm/probe | 126,976 UTF-8 bytes (124 KiB) |
@@ -802,18 +809,14 @@ source and verified the concatenated retained UTF-8 digest.
 | Largest serialized response | 32,608 bytes |
 | Inventory SHA-256 (canonical JSON) | `6c45a457f926af1d259c4b53bc3b45821b939ca3fdfd1a830b38b538f415a6b9` |
 
-Each arm/probe gets a fresh meter with these identical call and byte limits;
-they are **not pooled** across arms or probes. Calls are `max(path calls) + 2`, capped at `min(96, 100 - 2)`. Bytes are
+Each arm/probe gets a fresh meter; limits are **not pooled**. In measurement,
+calls are `max(path calls) + 2`, capped at `min(96, 100 - 2)`. Bytes are
 `max(path bytes) + 2 × largest response`, rounded upward to KiB and capped at
-8 MiB. The policy and content-free per-slot reference costs are checked in at
-`scripts/fixtures/continuity-lookup-budget-v1.json`; the detailed inventory is a
-separate archived artifact, never retrieved text in a repository fixture. The
-inventory digest binds that specific archived inventory used for the checked-in
-policy, **not byte-identical remeasurement reproducibility**: generation, run
-and record identities are random. A new measurement has its own receipt and
-digest; do not claim that reproducing the protocol must reproduce this hash. Re-run
-measurement into a fresh directory to prepare a **new** policy, not to enlarge
-budgets after seeing trial outcomes:
+8 MiB. The v1 policy and its per-slot costs remain archived at
+`scripts/fixtures/continuity-lookup-budget-v1.json`. The historical inventory
+digest binds that one measurement, **not byte-identical reproducibility**:
+generation, run and record identities are random. Measure into a new directory
+to evaluate the current surface, not to enlarge limits after seeing outcomes:
 
 ```bash
 node scripts/continuity-lookup-budget.mjs --output .worklab-tmp/lookup-sizing-new
@@ -831,9 +834,9 @@ for originals, 400 million for long suites). Passing a slot's reference check
 does not reserve capacity for every planned slot: cumulative admission may
 still leave later slots unstarted. These are conservative scripted-reader
 feasibility estimates, not tokenizer or latency guarantees for a future model.
-There are 64 feasible paths and 48 `budget-infeasible` native long-trace paths:
-the conservative observed-request estimate exceeds the scripted reader's
-context bound. Do not count those slots as reader failures, omit them from
+The historical v1 inventory contained 64 feasible paths and 48
+`budget-infeasible` native long-trace paths whose conservative observed request
+estimate exceeded the scripted reader's context bound. Do not count those slots as reader failures, omit them from
 coverage or widen the policy to make them fit. Cap-bound, context-bound,
 undiscovered or admission-bound paths retain the same classification. Corpus
 or protocol changes require a new frozen policy.
@@ -841,7 +844,7 @@ or protocol changes require a new frozen policy.
 ### Forwarding, deadlines and interpretation
 
 A benchmark-only forwarding server rewrites **only the URL** under the existing
-`mono-agent-conversation-history` key. It preserves server identity, listing,
+`mono-agent-history` key. It preserves server identity, listing,
 schema and production handler behavior. Calls are reserved atomically before
 dispatch. Exact UTF-8 `JSON.stringify(result.content)` bytes are charged before
 delivery, excluding `structuredContent`. An over-budget response is withheld
@@ -850,8 +853,8 @@ scripted mechanics reader also observes the planned call budget and stops
 voluntarily before dispatching an excess call, even during long cursor paths.
 The proxy uses an unguessable UUID path, an exact loopback Host check and SDK
 DNS-rebinding protection. Effective probe MCP endpoints are allowlisted to the
-metered History server only: **History is not part of
-`lookup-allowed-v1`**, nor is any other history/tool-history alias or MCP server.
+metered `History` server only in `lookup-allowed-v3`. No legacy history name,
+alias or other MCP server is part of the lookup allowlist.
 Unexpected endpoints fail closed rather than exposing an unmetered route.
 
 The lookup limits are a 600-second probe deadline, a 60-second cleanup allowance,
@@ -907,19 +910,18 @@ means the existing `continuity-pack-cold` arm, with no ledger upkeep:
 | `shipping` | `pack-cold` | Rpack | S1 |
 | `native-soul` | `native-lookup` | R0 | S1 |
 
-S0 is `scripts/fixtures/continuity-soul-v1.md`. S1 is the separately frozen
-`scripts/fixtures/continuity-soul-v2.md`, exactly the default core after the
-History routing change, without a final newline. Its raw and
-normalized-core SHA-256 are both
-`e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9`.
-Missing or incorrect soul bindings fail closed; no role follows a moving default.
-S1 exceeds S0 by 167 bytes, about 56 conservative tokens (ceil(167/3)). That is
-small
-relative to the 16k-token context margin, but S1-role feasibility has **not** been
-remeasured: the frozen budget and registered reference classifications are unchanged.
+For current role bindings, S0 is `scripts/fixtures/continuity-soul-v3.md` and S1
+is `scripts/fixtures/continuity-soul-v4.md`. Both use the single scoped tool.
+Missing or mismatched soul bindings fail closed; no role follows a moving default.
+The older v1/v2 souls are inert split-era evidence. The v2 soul captured the
+then-default core after the former said-scope tool's routing change, without a
+final newline. Its raw and normalized-core SHA-256 were both
+`e625bc0ddb256f336ec66bf94335d260396fa2c5139e37d44f8e0370fef808a9`, and it was
+167 bytes longer than v1. Neither those soul comparisons nor the v1 budgets
+provide current History feasibility.
 
-Both supplied checkouts must implement **`continuity-lookup-role-v1`**. An old
-checkout without role-protocol support is incompatible, not adapted by a hidden shim. Registration
+Both supplied checkouts must implement **`continuity-lookup-role-v3`**. Older
+role bindings are incompatible, not adapted by a hidden shim. Registration
 binds clean full SHAs (not ancestry or branch names), independently checked
 entrypoint/reader/scorer, lockfile and frozen budget digests, identical corpus
 and model settings, and fresh app-closure output hashes. It builds each checkout
@@ -942,43 +944,15 @@ output and state directories prevent shared checkpoints from crossing treatments
 
 ### Maintainer checkout construction and launch
 
-Use Node 24.18.0 and locally available dependencies. The maintainer constructs
-these checkouts **after role-protocol support is merged**: Rpack is that clean main revision, R0 is
-that same revision with only the original guidance patch reversed. The two
-historic local commits below identify the guidance patch, not role revisions;
-no historical checkout lacking role-protocol support is run. Those objects must already exist
-locally. Stop on conflicts; resolve only the frozen guidance paths, never widen
-the accepted diff or silently change a registered revision.
-
-```bash
-BASE=$(git rev-parse origin/main)
-R0=/tmp/lookup-r0
-RPACK=/tmp/lookup-rpack
-PATCH=/tmp/lookup-b2-guidance.patch
-REG=/tmp/lookup-registration
-RUN=/tmp/lookup-run
-# All destinations must be unused. This construction is performed by the maintainer.
-git cat-file -e '629c1db6f^{commit}'
-git cat-file -e 'd76457ba8^{commit}'
-git diff --no-ext-diff --binary 629c1db6f d76457ba8 > "$PATCH"
-git worktree add --detach "$RPACK" "$BASE"
-git worktree add --detach "$R0" "$BASE"
-git -C "$R0" apply --reverse --3way "$PATCH"
-git -C "$R0" commit -m "test(benchmark): isolate pre-guidance lookup code"
-# Prepare cached local dependencies in both checkouts; stop if unavailable.
-pnpm --dir "$R0" install --offline --frozen-lockfile
-pnpm --dir "$RPACK" install --offline --frozen-lockfile
-R0_SHA=$(git -C "$R0" rev-parse HEAD)
-RPACK_SHA=$(git -C "$RPACK" rev-parse HEAD)
-node "$RPACK/scripts/continuity-lookup-compare.mjs" register \
-  --r0 "$R0" --r0-revision "$R0_SHA" \
-  --rpack "$RPACK" --rpack-revision "$RPACK_SHA" --output "$REG"
-FILE_SHA=$(node -p 'require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex")' "$REG/registration.json")
-node "$RPACK/scripts/continuity-lookup-compare.mjs" run \
-  --registration "$REG/registration.json" --sha256 "$FILE_SHA" --output "$RUN"
-node "$RPACK/scripts/continuity-lookup-compare.mjs" aggregate \
-  --registration "$REG/registration.json" --sha256 "$FILE_SHA" --output "$RUN"
-```
+Use the repository's supported Node version and locally available dependencies.
+Prepare clean, compatible History-only checkouts. Rpack includes the current
+pack retrieval guidance; R0 differs only by its removal. The configured proof
+fixture removes the export, import and use together and checks the transform
+against the source. Do not reverse the old split-era guidance patch against a
+current checkout. Prior unsized split-checkout registrations cannot execute
+against this product. Before attempting current role qualification, prepare a
+frozen workload and fresh feasibility policy as described under
+[External frozen lookup preparation](#external-frozen-lookup-preparation-offline-only).
 
 Registration defaults to the three frozen suites, one repeat, all probes, and
 Sol/low with no judge. For a small mechanics smoke, registration may specify
@@ -1182,8 +1156,9 @@ the reader choosing to call `History`. The deterministic pack arm
 pins `packEnabled: true` and uses the same cold boundary and tool offer as (g).
 Replay inputs are explicitly host-classified human turns, so provenance is captured
 by production code rather than guessed from a speaker name. The projection hint
-now names `History` when offered, so rerun the store-only control
-rather than attributing that hint correction to pack quality.
+names `History` with its `said` scope when offered. Compare pack and store-only
+controls on the same tool surface and guidance, rather than attributing a hint
+change to pack quality.
 
 The tool-history sidecar pins its absolute artifact root, and production correctly
 degrades continuity in a copy at another root (`history_artifact_root_mismatch`).
@@ -1590,7 +1565,7 @@ node scripts/continuity-lookup-budget.mjs \
   --rpack /external/rpack --rpack-revision FULL_SHA \
   --corpus-manifest /external/frozen/manifest.json --manifest-sha256 SHA256 \
   --statistical-spec /external/statistics.json --selection-seed N --per-group 2 \
-  --fixed-budget-sha256 RAW_V1_POLICY_SHA256 --output /external/new-sizing
+  --fixed-budget-sha256 RAW_V3_POLICY_SHA256 --output /external/new-sizing
 ```
 
 This fixed-budget, feasibility-only path never derives limits: eight calls,
@@ -1604,7 +1579,7 @@ of identifier provenance. Classifications are recomputed from recorded metrics
 and failure evidence when a policy is read. Only call/byte exhaustion is budget
 infeasibility; latency and other exhaustion causes are unknown and block pricing. Unknown reference feasibility blocks pricing approval.
 The content-free `budget.json` binds source/spec/selection, reader, protocol,
-clean code/build bindings and the raw v1 policy hash. It contains no questions,
+clean code/build bindings and the raw v3 policy hash. It contains no questions,
 answers, retrieved text or narrative. Scratch replay stays private and is removed.
 
 For estimate and compare registration, pass the same source/selection plus
@@ -1614,8 +1589,9 @@ model's catalog maximum) or `enforced` (requires separate execution proof).
 `continuity-lookup-estimate.mjs` accepts these flags directly or a hash-bound
 `--registration FILE --sha256 SHA256`. Compare `register` also requires
 `--catalog-cap-usd C`, exactly reproducing the estimate. External registrations
-use v2; v1 default registration shape and legacy plan digests remain unchanged.
-A standalone offline benchmark uses `--suite holdout --probe-mode lookup-allowed-v1`
+use the external registration schema v2, with current role and lookup bindings.
+Do not reuse the earlier split-era digests.
+A standalone offline benchmark uses `--suite holdout --probe-mode lookup-allowed-v3`
 with the source triple, `--selection-seed N --per-group 2`, both `--r0`/`--rpack`
 roots (or a policy that binds them), and optional hash-bound policy. Role-aware execution passes role-filtered policy paths through plans, receipts and scoring.
 
@@ -1921,7 +1897,7 @@ The offline estimator uses exact decimal rational money arithmetic. It reports:
 
 The scenario was calibrated from counts of the first completed Sol pilot: 240
 admitted slots and 748 model requests. Measured means were 3.117 requests and
-2.329 `History` calls per slot, 116.8 output tokens per request,
+2.329 calls per slot to the former said-scope tool, 116.8 output tokens per request,
 7,362.5 input tokens per later request above that slot's first request, and
 67.5% cached input. Each quantity takes a 1.25 margin, rounded in the
 conservative direction: 4 requests, 150 output tokens, 9,216 increment tokens
@@ -2863,7 +2839,7 @@ rows must be registered questions with frozen keys at that checkpoint.
 
 A registration has `replayArm: "history-ab"`, the binding as `historyAb`, no
 `historySurface` or `soul`, Sol-only `probe` and `continuation` roles, and one
-replay-kind phase per arm (`history-ab-A`, `history-ab-B`, `history-ab-C`) in a
+replay-kind phase per bound arm (`history-ab-B` or `history-ab-C`) in a
 single paid run. Rows, arms and the frozen tree are inside the registration and
 authorization digests. Sizing is row-blind and bound to the frozen tree and arms;
 it must be fresh on the registered clean code and build. The minimum cap is the
