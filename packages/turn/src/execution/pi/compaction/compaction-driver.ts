@@ -6,7 +6,7 @@ import { classifyCompactionFailure } from "./manual-failure.js";
 // runtime owns triggers, fixed overhead, savings and one overflow-recovery attempt.
 // Mid-run compaction reuses these guards at completed model/tool boundaries.
 
-import { createHistorySummaryContext, createPrefixSummaryContext, calculateContextTokens, compact as compactPreparedContext, estimateContextTokens, estimateTokens, getLastAssistantUsage, prepareCompaction, shouldCompact } from "../../../engine/compaction-kit/compaction.js";
+import { createHistorySummaryContext, createPrefixSummaryContext, calculateContextTokens, compact as compactPreparedContext, estimateProjectedContextTokens, estimateTokens, getLastAssistantUsage, prepareCompaction, shouldCompact } from "../../../engine/compaction-kit/compaction.js";
 import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "../../../engine/context.js";
 import { planSummaryBudget, planSummaryProtection } from "../../../engine/compaction-kit/historical-preservation.js";
 import { assembleSummaryContext, prepareSummaryInput, prepareSummaryRequest, summaryModels } from "./compaction-summary.js";
@@ -69,53 +69,35 @@ function recordDiscoveredContextWindow(harness: any, runtime: any, resolved: any
   discoveredContextWindows.set(key, Number.isFinite(existing) && existing! > 0 ? Math.min(existing!, n) : n);
 }
 
-// Best-effort estimate of the current session's context size. The last assistant
-// usage is authoritative (it reflects what the provider actually counted,
-// including cache reads), but it can be stale/zero (e.g. seeded history), so we
-// take the MAX of the usage-based count and pi's estimateContextTokens() over the
-// transcript. Either being large is a reason to compact; overcounting only
-// compacts slightly early.
-//
-// The transcript branch is DELEGATED to pi's estimateContextTokens(): it sums
-// pi's own per-message estimateTokens across session.buildContext().messages,
-// and when a message carries a VALID last-assistant usage it uses usage +
-// trailing-message estimate instead of re-summing the whole transcript. Seeded /
-// faux histories carry no valid usage (faux usage totals 0 tokens, which pi
-// rejects), so it reduces to the pure per-message sum the bridge summed by hand
-// before — a behaviour-neutral swap there, and a more provider-accurate estimate
-// once real usage is present.
-//
-// `fixedOverheadTokens` is the system-prompt + tool-schema + per-turn user
-// message overhead the provider meters but the transcript estimate (which covers
-// only session.buildContext().messages) excludes. It is added to the ESTIMATE
-// branch. The usage-based count already includes the prior request's system/tool
-// overhead, but a proactive check runs before the current user turn is appended;
-// `usageIncrementTokens` adds that new turn without double-counting the stable
-// system/tool portion. With stale/0 usage and a seeded session the estimate
-// branch wins, and without this the trigger under-counts the real request.
+// Use the larger of fresh provider usage plus trailing messages, and the raw
+// projected transcript estimate. Retained assistants are still useful context,
+// but their usage describes a request from before the latest compaction.
+// The raw branch adds all fixed overhead; provider usage already includes the
+// system prompt and tools, so its branch adds only the pending user turn.
 export async function estimateCurrentContextTokens(session: any, fixedOverheadTokens: number = 0, usageIncrementTokens: number = 0): Promise<{
     tokens: number;
     source: string;
 }> {
   let usageTokens = 0;
   let rawTokens = 0;
+  let entries: any[] | undefined;
   try {
-    const usage = getLastAssistantUsage(await session.getEntries());
+    entries = await session.getEntries();
+    const usage = entries && getLastAssistantUsage(entries);
     if (usage) usageTokens = Number(calculateContextTokens(usage)) || 0;
   } catch { /* ignore — fall back to the transcript estimate */ }
   try {
     const context = await session.buildContext();
     const messages = context?.messages || [];
-    const piEstimate = estimateContextTokens(messages);
+    const piEstimate = entries && estimateProjectedContextTokens(messages, entries);
     // When a valid provider usage record exists, Pi adds estimates for messages
     // trailing that record. Prefer that request-shaped count over the bare entry
     // usage gathered above.
-    if (Number(piEstimate.usageTokens) > 0) {
+    if (piEstimate && Number(piEstimate.usageTokens) > 0) {
       usageTokens = Number(piEstimate.tokens) || usageTokens;
     }
     // Keep the independent transcript branch genuinely usage-free. Calling
-    // estimateContextTokens() here would fold provider usage in a second time,
-    // then adding fixed overhead would double-count prior system/tool tokens.
+    // Folding provider usage in here would double-count prior system/tool tokens.
     rawTokens = messages.reduce((total: any, message: any) => total + (Number(estimateTokens(message)) || 0), 0);
   } catch { /* ignore — usage-based estimate stands */ }
   // Apply the fixed overhead to the transcript estimate only (see note above).
@@ -129,8 +111,7 @@ export async function estimateCurrentContextTokens(session: any, fixedOverheadTo
 
 // Compaction effectiveness must be measured independently of the provider's
 // last-assistant usage. That usage can describe the pre-compaction request and
-// remain attached to a retained message, making estimateContextTokens() report
-// the old large value even after the transcript prefix was summarized. Summing
+// remain attached to a retained message, so do not use it here. Summing
 // pi's per-message estimator gives a stable before/after comparison over the
 // actual context the session will build next.
 export async function estimateSessionMessageTokens(session: any): Promise<any> {
@@ -387,7 +368,7 @@ export function createGuardedCompactionHook({
         const fits = (context: any, target: number, legacyTarget: number) => prepareSummaryRequest(model,
           assembleSummaryContext(context, input.focus, input.evidence),
           { maxTokens: Math.min(target, model.maxTokens > 0 ? model.maxTokens : Infinity) }, effectivePolicy.effort,
-          Math.min(MIN_ANSWER_TOKENS, summaryBudget.minimumTextTarget),
+          summaryBudget.minimumAnswerTokens,
           { preservation, textTargetTokens: legacyTarget,
             minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, summaryBudget.split ? summaryBudget.originalPrefix : summaryBudget.originalHistory) }).policy.canDispatch;
         const historyFits = !summaryBudget.generateHistory || fits(createHistorySummaryContext(input.preparation.messagesToSummarize,
@@ -445,7 +426,7 @@ export function createGuardedCompactionHook({
           ...(trigger === "manual" ? { timeoutMs: 15 * 60_000 } : {}),
           // Derive the useful minimum before the kit clamps requests to model.maxTokens.
           // Small explicit split budgets may be shorter than Pi's normal answer minimum.
-          minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, summaryBudget.minimumTextTarget),
+          minimumAnswerTokens: summaryBudget.minimumAnswerTokens,
           unprotected: { preservation: input.preparation.preservation, targets: [summaryBudget.generateHistory ? summaryBudget.originalHistory : summaryBudget.originalPrefix, summaryBudget.originalPrefix],
             minimumAnswerTokens: Math.min(MIN_ANSWER_TOKENS, prepared.value.isSplitTurn ? summaryBudget.originalPrefix : summaryBudget.originalHistory) } }),
         harness.getModel(),
@@ -533,6 +514,10 @@ export function reportGuardedCompactionOutcome({
     reduced: boolean | null;
     nothingToCompact: boolean;
 } {
+  if (decision?.kind === "guard_skipped") {
+    emit(onEvent, { operationId, status: "skipped", trigger, model, reason: decision.reason });
+    return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: false };
+  }
   if (decision?.kind === "preservation_waiting") {
     emit(onEvent, { operationId, status: "skipped", trigger, model, reason: "preservation_growth_required" });
     return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: false };
@@ -545,7 +530,7 @@ export function reportGuardedCompactionOutcome({
   }
   if (decision?.kind === "headroom_unavailable") {
     runtimeWarnings?.push({ warning_kind: "context_compaction_insufficient_headroom", source: "pi", trigger,
-      message: "Summary cannot fit a useful answer within the model/context ceiling; provider was not invoked." });
+      message: "A summary request cannot fit a useful answer within the model/context ceiling; that request was not dispatched." });
     emit(onEvent, { operationId, status: "skipped", trigger, model, reason: "insufficient_summary_headroom" });
     return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: false };
   }

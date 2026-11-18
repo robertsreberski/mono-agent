@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { prepareSummaryInput, summaryModels, SUMMARY_FOCUS } from "../../execution/pi/compaction/compaction-summary.js";
-import { createGuardedCompactionHook, createCompactionAccounting, reportGuardedCompactionOutcome } from "../../execution/pi/compaction/compaction-driver.js";
+import { createGuardedCompactionHook, createCompactionAccounting, piSummaryReserveTokens, reportGuardedCompactionOutcome } from "../../execution/pi/compaction/compaction-driver.js";
 import { compactWithRequest, estimateTokens, generateSummaryWithRequest } from "../../engine/compaction-kit/compaction.js";
-import { createSummaryBudget, historicalTuples, missingHistoricalTuples, protectedHistoricalInput, parseHistoricalTuples, SPLIT_SUMMARY_SEPARATOR } from "../../engine/compaction-kit/historical-preservation.js";
+import { createSummaryBudget, historicalTuples, missingHistoricalTuples, planSummaryBudget, protectedHistoricalInput, parseHistoricalTuples, SPLIT_SUMMARY_SEPARATOR } from "../../engine/compaction-kit/historical-preservation.js";
 
 const tuple = "- Parcel count; m2; previously 18; corrected to 16; current 16; resolved.";
 const history = `## Historical events and corrections\n${tuple}\n\n## Pending items\n- None.`;
@@ -61,14 +61,38 @@ describe("native historical preservation", () => {
     ["changed code fences", (text: string) => text.replaceAll("```", "~~~")],
     ["nested repeated provenance", (text: string) => text.replaceAll(provenance, `  ${provenance}`)],
     ["bulleted repeated quotations", (text: string) => text.replaceAll(quotation, `- ${quotation}`)],
-    ["removed provenance occurrence", (text: string) => text.replace(`${provenance}\n`, "")],
-    ["removed quotation occurrence", (text: string) => text.replace(`${quotation}\n`, "")],
   ] as const)("still refuses %s with exact comparison", async (_name, mutate) => {
     const changed = mutate(framedHistory);
     expect(missingHistoricalTuples(framedBlocks, changed)).toBeGreaterThan(0);
     const request = vi.fn(async () => response(changed));
     expect(await run(prep({ previousSummary: framedHistory }), request)).toMatchObject({ ok: false, error: { code: "summary_refused" } });
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("carries literal missing occurrences from the host without another request (split=%s)", async split => {
+    const previousSummary = framedHistory;
+    const output = `## Goal\nReview fictional crates.\n## Historical events and corrections\n${provenance}\n${quotation}`;
+    const p = prep({ previousSummary, ...(split ? { isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "Fictional prefix" }] } : {}) });
+    const request = vi.fn().mockResolvedValueOnce(response(output)).mockResolvedValueOnce(response("## Context for Suffix\nContinue."));
+    const result = await run(p, request);
+    expect(result.ok).toBe(true);
+    expect(request).toHaveBeenCalledTimes(split ? 2 : 1);
+    const summary = result.value!.summary;
+    expect(summary).toContain(output);
+    expect(historicalTuples(summary)).toHaveLength(framedBlocks.length);
+    expect(missingHistoricalTuples(framedBlocks, summary)).toBe(0);
+    expect(p.preservation).toMatchObject({ missingTupleCount: 0, omittedProtectedTupleCount: framedBlocks.length - 2,
+      hostCarriedBytes: expect.any(Number), refusalReason: null, protectionActive: true });
+    expect(p.preservation.hostCarriedBytes).toBeGreaterThan(0);
+    expect(JSON.stringify(p.preservation)).not.toContain(tuple);
+  });
+
+  it.each(["oversized", "unclosed fence"])("refuses %s omission without carrying anything", async kind => {
+    const p = prep({ previousSummary: history });
+    const request = vi.fn(async () => response(kind === "oversized" ? "Fictional text. ".repeat(500) : "Fictional text\n```md\nunclosed"));
+    expect(await run(p, request)).toMatchObject({ ok: false, error: { code: "summary_refused" } });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(p.preservation).toMatchObject({ refusalReason: "protected_tuples_missing", hostCarriedBytes: 0 });
   });
 
   it.each([false, true])("requires literal copying in the initial/update=%s summary request", async update => {
@@ -204,7 +228,7 @@ it.each([128, 1600])("runtime bypasses shrink and refuses proactive loss at B=%s
   const entries = [{ type: "compaction", id: "previous", summary: previousSummary, checkpoint: { summaryMessage: { role: "compactionSummary", summary: previousSummary, timestamp: 1, tokensBefore: 20000 } }, retainedTail: [], timestamp: 1, tokensBefore: 20000, details: {} },
     ...[0, 1, 2].map(i => ({ type: "message", id: `m${i}`, timestamp: 2 + i, message: { role: "user", content: "x".repeat(20000), timestamp: 2 + i } }))];
   const before = structuredClone(entries);
-  const completeSimple = vi.fn(async () => response("Lossy fictional output."));
+  const completeSimple = vi.fn(async () => response(history.replace("corrected to 16", "corrected to 19")));
   const accounting = createCompactionAccounting();
   const hook = createGuardedCompactionHook({ harness: { getModel: () => ({ ...model, contextWindow: 200000 }), models: { completeSimple } }, trigger: "proactive", operationId: "fictional-refusal",
     effectivePolicy: { summaryMaxTokens: B, effort: "none" }, compactionSettings: { reserveTokens: Math.ceil(B / 0.8), keepRecentTokens: 1000 }, accounting });
@@ -291,7 +315,7 @@ it("bypasses protected-input headroom before dispatch with the legacy cap and on
 
 it.each(["missing-history", "oversized-history", "oversized-prefix"])("emergency split %s bypasses using only the two legacy requests", async failure => {
   const p = prep({ previousSummary: history, isSplitTurn: true, turnPrefixMessages: [{ role: "user", content: "prefix" }], preservationFallback: true });
-  const outputs = failure === "missing-history" ? ["Lossy summary.", "Prefix."] : failure === "oversized-history" ? [history + "\n" + "text ".repeat(2000), "Prefix."] : [history, "text ".repeat(2000)];
+  const outputs = failure === "missing-history" ? [history.replace("corrected to 16", "corrected to 19"), "Prefix."] : failure === "oversized-history" ? [history + "\n" + "text ".repeat(2000), "Prefix."] : [history, "text ".repeat(2000)];
   const request = vi.fn(async (_context: any, options: any) => {
     if (request.mock.calls.length === 2 && failure !== "oversized-prefix") expect(options.maxTokens).toBe(1000); // Original prefix target, no replacement history request.
     return response(outputs[request.mock.calls.length - 1]!);
@@ -383,4 +407,37 @@ it("split history reuse does not invent an unknown history request in complete r
   expect(result.ok).toBe(true);
   if (result.ok) { expect(result.value.usage.input).toBe(2); expect(result.value.usage).not.toHaveProperty("partial"); }
   expect(request).toHaveBeenCalledTimes(2);
+});
+
+// The provider's text cap is not the transcript estimator's output size. Model
+// a ~450k-token tool-heavy conversation with a 1M-window summary model.
+it("dispatches the protected split prefix at its 1024-token floor after history leaves only 892 estimated tokens", async () => {
+  const summaryMaxTokens = 12000;
+  const settings = { reserveTokens: piSummaryReserveTokens(summaryMaxTokens, true), summaryMaxTokens };
+  const p = prep({ previousSummary: history, settings, tokensBefore: 451991, isSplitTurn: true,
+    messagesToSummarize: [{ role: "user", content: "Fictional inventory history. ".repeat(50000), timestamp: 0 }],
+    turnPrefixMessages: [{ role: "user", content: "Review fictional crates.", timestamp: 1 },
+      ...Array.from({ length: 110 }, (_, i) => ({ role: "toolResult", toolName: "FictionalLookup", toolCallId: `crate-${i}`,
+        content: [{ type: "text", text: "Fictional crate lookup. ".repeat(130) }], timestamp: 2 + i }))] });
+  const projectedSize = createSummaryBudget(summaryMaxTokens, estimateTokens).estimate;
+  const text = `${history}\n\n## Critical Context\n`;
+  const historyOutput = text + "x".repeat(10128 * 4 - text.length);
+  const file = "/fictional/crate-inventory";
+  const base = `${historyOutput}${SPLIT_SUMMARY_SEPARATOR}\n\n<read-files>\n${file}\n</read-files>`;
+  p.fileOps.read.add(file + "x".repeat(4 * (summaryMaxTokens - 892 - projectedSize(base))));
+  const plan = planSummaryBudget(p, estimateTokens);
+  expect(summaryMaxTokens - plan.budget.estimate(historyOutput + plan.separator + plan.metadata)).toBe(892);
+  expect(estimateTokens({ role: "user", content: historyOutput })).toBe(10128);
+  const completeSimple = vi.fn().mockResolvedValueOnce(response(historyOutput)).mockResolvedValueOnce(response("## Context for Suffix\nFictional crate review is pending."));
+  const requests: any[] = [];
+  const facade = summaryModels({ completeSimple }, { operationId: "fictional-overrun", effort: "low", focus: "", requests, minimumAnswerTokens: plan.minimumAnswerTokens });
+  const selected = { ...model, reasoning: true, provider: "openai-codex", api: "openai-codex-responses", id: "fictional-summary", contextWindow: 1_000_000 };
+  const result = await compactWithRequest(p, { model: selected }, (context: any, options: any) => facade.completeSimple(selected, context, options), {});
+  expect(result.ok).toBe(true);
+  expect(completeSimple).toHaveBeenCalledTimes(2);
+  expect(requests[0]).toMatchObject({ status: "succeeded", textTargetTokens: plan.targets.history, generatedSummaryTokens: 10128 });
+  expect(plan.targets.history).toBeLessThan(5800);
+  expect(requests[1]).toMatchObject({ status: "succeeded", providerInvoked: true, textTargetTokens: 1024, minimumAnswerTokens: 1024, providerMaxTokens: 3072 });
+  expect(p.preservation).toMatchObject({ missingTupleCount: 0, refusalReason: null });
+  expect(plan.budget.fits(result.value!.summary)).toBe(true);
 });

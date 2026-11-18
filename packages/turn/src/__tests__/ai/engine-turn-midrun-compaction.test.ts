@@ -523,7 +523,7 @@ describe("mid-run compaction guards", () => {
 
   it("pays at most one preservation refusal without assistant progress and meaningful growth", async () => {
     const previousSummary = "## Historical events and corrections\n- Permit; m1; pending; no approval.\n## Pending items\n- None";
-    const fixture = controllerFixture({ previousSummary, summary: "Lossy fictional summary.", policy: { compactionMinSavingsTokens: 1000 } });
+    const fixture = controllerFixture({ previousSummary, summary: "## Historical events and corrections\n- Fictional task; resolved; prior approval.", policy: { compactionMinSavingsTokens: 1000 } });
     await fixture.controller.arm();
     fixture.setTranscript(growingTranscript(2));
     for (let attempt = 1; attempt <= 3; attempt++) {

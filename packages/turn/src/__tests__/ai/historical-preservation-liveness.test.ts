@@ -45,7 +45,7 @@ async function fixture(summary = history, inherited = false, admitted: boolean |
   const models = createModels(); models.setProvider(faux.provider);
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional run continued.")])]);
   const model = faux.getModel();
-  const completeSimple = vi.fn(async (..._args: any[]): Promise<any> => answer("Legacy lossy summary."));
+  const completeSimple = vi.fn(async (..._args: any[]): Promise<any> => answer("## Historical events and corrections\n- Fictional permit; m1; resolved; prior approval."));
   const driver = createRunDriver(raw, { model, models, systemPrompt: "Fictional rules.", tools: [], ...(access ? { retainedSummaryAccess: access } : {}), ...(inherited ? { inheritedProjection } : {}) });
   if (admitted) {
     await driver.beginTurn("fictional-admission", "host", { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", handleId: raw.metadata.id, turnId: "fictional-admission", baseRevision: 0 });
@@ -63,6 +63,38 @@ async function fixture(summary = history, inherited = false, admitted: boolean |
   return { root, raw, session, harness, driver, faux, completeSimple, events, warnings, policy, compact, grow, access,
     close: async () => { await driver.close(); await raw.close(); await repo.close(); await rm(root, { recursive: true, force: true }); } };
 }
+
+it("the real checkpoint scheduler ignores pre-cut usage in its retained tail", async () => {
+  const f = await fixture();
+  const beforeCompact = vi.fn(async () => ({ cancel: true }));
+  const remove = f.driver.hooks.on("before_compaction", beforeCompact);
+  try {
+    const retained = { ...answer("Fictional prior answer"), timestamp: 3, usage: { ...answer("").usage, input: 90_000, totalTokens: 90_001 } };
+    await f.raw.appendMessage(retained);
+    await f.raw.appendCompaction({ summary: history, tokensBefore: 90_001, retainedTail: [retained], details: {} });
+    expect((await f.session.buildContext()).messages).toContainEqual(retained);
+    await f.driver.setCompactionSettings({ enabled: true, reserveTokens: 50_001, keepRecentTokens: 1000 });
+    f.driver.setMidRunCompactionArmed(true);
+    expect((await f.driver.prompt("Continue the fictional permit review.")).status).toBe("completed");
+    expect(beforeCompact).not.toHaveBeenCalled();
+  } finally { remove(); await f.close(); }
+});
+
+it("commits a paid summary with only omitted historical details repaired from the predecessor", async () => {
+  const f = await fixture();
+  try {
+    await f.grow();
+    f.completeSimple.mockResolvedValueOnce(answer("## Goal\nContinue the fictional permit review."));
+    expect((await f.compact("proactive")).applied).toBe(true);
+    expect(f.completeSimple).toHaveBeenCalledTimes(1);
+    const last = (await f.raw.getEntries()).filter((entry: any) => entry.type === "compaction").at(-1);
+    expect(last.summary).toContain("Continue the fictional permit review.");
+    expect(historicalTuples(last.summary)).toEqual([tuple]);
+    expect(f.events.at(-1)).toMatchObject({ status: "succeeded", accounting: { preservation: {
+      missingTupleCount: 0, omittedProtectedTupleCount: 1, hostCarriedBytes: expect.any(Number), protectionActive: true,
+    } } });
+  } finally { await f.close(); }
+});
 
 it("a real journal/driver refusal never suppresses reactive overflow: bypass, commit, and continue the run", async () => {
   const f = await fixture();
@@ -238,7 +270,7 @@ it("legacy truncation after the single extra retry fails normally without loopin
     expect(f.completeSimple.mock.calls[1]![2].maxTokens).toBe(1000);
     expect(JSON.stringify(f.completeSimple.mock.calls[1]![1])).not.toContain("<protected-historical-tuples>");
     expect(f.events.at(-1).status).toBe("failed");
-    expect((await f.compact("reactive_overflow")).applied).toBe(false);
+    expect((await f.compact("proactive")).applied).toBe(false);
     expect(f.completeSimple).toHaveBeenCalledTimes(2);
     expect(f.events.at(-1).reason).toBe("recent_identical_failure");
   } finally { await f.close(); }
@@ -345,9 +377,20 @@ it("zero-tuple legacy truncation remains a cached provider failure", async () =>
     f.completeSimple.mockResolvedValue({ ...answer("Legacy partial output"), stopReason: "length" });
     expect((await f.compact("proactive")).applied).toBe(false);
     expect(f.events.at(-1)).toMatchObject({ status: "failed", accounting: { requests: [expect.objectContaining({ reason: "output_truncated" })] } });
-    expect((await f.compact("reactive_overflow")).applied).toBe(false);
+    expect((await f.compact("proactive")).applied).toBe(false);
     expect(f.completeSimple).toHaveBeenCalledTimes(1);
     expect(f.events.at(-1).reason).toBe("recent_identical_failure");
+    f.completeSimple.mockResolvedValueOnce(answer("Recovered fictional summary."));
+    const runState = { session: f.session, sessionBaselineCount: 0, compaction: { policy: f.policy, diagnostics: {}, applied: false, compactedThisRun: false, reactiveAttempted: false } };
+    const overflow = { harness: f.harness, runtime: {}, resolved: { reference: "faux:liveness-overflow" }, options: {},
+      promptText: "Continue fictional work.", reference: "faux:liveness", onEvent: (event: any) => f.events.push(event), runtimeWarnings: f.warnings,
+      state: { stopReason: "error" }, runError: new Error("context length exceeded"), captureState: async () => ({ stopReason: "stop" }) };
+    const result = await runReactiveCompaction(runState, overflow);
+    expect(result.runError).toBeNull();
+    expect(f.events.at(-1)).toMatchObject({ trigger: "overflow", status: "succeeded" });
+    await runReactiveCompaction(runState, overflow);
+    expect(f.completeSimple).toHaveBeenCalledTimes(2);
+    expect(f.harness.prompt).toHaveBeenCalledTimes(1);
   } finally { await f.close(); }
 });
 it("keeps partial native usage defined across durable reload without inventing a complete bill", async () => {

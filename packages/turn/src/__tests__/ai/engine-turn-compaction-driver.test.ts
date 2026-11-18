@@ -146,7 +146,10 @@ function hookHarness({ sourceMessages = reducibleMessages(), summary = "short su
   };
 }
 
-function freshRunState(session: ReturnType<typeof fakeSession>, { policy }: { policy?: Policy } = {}) {
+function freshRunState(session: {
+  getEntries: () => Promise<readonly unknown[]>;
+  buildContext: () => Promise<{ messages: readonly unknown[] }>;
+}, { policy }: { policy?: Policy } = {}) {
   return {
     session,
     sessionBaselineCount: 0,
@@ -544,6 +547,37 @@ describe("runProactiveCompaction — trigger math", () => {
       context_fixed_overhead_tokens: expect.any(Number),
       context_compaction_trigger_tokens: 500,
     });
+  });
+
+  it("does not trigger after a successful cut with stale usage in its retained tail", async () => {
+    const beforeCut = assistantMessage("Fictional retained answer.");
+    beforeCut.usage = { ...beforeCut.usage, totalTokens: 530_000, input: 529_900, output: 100 };
+    const summary = "Fictional compacted inventory.";
+    const entries: (Omit<FixtureEntry, "parentId"> | { type: "compaction"; id: string; checkpoint: { summaryMessage: { role: string; summary: string } }; retainedTail: FixtureMessage[] })[] = [
+      { type: "message", id: "before", message: beforeCut },
+      { type: "compaction", id: "cut", checkpoint: { summaryMessage: { role: "compactionSummary", summary } }, retainedTail: [beforeCut] },
+    ];
+    const session = { getEntries: async () => entries, buildContext: async () => ({ messages: buildHarnessSessionContext(entries) }) };
+    const livePolicy = { ...policy(), contextWindow: 1_000_000, triggerTokens: 500_000 };
+    const runState = freshRunState(session, { policy: livePolicy });
+    const harness = { waitForIdle: vi.fn(), compact: vi.fn() };
+    const onEvent = vi.fn();
+    await runProactiveCompaction(runState, { harness, systemPrompt: "Fictional rules", options: {}, tools: [],
+      promptText: "Continue the inventory.", reference: "faux:m", onEvent, runtimeWarnings: [] });
+    expect(runState.compaction.diagnostics).toMatchObject({ context_compaction_estimate_source: "estimate" });
+    expect(runState.compaction.diagnostics.context_request_estimate_tokens).toBeLessThan(500_000);
+    expect(harness.waitForIdle).not.toHaveBeenCalled();
+    expect(harness.compact).not.toHaveBeenCalled();
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(await estimateCurrentContextTokens(session, 100)).toEqual({
+      tokens: 100 + buildHarnessSessionContext(entries).reduce((sum, message) => sum + estimateTokens(message), 0), source: "estimate",
+    });
+
+    const afterCut = assistantMessage("Fictional fresh response.");
+    afterCut.usage = { ...afterCut.usage, totalTokens: 40_000, input: 39_900, output: 100 };
+    const trailing = userMessage("New fictional inventory task.");
+    entries.push({ type: "message", id: "after", message: afterCut }, { type: "message", id: "pending", message: trailing });
+    expect(await estimateCurrentContextTokens(session, 100, 25)).toEqual({ tokens: 40_000 + estimateTokens(trailing) + 25, source: "usage" });
   });
 
   it("compacts, records diagnostics, and re-anchors the baseline when the estimate crosses the trigger", async () => {

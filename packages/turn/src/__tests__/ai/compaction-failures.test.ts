@@ -8,7 +8,10 @@ it("suppresses across reopened controllers, warns once and resets on growth/cool
   const repeated = activeGuard(compactionFailureGuard({ ...base, now: 200 }));
   expect(repeated).toMatchObject({ suppressed: true, warn: true, growthRequiredTokens: 50000 });
   repeated.suppress();
-  expect(compactionFailureGuard({ ...base, trigger: "reactive_overflow", now: 300 })).toMatchObject({ suppressed: true, warn: false });
+  const reactive = activeGuard(compactionFailureGuard({ ...base, trigger: "reactive_overflow", now: 300 }));
+  expect(reactive).toMatchObject({ suppressed: false, warn: false });
+  reactive.settle("failed", false); // No summary attempted; keep the proactive suppression.
+  expect(compactionFailureGuard({ ...base, now: 300 })).toMatchObject({ suppressed: true, warn: false });
   expect(activeGuard(compactionFailureGuard({ ...base, tokens: 549999 })).suppressed).toBe(true);
   expect(activeGuard(compactionFailureGuard({ ...base, tokens: 550000 })).suppressed).toBe(false);
   activeGuard(compactionFailureGuard(base)).settle("failed", true, "empty_summary");

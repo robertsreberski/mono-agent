@@ -52,7 +52,7 @@ it.each(["pre-turn", "threshold"])("a stale durable zero-call account preserves 
     expect(projectContext(entries, { mode: "compaction", repairs: await raw.getRepairEntries() }).entries).toBe(entries);
     expect(await raw.getRepairEntries()).toEqual(repairs); // durable accounts are not consumed
 
-    const completeSimple = vi.fn(async (..._args: any[]): Promise<any> => answer("Lossy fictional summary."));
+    const completeSimple = vi.fn(async (..._args: any[]): Promise<any> => answer(history.replace("pending; no approval", "resolved; prior approval")));
     const session = { getEntries: () => raw.getEntries(), buildContext: async () => projectContext(await raw.getEntries(), { repairs: await raw.getRepairEntries() }) };
     const harness = { models: { completeSimple }, compactionFailureKey: root, getModel: () => model,
       waitForIdle: () => driver!.waitForIdle(), setCompactionSettings: (settings: any) => driver!.setCompactionSettings(settings),
