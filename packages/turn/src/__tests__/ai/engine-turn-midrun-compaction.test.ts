@@ -279,7 +279,7 @@ function entriesFor(messages: FixtureMessage[]) {
   }));
 }
 
-function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\nshort summary", stopReason = "stop", previousSummary = undefined as string | undefined, recordingBarrier = undefined as (() => Promise<void>) | undefined } = {}) {
+function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\nshort summary", stopReason = "stop", previousSummary = undefined as string | undefined, recordingBarrier = undefined as (() => Promise<void>) | undefined, strictRecording = false } = {}) {
   const policy = {
     enabled: true,
     contextWindow: 100_000,
@@ -365,7 +365,7 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
   }
   const controller = createMidRunCompaction(runState, {
     harness,
-    options: { onCompactionRecorded: (row: CompactionRecordedPayload) => { recorded.push(row); return recordingBarrier?.(); }, runId: "r1" },
+    options: { ...(strictRecording ? { continuityRecording: true } : {}), onCompactionRecorded: (row: CompactionRecordedPayload) => { recorded.push(row); return recordingBarrier?.(); }, runId: "r1" },
     reference: "faux:m",
     onEvent: (event: CompactionEvent) => events.push(event),
     runtimeWarnings,
@@ -523,13 +523,14 @@ describe("mid-run compaction guards", () => {
 
   it("pays at most one preservation refusal without assistant progress and meaningful growth", async () => {
     const previousSummary = "## Historical events and corrections\n- Permit; m1; pending; no approval.\n## Pending items\n- None";
-    const fixture = controllerFixture({ previousSummary, summary: "Lossy fictional summary.", policy: { compactionMinSavingsTokens: 1000 } });
+    const fixture = controllerFixture({ strictRecording: true, previousSummary, summary: "Lossy fictional summary.", policy: { compactionMinSavingsTokens: 1000 } });
     await fixture.controller.arm();
     fixture.setTranscript(growingTranscript(2));
     for (let attempt = 1; attempt <= 3; attempt++) {
       expect(await fixture.checkpoint()).toEqual({ cancel: true });
       expect(fixture.summaryRequests()).toBe(2);
-      expect(fixture.events.at(-1)).toMatchObject({ status: "skipped", reason: "protected_tuples_missing" });
+      expect(fixture.events.at(-1)).toMatchObject({ type: "context_compaction", status: "skipped", reason: "protected_tuples_missing",
+        accounting: { midRun: true, preservation: { revision: { status: "rejected", reason: "tuples_missing", missingTupleCount: 1 } } } });
       expect(fixture.runState.compaction.applied).toBe(false);
     }
     expect(fixture.recorded).toHaveLength(0);
@@ -696,7 +697,7 @@ describe("mid-run transcript accounting", () => {
 
 it.each([false, true])("threshold protected truncation refuses without failure caching or repeated payment, split=%s", async split => {
   const history = "## Historical events and corrections\n- Permit; m1; pending; no approval.";
-  const fixture = controllerFixture({ previousSummary: history, summary: history, stopReason: "length" });
+  const fixture = controllerFixture({ strictRecording: true, previousSummary: history, summary: history, stopReason: "length" });
   await fixture.controller.arm();
   fixture.setTranscript([...growingTranscript(6), ...(!split ? [userMessage("x".repeat(40000))] : [])]);
   for (let checkpoint = 0; checkpoint < 3; checkpoint++) expect(await fixture.checkpoint()).toEqual({ cancel: true });

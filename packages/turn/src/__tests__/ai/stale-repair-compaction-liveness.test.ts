@@ -62,7 +62,7 @@ it.each(["pre-turn", "threshold"])("a stale durable zero-call account preserves 
     const policy = { enabled: true, contextWindow: 100000, triggerTokens: 10000, summaryMaxTokens: 1000, keepRecentTokens: 1000,
       compactionMinSavingsTokens: 0, effort: "none", failureCooldownMs: 900000, fixedOverheadEnabled: false };
     const runState = { session, sessionBaselineCount: 0, compaction: { policy, diagnostics: {}, applied: false, compactedThisRun: false, reactiveAttempted: false } };
-    const options = { onCompactionRecorded: (event: any) => recorded.push(event) };
+    const options = { continuityRecording: true as const, onCompactionRecorded: (event: any) => recorded.push(event) };
     const onEvent = (event: any) => events.push(event);
     driver.hooks.on("before_compaction", (event: any) => {
       const native = event.branchEntries;

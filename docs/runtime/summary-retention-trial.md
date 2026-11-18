@@ -57,22 +57,27 @@ any request (`protected_template_unfits`). If the protected input frame alone
 exhausts input headroom, it is removed before any provider call and legacy policy
 is rechecked (`protected_input_unfits`).
 
-Missing tuples, oversized protected output and protected `stopReason: "length"`
-can make proactive/mid-run threshold cuts return `summary_refused`, retaining
-history without a provider-failure cooldown. A warm cut can first try one revision
-of a newly generated history draft if it misses tuple occurrences or overruns
-its target and prevents a split composition from fitting. The revision uses
-only the draft and any missing tuple occurrences. It uses the lowest supported
-effort, no retries, and a visible-text target constrained by the existing
-projected budget. The host accepts only a complete provider reply that passes the
-same exact tuple and composed-size checks; it inserts no tuples itself. Failed,
-unaffordable or aborted revisions leave the original refusal in place. Cold
-authenticated predecessor admission, inherited-prefix recovery, manual/overflow,
-reused history and unprotected requests do not get this revision. Codex receives
-visible-size instructions because its adapter does not put `maxTokens` on the
-wire; neither those instructions nor the host acceptance check cap remote work.
+Authenticated cold admission and strict continuity recording retain the exact
+tuple and composed-size checks, including `summary_refused` on a protected
+proactive or threshold cut. Warm production proactive, threshold and manual cuts
+instead treat summary size as guidance. A paid candidate can commit over the
+size target if it meets the existing savings checks, the 1-MiB record limit and
+the model context bound. A warm nonempty truncated draft can also commit with a
+note; abortion of the operation still prevents a commit.
 
-Refusal is not permission to pay repeatedly:
+For missing protected occurrences, a warm cut can first try one revision of
+newly generated history. The revision sees only the draft and missing
+occurrences, uses the lowest supported effort with no retries, and asks for
+terse prose within about 80% of the remaining estimated room when the request
+cap and protected-text floor permit. The host keeps the original unless a safe,
+complete revision restores more exact occurrences. It never appends missing
+text itself. If the selected candidate omits tuples or exceeds its target, the
+cut reports success with a degradation note. Authenticated predecessor admission,
+strict continuity recording, inherited-prefix recovery, overflow, and reused
+history do not get this warm recovery. Codex receives visible-size instructions
+because its adapter does not put `maxTokens` on the wire.
+
+A strict-path refusal is not permission to pay repeatedly:
 threshold cuts keep their existing fresh-assistant and meaningful-growth vetoes.
 Idle and mid-run proactive cuts also share one paid-refusal baseline: retries wait
 for `max(8192, ceil(previousTokens * 0.1))` transcript growth, or changed protected
@@ -87,10 +92,10 @@ once across both paths until that shared baseline permits another attempt.
 
 | Automatic protected-refusal case | Summary calls (ordinary / generated split / reused split) |
 | --- | --- |
-| First eligible attempt in a shared growth step (including a possible revision) | 1–2 / 1–3 / 1 |
+| First eligible strict attempt in a shared growth step | 1–2 / 1–3 / 1 |
 | Further idle and mid-run checks combined, same protected tuples/model/policy and less than the shared transcript growth | **0 additional**, even as split cuts/prefixes advance or controllers change |
 
-Manual, reactive-overflow and inherited-prefix recovery reuse missing/oversized
+Outside warm acceptance, manual, reactive-overflow and inherited-prefix recovery reuse missing/oversized
 generated output through legacy composition without another call. Protected
 truncation instead retries only the truncated part once with legacy caps and no
 protected frame: at most one extra call per cut, never a new whole-cut retry.
@@ -108,7 +113,7 @@ so a ready managed-switch admission cannot acquire a preservation veto.
 `historical_preservation_bypassed` is a content-free warning with reason and
 remediation: raise `summaryMaxTokens` or start a new session to restore protection.
 Manual compaction can recover a refused automatic cut. `accounting.preservation`
-appears only for protected or unavailable history and records sizes/counts,
+appears for protected or unavailable history and degraded warm cuts, and records sizes/counts,
 missing counts, active protection, refusal/bypass reason and complete final-summary bytes/estimate
 (null before a complete candidate). The host does not append missing tuples to
 a model reply. Authenticated lineage reconstructs the durable output from the
@@ -118,9 +123,15 @@ predecessor bytes as input when they cannot be quoted in the seed; it does not
 repair summaries. Provider request
 usage/cost and `generatedSummaryTokens` include a truncated request and its bounded
 legacy retry, or the original draft and its revision. The revision has a separate
-request row with a content-free `recoveryReason`. A recovered cut keeps a defined
-native `usage` object, summing
-known numeric parts with `usage.partial: true` when any part is missing. These
+request row with a content-free `recoveryReason`. The `context_compaction`
+event records the revision decision in `accounting.preservation.revision`:
+`accepted` or `rejected` with a reason (`provider_error`, `not_stop`, `empty`,
+`over_length` with composed bytes, `tuples_missing` with an occurrence count,
+`budget_exceeded` with the projected estimate (including any reserved prefix room), `aborted`,
+or `ineligible`). This describes the replacement decision, not whether a cut
+ultimately commits; the console uses the terminal cut reason to show an allow-listed success note. A recovered
+cut keeps a defined native `usage` object, summing known numeric parts with
+`usage.partial: true` when any part is missing. These
 numbers are known subtotals, not a complete bill. `accounting.requests` rows keep
 missing cost/usage fields null; aggregate runtime `usage.compaction` and folded
 `usage` report `cost_partial`, `cost_usd` and any `known_cost_usd` separately. Journal

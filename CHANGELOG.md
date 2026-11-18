@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep paid warm automatic and manual compaction summaries that safely reduce
+  context, even when they exceed the requested size or still omit protected
+  details after one revision. Explain degraded successes in the console and
+  record the revision outcome without logging its text.
+
 - Let automatic compaction salvage a protected summary that omitted historical
   details or crowded out its split-turn prefix. Try one summary-only revision,
   account for the extra request, and keep the original history if it still

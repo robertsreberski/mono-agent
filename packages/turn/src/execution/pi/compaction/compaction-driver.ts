@@ -195,7 +195,7 @@ function emitCompactionEvent(onEvent: (event: any) => void, {
   reason,
   httpStatus,
   message,
-}: { operationId: string; status: string; trigger: string; model?: string; tokensBefore?: number | null; tokensAfter?: number | null; reason?: string; httpStatus?: number; message?: string; }) {
+}: { operationId: string; status: string; trigger: string; model?: string; tokensBefore?: number | null; tokensAfter?: number | null; reason?: string | undefined; httpStatus?: number; message?: string; }) {
   const before = finiteTokenCount(tokensBefore);
   const after = finiteTokenCount(tokensAfter);
   try {
@@ -287,12 +287,14 @@ export function createGuardedCompactionHook({
   beforeAttempt = null,
   beforeSummary = null,
   abortSignal = undefined,
+  allowWarmDegradation = false,
 }: any) {
   let decision: { kind: string; reason?: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; retainedTailLength?: number; compaction?: any; error?: any; diagnostic?: AgentManualCompactionDiagnostic; warn?: boolean; retryAfterMs?: number; growthRequiredTokens?: number; } | null = null;
   const handler = async (event: any): Promise<{ cancel?: boolean; compaction?: any; retainedAuthorityUsed?: boolean }> => {
     decision = null;
     let summaryDiagnostic: AgentManualCompactionDiagnostic | undefined;
     let failureGuard = null;
+    let warm = false;
     let preservationGuard: ReturnType<typeof proactivePreservationGuard> | null = null;
     try {
       if (typeof beforeAttempt === "function") {
@@ -398,6 +400,9 @@ export function createGuardedCompactionHook({
             message: "Retained summary protection unavailable; continuing with legacy context." });
         }
       }
+      // The default remains strict for callers such as the E2 plan oracle.
+      warm = allowWarmDegradation && !event.retainedPredecessor && !(event.nonRetainablePrefixLength > 0)
+        && (trigger === "proactive" || trigger === "manual");
       input.preparation.preservation = {};
       if (summaryBudget.tuples.length || summaryBudget.parsed.protectionUnavailable) accounting.preservation = input.preparation.preservation;
       // Inherited-prefix cuts are first reached through idle proactive or the
@@ -420,20 +425,27 @@ export function createGuardedCompactionHook({
         }
       }
       // The authenticated cold-admission protocol binds the original request
-      // and split receipts. Only warm proactive cuts may purchase a revision.
+      // and split receipts. Only eligible warm cuts may purchase a revision.
       const warmProactive = trigger === "proactive" && !preservationFallback && !event.retainedPredecessor
         && summaryBudget.protecting;
       const model = harness.getModel();
+      const window = Math.min(model.contextWindow || Infinity, effectivePolicy.contextWindow || Infinity);
+      if (warm) {
+        const minimumSavings = trigger === "proactive" ? Math.max(1, effectivePolicy.compactionMinSavingsTokens || 0) : 1;
+        const savingsLimit = (accounting.transcriptBefore ?? Infinity) - minimumSavings;
+        input.preparation.warmSummaryLimit = Math.min(window - (fixedOverheadTokens ?? 0), savingsLimit) - accounting.tailEstimateTokens;
+      }
       const { abortSignal: engineSignal, ...summaryContext } = event.context || BACKGROUND_CONTEXT;
       const signals: AbortSignal[] = [...new Set<AbortSignal>([engineSignal, event.signal, abortSignal].filter(Boolean))];
       const requestContext = { ...summaryContext, abortSignal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] };
-      const recoverHistory: RecoverHistorySummary | undefined = warmProactive ? (reason, context, options) =>
+      const recoverHistory: RecoverHistorySummary | undefined = (warmProactive || (warm && summaryBudget.tuples.length > 0)) ? (reason, context, options) =>
         summaryModels(harness.models, { operationId, focus: "", requests: accounting.requests, recoveryReason: reason, effort: "none" })
           .completeSimple(model, context, options) : undefined;
       const compacted = await compactPreparedContext(
         input.preparation,
         summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests, effort: effectivePolicy.effort,
-          guideVisibleSize: warmProactive,
+          guideVisibleSize: warm || warmProactive,
+          allowWarmDegradation: warm,
           onDiagnostic: (diagnostic) => { summaryDiagnostic = diagnostic; },
           // Manual work shares the host response budget, not an SDK's shorter default.
           ...(trigger === "manual" ? { timeoutMs: 15 * 60_000 } : {}),
@@ -450,7 +462,14 @@ export function createGuardedCompactionHook({
         requestContext,
         recoverHistory,
       );
+      if (warm && accounting.preservation === undefined && input.preparation.preservation.bypassReason) {
+        accounting.preservation = input.preparation.preservation;
+      }
       if (compacted.ok === false) {
+        if (warm && compacted.error.code === "context_too_large") {
+          decision = { kind: "guard_skipped", reason: compacted.error.code };
+          return { cancel: true };
+        }
         decision = { kind: compacted.error.code === "summary_refused" ? "summary_refused" : accounting.requests.at(-1)?.reason === "insufficient_summary_headroom" ? "headroom_unavailable" : "failed", reason: accounting.preservation?.refusalReason, error: compacted.error, ...(summaryDiagnostic ? { diagnostic: summaryDiagnostic } : {}) };
         return { cancel: true };
       }
@@ -478,8 +497,14 @@ export function createGuardedCompactionHook({
         decision = { kind: "insufficient_savings", tokensBefore, tokensAfter, savings };
         return { cancel: true };
       }
+      if (warm && tokensAfter !== null && tokensAfter + (fixedOverheadTokens ?? 0) > window) {
+        decision = { kind: "guard_skipped", reason: "context_too_large" };
+        return { cancel: true };
+      }
       decision = {
         kind: "accepted",
+        ...(warm && (accounting.preservation?.bypassReason === "protected_tuples_missing" || accounting.preservation?.bypassReason === "summary_budget_exceeded" || accounting.preservation?.bypassReason === "output_truncated")
+          ? { reason: accounting.preservation.bypassReason } : {}),
         tokensBefore,
         tokensAfter,
         savings,
@@ -493,7 +518,7 @@ export function createGuardedCompactionHook({
       return { cancel: true };
     } finally {
       const preservation = accounting.preservation;
-      if (preservation?.bypassReason) runtimeWarnings?.push({ warning_kind: "historical_preservation_bypassed", source: "pi", trigger, reason: preservation.bypassReason,
+      if (preservation?.bypassReason && (!warm || decision?.kind === "accepted")) runtimeWarnings?.push({ warning_kind: "historical_preservation_bypassed", source: "pi", trigger, reason: preservation.bypassReason,
         message: "Historical preservation bypassed to keep compaction available. Raise summaryMaxTokens or start a new session to restore protection." });
       if (preservation?.protectionUnavailable) runtimeWarnings?.push({ warning_kind: "historical_preservation_unavailable", source: "pi", trigger, reason: preservation.protectionUnavailableReason,
         message: "Historical protection unavailable for this summary format. Compact manually or start a new session; review the summary format before relying on preservation." });
@@ -684,7 +709,7 @@ export async function tryCompact(harness: any, {
     model,
   });
   let effectivePolicy = policy || {};
-  let hookDecision: { kind: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; error?: any; } | null = null;
+  let hookDecision: { kind: string; reason?: string; tokensBefore?: number | null; tokensAfter?: number | null; savings?: number | null; firstKeptEntryId?: string | null; error?: any; } | null = null;
   let removeHook = null;
   let readDecision = () => hookDecision;
   try {
@@ -714,6 +739,7 @@ export async function tryCompact(harness: any, {
       runtimeWarnings,
       fixedOverheadTokens,
       abortSignal,
+      allowWarmDegradation: !continuityRecording,
     });
     readDecision = guarded.getDecision;
     removeHook = harness.on("session_before_compact", guarded.handler);
@@ -738,6 +764,7 @@ export async function tryCompact(harness: any, {
       model,
       tokensBefore,
       tokensAfter,
+      reason: hookDecision?.reason,
     });
     if (reduced === false) {
       runtimeWarnings?.push({

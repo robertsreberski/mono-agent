@@ -2407,10 +2407,17 @@ describe("WebStore", () => {
       apply("fictional-guard", "skipped", "below_trigger");
       apply("fictional-paid", "skipped", "nothing_to_compact", { requests: [{ providerInvoked: true }] });
       apply("fictional-refused", "skipped", "protected_tuples_missing");
+      apply("fictional-degraded", "succeeded", "protected_tuples_missing");
+      apply("fictional-overshoot", "succeeded", "summary_budget_exceeded");
+      apply("fictional-unsafe-note", "succeeded", "provider_error");
       const detail = store.getThreadDetail(thread.id)!;
       const markers = detail.messages.flatMap(message => message.parts)
         .filter(part => part.type === "conversation-marker" && part.kind === "compaction");
-      expect(markers.map(marker => marker.operationId)).toEqual(["fictional-paid", "fictional-refused"]);
+      expect(markers.map(({ operationId, status, reason }) => [operationId, status, reason])).toEqual([
+        ["fictional-paid", "skipped", "nothing_to_compact"], ["fictional-refused", "skipped", "protected_tuples_missing"],
+        ["fictional-degraded", "succeeded", "protected_tuples_missing"], ["fictional-overshoot", "succeeded", "summary_budget_exceeded"],
+        ["fictional-unsafe-note", "succeeded", undefined],
+      ]);
       expect(JSON.stringify(detail)).not.toMatch(/fictional-unpaid|fictional-guard/);
     } finally { store.close(); }
   });

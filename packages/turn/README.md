@@ -75,31 +75,32 @@ template heading. Empty/placeholder-only sections mean zero tuples without a
 warning; unclosed fences or unparsed non-placeholder history produce content-free
 `protectionUnavailable` diagnostics.
 
-With protected tuples, complete-result estimates share `summaryMaxTokens` and the
-1-MiB record bound; provider text caps use an 85% margin. With zero tuples, legacy
-caps, output acceptance and the savings preview are unchanged. The host does
-not append missing protected tuples to a provider reply: checkpoint lineage
-verifies the summary against the original reply bytes and existing framing.
-Cold reseed carriage admits an authenticated predecessor as input; it is not
-an output repair. The public
-`compact`/`compactWithRequest` helpers can return `CompactionError.code` equal to
-`summary_refused` for a lossy/oversized/truncated protected candidate. Native
-proactive/threshold cuts can try one bounded revision of a newly generated warm
-history draft if it omits protected tuples or crowds out the split prefix. The
-revision sees only the draft and any missing tuple occurrences, never the
-transcript. The same exact-tuple and composed-size checks apply before the host
-uses the provider's replacement. Cold authenticated admission, inherited-prefix
-recovery, manual/overflow, and preservation bypass do not use this path. If the
-candidate still fails validation, the cut refuses without changing history or
-poisoning the provider failure cooldown. Threshold retries retain
-assistant-progress/growth vetoes.
-Idle and mid-run proactive share a paid-refusal baseline, requiring
+Protected requests use an 85% margin for their text targets. Warm production
+proactive, threshold and manual cuts treat `summaryMaxTokens` as guidance, not
+an acceptance limit. They still enforce the 1-MiB record limit, model context
+window and existing savings checks. If a draft omits protected occurrences,
+they can try one revision of newly generated history. It sees only the draft
+and missing occurrences, never the transcript, and asks for terse prose within
+about 80% of the remaining estimated room when the request cap and protected-text
+floor allow. The host selects a safe, complete revision only if it restores more
+exact occurrences; it never appends missing tuples itself. If the revision does
+not improve preservation, the original draft remains eligible. A cut that
+keeps a longer-than-target, lossy, or nonempty truncated summary reports a
+successful compaction with a degradation reason, not a skipped compaction.
+
+Authenticated cold admission and strict continuity recording use the unchanged
+validator and composed budget. The public `compact`/`compactWithRequest` helpers
+remain strict by default and can return `CompactionError.code: summary_refused`.
+Cold reseed carriage admits an authenticated predecessor as input, not as an
+output repair. Inherited-prefix and reactive-overflow cuts do not use warm
+revision or acceptance. Threshold retries retain assistant-progress/growth vetoes.
+Idle and mid-run proactive share a strict-path paid-refusal baseline, requiring
 `max(8192, ceil(previousTokens * 0.1))` transcript growth or changed protected
 blocks/model or preservation-affecting summary policy (`summaryMaxTokens`,
 `keepRecentTokens`, `effort`, `compactionMinSavingsTokens`). Other policy changes,
 advancing a split cut, changing controller or fixed overhead cannot repay an
 unchanged refusal.
-Native manual/overflow and inherited-prefix recovery instead bypass protection,
+Outside the warm acceptance path, manual/overflow and inherited-prefix recovery bypass protection,
 issuing `historical_preservation_bypassed`: missing/oversized output is reused;
 protected truncation retries only that part once with legacy caps (at most one
 extra request). Zero-tuple and post-bypass legacy-cap truncation still fails and
@@ -112,12 +113,15 @@ threshold, both reported as `proactive`; ready admission cannot add a protection
 veto. Raise `summaryMaxTokens` or start a new session to restore protection;
 manual compaction can recover from automatic refusal.
 
-Content-free `accounting.preservation` diagnostics (present only for protected or
-unavailable history) record sizes/counts, missing tuples, refusal/bypass reason and
+Content-free `accounting.preservation` diagnostics (present for protected or
+unavailable history and degraded warm cuts) record sizes/counts, missing tuples, refusal/bypass reason and
 final-summary size separately from provider usage, cost and
 `generatedSummaryTokens`, which account for the bounded truncation retry or
 revision. A revision has its own request row with the triggering `recoveryReason`.
-Codex receives visible-size guidance, not an enforced wire output limit. Recovered
+The `context_compaction` event reports revision acceptance or a content-free
+rejection under `accounting.preservation.revision`, independently of the terminal
+cut reason. The missing count in the revision result describes the rejected
+replacement; the outer count describes the selected candidate. Codex receives visible-size guidance, not an enforced wire output limit. Recovered
 cuts keep native `usage` defined: known parts are summed, with `usage.partial: true`
 when any part is missing. Numeric subtotals are not complete billing:
 `accounting.requests` rows retain nullable cost/usage fields such as `costUsd`.

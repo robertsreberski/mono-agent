@@ -1,4 +1,4 @@
-import { compactionFailureDetail } from "../manual-compaction";
+import { compactionFailureDetail, compactionSuccessDetail } from "../manual-compaction";
 import { shortModelName } from "./route-label";
 import { ModelMarkers } from "./ModelMarkers";
 import { isConversationMarker } from "../conversation-markers";
@@ -906,7 +906,7 @@ function ContextCompactionDisplay({ payload, isMessageRunning = false }: { reado
     ? `${formatTokenCount(before)} → ${count(after)} tokens`
     : status === "succeeded" && before !== undefined ? `${count(before)} tokens before`
       : status === "succeeded" && after !== undefined ? `${count(after)} tokens after` : undefined;
-  const detail = status === "succeeded" ? undefined : compactionFailureDetail(payload);
+  const detail = status === "succeeded" ? compactionSuccessDetail(payload.reason) : compactionFailureDetail(payload);
 
   return <div className={`context-compaction-row is-${status}`} role="note"
     aria-label={[label, counts, detail, triggerLabel].filter(Boolean).join(" · ")}>

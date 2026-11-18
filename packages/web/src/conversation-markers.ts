@@ -37,6 +37,9 @@ export function isConversationMarker(value: unknown): value is WebConversationMa
 
 /** Display only known codes. A future code means no explanation, not a provider error. */
 export function compactionMarkerDiagnostic(data: { status?: unknown; reason?: unknown; httpStatus?: unknown }) {
+  if (data.status === "succeeded") {
+    return data.reason === "protected_tuples_missing" || data.reason === "summary_budget_exceeded" || data.reason === "output_truncated" ? { reason: data.reason } as const : {};
+  }
   return (data.status === "skipped" || data.status === "failed") && isManualCompactionReason(data.reason)
     ? manualCompactionDiagnostic(data) : {};
 }

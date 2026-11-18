@@ -26,6 +26,9 @@ User Stop also marks a running `AskUser` question as interrupted; answer in a ne
 - Render the host's `degraded_native_context` runtime warning in the existing
   conversation activity-note presentation; leave every other runtime warning
   store-only rather than displaying raw provider diagnostics.
+- Keep committed context-compaction markers successful even when the summary
+  omits protected details, runs beyond its target, or is cut off. Render only
+  allow-listed notes, never provider text.
 - Include continuity upkeep once in message/thread totals and running cards,
   with its own extraction-model slice. Unknown spend retains a known subtotal
   and an explicit partial label; inference, compaction and child work are not
