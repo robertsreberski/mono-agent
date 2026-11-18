@@ -58,8 +58,21 @@ exhausts input headroom, it is removed before any provider call and legacy polic
 is rechecked (`protected_input_unfits`).
 
 Missing tuples, oversized protected output and protected `stopReason: "length"`
-make proactive/mid-run threshold cuts return `summary_refused`, retaining history
-without a provider-failure cooldown. Refusal is not permission to pay repeatedly:
+can make proactive/mid-run threshold cuts return `summary_refused`, retaining
+history without a provider-failure cooldown. A warm cut can first try one revision
+of a newly generated history draft if it misses tuple occurrences or overruns
+its target and prevents a split composition from fitting. The revision uses
+only the draft and any missing tuple occurrences. It uses the lowest supported
+effort, no retries, and a visible-text target constrained by the existing
+projected budget. The host accepts only a complete provider reply that passes the
+same exact tuple and composed-size checks; it inserts no tuples itself. Failed,
+unaffordable or aborted revisions leave the original refusal in place. Cold
+authenticated predecessor admission, inherited-prefix recovery, manual/overflow,
+reused history and unprotected requests do not get this revision. Codex receives
+visible-size instructions because its adapter does not put `maxTokens` on the
+wire; neither those instructions nor the host acceptance check cap remote work.
+
+Refusal is not permission to pay repeatedly:
 threshold cuts keep their existing fresh-assistant and meaningful-growth vetoes.
 Idle and mid-run proactive cuts also share one paid-refusal baseline: retries wait
 for `max(8192, ceil(previousTokens * 0.1))` transcript growth, or changed protected
@@ -74,7 +87,7 @@ once across both paths until that shared baseline permits another attempt.
 
 | Automatic protected-refusal case | Summary calls (ordinary / generated split / reused split) |
 | --- | --- |
-| First eligible attempt in a shared growth step | 1 / 1–2 / 1 |
+| First eligible attempt in a shared growth step (including a possible revision) | 1–2 / 1–3 / 1 |
 | Further idle and mid-run checks combined, same protected tuples/model/policy and less than the shared transcript growth | **0 additional**, even as split cuts/prefixes advance or controllers change |
 
 Manual, reactive-overflow and inherited-prefix recovery reuse missing/oversized
@@ -86,9 +99,9 @@ after bypass) still fails and is cached by the provider failure guard for
 proactive checks. The single reactive attempt per overflowing run ignores that
 cooldown. Protecting truncation is a non-cached refusal.
 Thus ordinary/split-generated/split-reused cuts use 1/2/1 calls normally, at most
-2/3/2 after protected truncation; automatic first-history refusal uses one call,
-or two if only the split prefix fails. Actual inherited-prefix compaction runs
-through idle proactive or in-run threshold (reported as `proactive`), not only
+2/3/2 after protected truncation. A warm automatic attempt with a revision
+adds one call to its original history/prefix requests. Actual inherited-prefix
+compaction runs through idle proactive or in-run threshold (reported as `proactive`), not only
 manual/overflow: `nonRetainablePrefixLength > 0` enables the same legacy bypass
 so a ready managed-switch admission cannot acquire a preservation veto.
 
@@ -104,7 +117,9 @@ predecessor when a split reuses history. Reseed carriage instead admits
 predecessor bytes as input when they cannot be quoted in the seed; it does not
 repair summaries. Provider request
 usage/cost and `generatedSummaryTokens` include a truncated request and its bounded
-legacy retry. A recovered cut keeps a defined native `usage` object, summing
+legacy retry, or the original draft and its revision. The revision has a separate
+request row with a content-free `recoveryReason`. A recovered cut keeps a defined
+native `usage` object, summing
 known numeric parts with `usage.partial: true` when any part is missing. These
 numbers are known subtotals, not a complete bill. `accounting.requests` rows keep
 missing cost/usage fields null; aggregate runtime `usage.compaction` and folded

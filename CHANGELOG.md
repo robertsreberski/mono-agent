@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let automatic compaction salvage a protected summary that omitted historical
+  details or crowded out its split-turn prefix. Try one summary-only revision,
+  account for the extra request, and keep the original history if it still
+  fails the preservation or size checks.
+
 - Keep split-turn compaction from starving the turn-prefix request when the
   history summary exceeds its target. Give overflow recovery one attempt even
   during a proactive cooldown, and show the actual reason for skipped or failed

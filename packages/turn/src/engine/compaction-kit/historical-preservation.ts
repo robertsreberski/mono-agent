@@ -111,16 +111,21 @@ export function createSummaryBudget(limit: number, estimateTokens: (message: any
     } };
 }
 
-export function missingHistoricalTuples(protectedTuples: readonly string[], summary: string): number {
+export function omittedHistoricalTuples(protectedTuples: readonly string[], summary: string): string[] {
   const remaining = new Map<string, number>();
   for (const tuple of historicalTuples(summary)) remaining.set(tupleKey(tuple), (remaining.get(tupleKey(tuple)) ?? 0) + 1);
-  let missing = 0;
+  const missing: string[] = [];
   for (const tuple of protectedTuples) {
-    const count = remaining.get(tupleKey(tuple)) ?? 0;
-    if (count === 0) missing++;
-    else remaining.set(tupleKey(tuple), count - 1);
+    const key = tupleKey(tuple);
+    const count = remaining.get(key) ?? 0;
+    if (count === 0) missing.push(tuple);
+    else remaining.set(key, count - 1);
   }
   return missing;
+}
+
+export function missingHistoricalTuples(protectedTuples: readonly string[], summary: string): number {
+  return omittedHistoricalTuples(protectedTuples, summary).length;
 }
 
 interface SummaryBudgetPreparation {

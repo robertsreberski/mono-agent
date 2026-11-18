@@ -285,6 +285,7 @@ export function createMidRunCompaction(runState: any, { harness, options, refere
       accounting,
       runtimeWarnings,
       fixedOverheadTokens,
+      abortSignal: options.abortSignal,
       beforeAttempt: (hookEvent: any) => {
         const contextBefore = projectContext(hookEvent.branchEntries || [], { includeFailed: true }).messages!;
         measured = {

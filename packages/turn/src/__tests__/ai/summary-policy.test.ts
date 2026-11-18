@@ -1,5 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { summaryRequestOptions, summaryThinkingLevel } from "../../execution/pi/compaction/summary-policy.js";
 import { summaryModels } from "../../execution/pi/compaction/compaction-summary.js";
 import { compact } from "../../engine/compaction-kit/compaction.js";
@@ -97,4 +97,28 @@ it("reserves shared-cap reasoning room for other always-on reasoning families", 
   expect(policy.options.maxTokens).toBe(18000);
   expect(policy.metadata.reasoningAllowance).toBe(6000);
   expect(policy.canDispatch).toBe(true);
+});
+
+it("puts the protected text target in a Codex payload without inventing a wire output cap", async () => {
+  const { normalizeContext } = await import("@earendil-works/pi-ai");
+  const { streamSimple } = await import("@earendil-works/pi-ai/api/openai-codex-responses");
+  const codex = { ...model, provider: "openai-codex", api: "openai-codex-responses", id: "fictional-codex", name: "Fictional Codex", input: ["text"],
+    baseUrl: "https://fixture.invalid/v1", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } as Model<"openai-codex-responses">;
+  const apiKey = `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64url")}.fictional`;
+  const requests: any[] = [], payload = vi.fn((_body: any) => { throw new Error("Captured before network"); });
+  const network = vi.fn(() => { throw new Error("Unexpected network request"); });
+  vi.stubGlobal("fetch", network);
+  try {
+    const facade = summaryModels({ completeSimple: (selected: typeof codex, context: any, options: any) =>
+      streamSimple(selected, normalizeContext(context), { ...options, apiKey, onPayload: payload }).result() }, {
+      operationId: "fictional-wire-cap", focus: "", requests, effort: "low", guideVisibleSize: true,
+      unprotected: { preservation: { protectionActive: true, protectedTupleCount: 1 }, targets: [12000], minimumAnswerTokens: 1024 },
+    });
+    await facade.completeSimple(codex, { systemPrompt: "Summarize fictional records.", messages: [] }, { maxTokens: 5763 });
+    expect(requests[0]).toMatchObject({ providerMaxTokens: 8645, textTargetTokens: 5763, reasoningAllowance: 2882 });
+    expect(payload).toHaveBeenCalledTimes(1);
+    expect(payload.mock.calls[0]![0]).toMatchObject({ instructions: expect.stringContaining("23052 UTF-16 characters"), reasoning: { effort: "low" } });
+    expect(payload.mock.calls[0]![0]).not.toHaveProperty("max_output_tokens");
+    expect(network).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
 });

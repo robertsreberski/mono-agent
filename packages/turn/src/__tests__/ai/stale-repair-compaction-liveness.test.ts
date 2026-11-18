@@ -93,7 +93,7 @@ it.each(["pre-turn", "threshold"])("a stale durable zero-call account preserves 
     };
 
     await attempt();
-    expect(completeSimple).toHaveBeenCalledTimes(1);
+    expect(completeSimple).toHaveBeenCalledTimes(2);
     expect(events.at(-1)).toMatchObject({ status: "skipped", reason: "protected_tuples_missing",
       accounting: { preservation: { protectedTupleCount: 1 } } });
     const input = JSON.stringify(completeSimple.mock.calls[0]![1]);
@@ -101,14 +101,14 @@ it.each(["pre-turn", "threshold"])("a stale durable zero-call account preserves 
     expect(input).toContain(tuple);
     expect((await raw.getEntries()).filter((entry: any) => entry.type === "compaction")).toHaveLength(1);
     await attempt(); // new threshold controller or repeated pre-turn cannot pay again unchanged
-    expect(completeSimple).toHaveBeenCalledTimes(1);
+    expect(completeSimple).toHaveBeenCalledTimes(2);
     expect(events.at(-1).reason).toBe("preservation_growth_required");
     expect(recorded).toEqual([]);
 
     await grow(); // exceed bounded-refusal growth requirement with real transcript bytes
     completeSimple.mockResolvedValue(answer(history));
     await attempt();
-    expect(completeSimple).toHaveBeenCalledTimes(2);
+    expect(completeSimple).toHaveBeenCalledTimes(3);
     expect(events.at(-1)).toMatchObject({ status: "succeeded", accounting: { preservation: { protectedTupleCount: 1 } } });
     expect(recorded).toHaveLength(1);
     expect(typeof recorded[0].first_kept_entry_id).toBe("string");
