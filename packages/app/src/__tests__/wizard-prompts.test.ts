@@ -246,7 +246,8 @@ describe("wizard prompt builders", () => {
     expect(ask?.hint).toContain("web, Slack, or Telegram");
     const send = options.find((option) => option.value === "TelegramSendMessage");
     expect(send?.hint).toBe("proactive send (Telegram)");
-    expect(options.find((option) => option.value === "History")?.hint).toContain("default on");
+    const historyHint = options.find((option) => option.value === "History")?.hint;
+    for (const scope of ["said", "tools", "runs"]) expect(historyHint).toContain(`(${scope})`);
     expect(options.find((option) => option.value === "SetConversationTitle")?.hint).toContain("web conversations");
     expect(options.find((option) => option.value === "MemoryJournal")?.hint).toContain("calendar-date range");
     expect(options.find((option) => option.value === "Remember")?.hint).toContain("durably save");

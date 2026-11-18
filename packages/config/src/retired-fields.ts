@@ -113,7 +113,7 @@ export function assertNoRetiredMonoAgentConfig(config: object): void {
     if (!found.present) return false;
     return field.jsonValueIsActive?.(found.value) ?? true;
   });
-  assertNoRetiredHistoryPolicies(config);
+  retired.push(...retiredHistoryPolicyEntries(config));
   if (retired.length === 0) return;
   throw new MonoAgentConfigError("invalid_json", retired.map((field) => field.message).join(" "), {
     path: retired[0]!.path,
@@ -161,7 +161,8 @@ export function hasRetiredPiSessionsRoot(value: unknown): boolean {
   return value !== null && typeof value === "object" && Object.hasOwn(value, "piSessionsRoot");
 }
 
-function assertNoRetiredHistoryPolicies(config: object): void {
+function retiredHistoryPolicyEntries(config: object): RetiredConfigField[] {
+  const retired: RetiredConfigField[] = [];
   const check = (container: unknown, path: string): void => {
     if (!isJsonRecord(container)) return;
     for (const field of ["allowedTools", "disallowedTools"] as const) {
@@ -171,15 +172,16 @@ function assertNoRetiredHistoryPolicies(config: object): void {
         if (typeof name !== "string") return;
         const entryPath = `${path}.${field}[${index}]`;
         const message = retiredHistoryToolMessage(name.trim(), entryPath);
-        if (message) throw new MonoAgentConfigError("invalid_json", message, { path: entryPath });
+        if (message !== undefined) retired.push({ path: entryPath, message });
       });
     }
   };
   const root = config as Record<string, unknown>;
   check(root.tools, "tools");
-  if (!isJsonRecord(root.subagents)) return;
+  if (!isJsonRecord(root.subagents)) return retired;
   check(root.subagents, "subagents");
   check(root.subagents.inline, "subagents.inline");
   const definitions = root.subagents.definitions;
   if (Array.isArray(definitions)) definitions.forEach((definition, index) => check(definition, `subagents.definitions[${index}]`));
+  return retired;
 }

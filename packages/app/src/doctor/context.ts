@@ -1,4 +1,4 @@
-import { historySoulReferences } from "../context/history-soul.js";
+import { historyPromptReferences, historySoulReferences } from "../context/history-soul.js";
 import { join } from "node:path";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
@@ -13,6 +13,10 @@ import { pathExists } from "./format.js";
 export async function contextSection(config: MonoAgentConfig, cwd: string): Promise<ValidationSection> {
   const details: string[] = [];
   let status: ValidationStatus = "ok";
+  const warn = (message: string): void => {
+    if (status === "ok") status = "waiting";
+    details.push(`Warning: ${message}`);
+  };
   const activeSelectedSkills = activeProjectSkillSelections(config.context.selectedSkills);
   const retiredSelectedSkills = config.context.selectedSkills.filter(isRetiredProjectSkillName);
 
@@ -23,21 +27,34 @@ export async function contextSection(config: MonoAgentConfig, cwd: string): Prom
     details.push(`Identity file is missing: ${config.context.identityPath}`);
   }
 
-  if (config.context.soulPath !== undefined && !(await pathExists(config.context.soulPath))) {
-    status = "error";
-    details.push(`Soul file is missing: ${config.context.soulPath}`);
+  if (config.context.soulPath !== undefined) {
+    if (await pathExists(config.context.soulPath)) {
+      try {
+        const errors = await historySoulReferences(config.context.soulPath);
+        if (errors.length) { status = "error"; details.push(...errors); }
+      } catch {
+        status = "error";
+        details.push(`Soul file cannot be read: ${config.context.soulPath}`);
+      }
+    } else {
+      status = "error";
+      details.push(`Soul file is missing: ${config.context.soulPath}`);
+    }
   }
-
-  if (config.context.soulPath !== undefined && await pathExists(config.context.soulPath)) {
-    try { const errors = await historySoulReferences(config.context.soulPath); if (errors.length) { status = "error"; details.push(...errors); } }
-    catch { status = "error"; details.push(`Soul file cannot be read: ${config.context.soulPath}`); }
-  }
+  const definitions = config.subagents?.definitions ?? [];
   const warningPaths = [config.context.identityPath,
     ...activeSelectedSkills.flatMap(skill => config.context.skillsRoot ? [join(config.context.skillsRoot, skill, "SKILL.md")] : []),
-    ...(config.subagents?.definitions ?? []).flatMap(def => def.promptPath ? [def.promptPath] : [])];
+    ...definitions.flatMap(def => def.promptPath ? [def.promptPath] : [])];
   for (const path of warningPaths) {
-    try { const warnings = await historySoulReferences(path); if (warnings.length) { if (status === "ok") status = "waiting"; details.push(...warnings.map(message => `Warning: ${message}`)); } }
-    catch { /* Owning context/subagent checks diagnose missing files. */ }
+    try {
+      for (const warning of await historySoulReferences(path)) warn(warning);
+    } catch {
+      warn(`Could not check ${path} for retired history tools: file cannot be read.`);
+    }
+  }
+  for (const [index, definition] of definitions.entries()) {
+    if (definition.prompt === undefined) continue;
+    for (const warning of historyPromptReferences(definition.prompt, `subagents.definitions[${index}].prompt`)) warn(warning);
   }
 
   for (const skill of retiredSelectedSkills) {

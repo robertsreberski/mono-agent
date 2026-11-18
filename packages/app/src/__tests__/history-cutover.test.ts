@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
@@ -13,14 +13,28 @@ import { historyToolAvailabilityForRuntime } from "../request-tools/history-poli
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, {recursive:true,force:true}); });
 async function fixture() { const root = await mkdtemp(join(tmpdir(), "history-cutover-")); roots.push(root); await writeFile(join(root,"IDENTITY.md"),"Fictional fixture."); return root; }
-const oldNames = ([['ConversationHistory','conversation_history','conversation'], ['SessionHistory','session_history','session'], ['RunHistory','run_history','run']] as const)
-  .flatMap(([name,snake,server]) => [name,snake,`mcp__mono-agent-${server}-history__${name}`,`mcp__mono-agent-${server}-history__${snake}`,`mcp__mono-agent-${server}-history__*`]);
-it.each(oldNames)("keeps both retirement validators consistent for %s", name => {
-  for (const field of ["allowedTools","disallowedTools"]) {
-    expect(() => assertNoRetiredMonoAgentConfig({tools:{[field]:[name]}})).toThrow(/History/);
-    expect(() => createToolPolicy({[field]:[name]})).toThrow(/History/);
+const oldNames = ([
+  ["ConversationHistory", "conversation_history", "conversation", "said"],
+  ["SessionHistory", "session_history", "session", "tools"],
+  ["RunHistory", "run_history", "run", "runs"],
+] as const).flatMap(([name, snake, server, scope]) =>
+  [name, snake, `mcp__mono-agent-${server}-history__${name}`, `mcp__mono-agent-${server}-history__${snake}`,
+    `mcp__mono-agent-${server}-history__*`].map(spelling => ({ spelling, scope })));
+it.each(oldNames)("keeps config and conversation retirement consistent: $spelling → $scope", ({ spelling, scope }) => {
+  for (const field of ["allowedTools", "disallowedTools"] as const) {
+    const policy = { [field]: ["Read", ` ${spelling} `] };
+    const diagnostic = `${field}[1] lists removed tool ${spelling}. Replace it with History (scope:"${scope}")`;
+    expect(() => assertNoRetiredMonoAgentConfig({ tools: policy })).toThrow(diagnostic);
+    expect(() => createToolPolicy(policy)).toThrow(diagnostic);
   }
 });
+it.each(["History", "ConversationHistoryStore", "mcp__external__RunHistory", "mcp__mono-agent-conversation-history__OtherTool"])(
+  "keeps %s outside both retirement lists", name => {
+    const policy = { disallowedTools: [name] };
+    expect(() => assertNoRetiredMonoAgentConfig({ tools: policy })).not.toThrow();
+    expect(() => createToolPolicy(policy)).not.toThrow();
+  },
+);
 it("offers only History and keeps it parent-only with the broader safe default", () => {
   expect(APP_TOOL_NAMES).toContain("History"); expect(DEFAULT_SAFE_TOOLS).toContain("History"); expect(isKnownToolName("History")).toBe(false);
   for (const name of ["ConversationHistory","SessionHistory","RunHistory"]) expect(APP_TOOL_NAMES).not.toContain(name);
@@ -48,4 +62,30 @@ it("warns rather than refuses identity prose", async () => {
   const root = await fixture(); await writeFile(join(root,"IDENTITY.md"),"Fictional identity mentions SessionHistory.");
   const config = resolveJsonMonoAgentConfig({cwd:root,json:{runtime:{model:"openai-codex:gpt-5.5"},context:{identityPath:"IDENTITY.md"}}});
   expect(await contextSection(config,root)).toMatchObject({status:"waiting",details:expect.arrayContaining([expect.stringContaining("Warning:")])});
+});
+
+it("uses the context loader diagnostic for a missing soul before runtime setup", async () => {
+  const root = await fixture();
+  const soulPath = join(root, "missing-soul.md");
+  const config = resolveJsonMonoAgentConfig({ cwd: root, json: { runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md", soulPath } } });
+  const configureTools = vi.fn();
+  await expect(createConfiguredConversationHarness({ cwd: root, config, env: {}, runtime: { configureTools, async run() { throw Error("must not run"); } } }))
+    .rejects.toMatchObject({ message: "Unable to read soulPath.", code: "file_read_failed", details: { path: soulPath } });
+  expect(configureTools).not.toHaveBeenCalled();
+});
+
+it("warns for stale inline prompts and unreadable subagent prompt files", async () => {
+  const root = await fixture();
+  const promptPath = join(root, "prompt-directory");
+  await mkdir(promptPath);
+  const config = resolveJsonMonoAgentConfig({ cwd: root, json: { runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" },
+    subagents: { definitions: [
+      { name: "inline-helper", description: "Fictional helper.", prompt: "First line.\nUse RunHistory for a past run." },
+      { name: "file-helper", description: "Another fictional helper.", promptPath },
+    ] },
+  } });
+  expect(await contextSection(config, root)).toMatchObject({ status: "waiting", details: expect.arrayContaining([
+    expect.stringContaining("Warning: subagents.definitions[0].prompt:2: removed history tool RunHistory"),
+    expect.stringContaining(`Warning: Could not check ${promptPath} for retired history tools`),
+  ]) });
 });

@@ -214,7 +214,7 @@ export async function buildResponder(
   const memory = memoryRetrieval ?? memoryBackend;
   controller.reportMemoryRecallStatus(coreConfig, memoryRetrieval);
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
-  const historyToolSupport = historyToolRouteSupport(coreConfig);
+  const historyToolSupport = historyToolRouteSupport();
   const replyPartBudget = createReplyPartBudget();
   const suggestedReplies = isSuggestRepliesToolAllowed(coreConfig.tools)
     ? createSuggestRepliesService({ budget: replyPartBudget }) : undefined;
@@ -281,8 +281,8 @@ export async function buildResponder(
     historyRoot: resolve(coreConfig.artifacts.dir, "..", "history"), artifactDir: coreConfig.artifacts.dir, policy: coreConfig.tools,
     scopeRollovers: { said: sessionRollover ?? coreConfig.runtime.session.rollover ?? "none",
       tools: coreConfig.runtime.session.rollover ?? "none", runs: coreConfig.runtime.session.rollover ?? "none" },
-    capabilities: { said: coreConfig.runtime.session.continuity?.enabled !== false && historyToolSupport.conversationHistory,
-      tools: historyToolSupport.sessionHistory, runs: historyToolSupport.runHistory },
+    capabilities: { said: coreConfig.runtime.session.continuity?.enabled !== false && historyToolSupport.said,
+      tools: historyToolSupport.tools, runs: historyToolSupport.runs },
     onUnavailable: () => controller.logger?.warn?.("History endpoint could not start; retained evidence is unavailable this run."),
   });
   // Always active: a no-op for interactive turns (which carry no cron/webhook
