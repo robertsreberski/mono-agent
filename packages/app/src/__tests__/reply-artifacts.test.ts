@@ -33,6 +33,7 @@ import {
   type ReplyArtifactService,
 } from "../artifacts/reply-artifacts.js";
 import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
+import { REPLY_PRESENTATION_CONTRACT, REPLY_PRESENTATION_RESULT_FORBIDDEN_PHRASES } from "../mcp/reply-presentation.js";
 
 const tempDirs: string[] = [];
 
@@ -158,19 +159,12 @@ describe("reply artifact publication", () => {
         name: PUBLISH_REPLY_FILE_TOOL_NAME,
         arguments: { path: "one.txt", name: "report.txt", mediaType: "text/plain" },
       });
-      expect(JSON.stringify(published.content)).toContain("beneath your reply text");
-      for (const guidance of [
-        (await publisher.client.listTools()).tools.find((tool) => tool.name === PUBLISH_REPLY_FILE_TOOL_NAME)?.description,
-        JSON.stringify(published.content),
-      ]) {
-        expect(guidance).toContain("An answer already written before this call counts as the reply");
-        expect(guidance).toContain("do not repeat or rephrase it");
-        expect(guidance).toContain("If you have not answered yet, write the answer as normal assistant prose");
-        expect(guidance).toContain("progress updates alone do not count");
-        expect(guidance).toContain("add only genuinely new information if needed");
-        expect(guidance).toContain("otherwise end without extra prose");
-        expect(guidance).not.toContain("must still write");
-      }
+      expect(JSON.stringify(published.content)).toContain("beneath the reply");
+      const description = (await publisher.client.listTools()).tools.find((tool) => tool.name === PUBLISH_REPLY_FILE_TOOL_NAME)?.description;
+      // One fixed contract in the description; the result is a factual receipt only.
+      expect(description).toContain(REPLY_PRESENTATION_CONTRACT);
+      expect(description).toContain("never your reasoning");
+      for (const phrase of REPLY_PRESENTATION_RESULT_FORBIDDEN_PHRASES) expect(JSON.stringify(published.content).toLowerCase()).not.toContain(phrase);
       await publisher.client.callTool({
         name: PUBLISH_REPLY_FILE_TOOL_NAME,
         arguments: { path: "two.txt", name: "report.txt", mediaType: "text/plain" },

@@ -1253,13 +1253,13 @@ title remains the fallback.
 ### Web-console quick replies
 
 Presentation tools (`SuggestReplies`, `PublishReplyFile`, `ProposeRestart`) attach
-parts without requiring a second rendition of the answer. Their descriptions and
-successful results tell the model that an answer already written counts as the
-reply: do not repeat or rephrase it. After success, add only genuinely new
-information if needed, otherwise end without extra prose. If you have not
-answered yet, write the answer as normal assistant prose; progress updates alone
-do not count as an answer. This guidance does not guarantee model compliance or
-repair existing duplicated history.
+parts beneath the answer. Their descriptions share one fixed contract
+(`REPLY_PRESENTATION_CONTRACT` in `src/mcp/reply-presentation.ts`): the user sees
+only normal assistant text, never reasoning, so write the complete answer as
+normal text before the call. Successful results are factual receipts with no
+composing instructions; a turn that still ends without text gets the runtime's
+empty-reply finalization. This guidance does not guarantee model compliance or
+repair existing history.
 
 `SuggestReplies` attaches non-blocking quick-action buttons to a final reply
 on web-console turns, including web-bound background/job wakes. It accepts

@@ -4,6 +4,7 @@ import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/convers
 import { describe, expect, it } from "vitest";
 import { createSuggestRepliesService, isSuggestRepliesToolAllowed, SUGGEST_REPLIES_SERVER_NAME, SUGGEST_REPLIES_TOOL_NAME } from "../request-tools/suggest-replies.js";
 import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
+import { REPLY_PRESENTATION_CONTRACT, REPLY_PRESENTATION_RESULT_FORBIDDEN_PHRASES } from "../mcp/reply-presentation.js";
 
 function request(metadata: Record<string, unknown> = { source: "web", web: { threadId: "one", turnId: "turn-1" } }): ConversationHarnessRuntimeOptionsInput {
   return { request: { conversationId: "web:one", userMessage: "work", abortSignal: new AbortController().signal, metadata },
@@ -45,19 +46,12 @@ describe("SuggestReplies", () => {
           const suggested = await client.callTool({ name: SUGGEST_REPLIES_TOOL_NAME, arguments: { options: [" first ", "second"] } });
           expect(suggested.structuredContent).toEqual({ status: "suggested" });
           expect(JSON.stringify(suggested.content)).toContain("This run does not wait for a selection");
-          expect(JSON.stringify(suggested.content)).toContain("beneath your reply text");
-          for (const guidance of [
-            (await client.listTools()).tools.find((tool) => tool.name === SUGGEST_REPLIES_TOOL_NAME)?.description,
-            JSON.stringify(suggested.content),
-          ]) {
-            expect(guidance).toContain("An answer already written before this call counts as the reply");
-            expect(guidance).toContain("do not repeat or rephrase it");
-            expect(guidance).toContain("If you have not answered yet, write the answer as normal assistant prose");
-            expect(guidance).toContain("progress updates alone do not count");
-            expect(guidance).toContain("add only genuinely new information if needed");
-            expect(guidance).toContain("otherwise end without extra prose");
-            expect(guidance).not.toContain("must still write");
-          }
+          expect(JSON.stringify(suggested.content)).toContain("beneath the reply");
+          const description = (await client.listTools()).tools.find((tool) => tool.name === SUGGEST_REPLIES_TOOL_NAME)?.description;
+          // One fixed contract in the description; the result is a factual receipt only.
+          expect(description).toContain(REPLY_PRESENTATION_CONTRACT);
+          expect(description).toContain("never your reasoning");
+          for (const phrase of REPLY_PRESENTATION_RESULT_FORBIDDEN_PHRASES) expect(JSON.stringify(suggested.content).toLowerCase()).not.toContain(phrase);
           expect(JSON.stringify(suggested.content)).not.toContain("this final reply");
           expect(budget.claim("run-1", "another-part")).toBe("limit");
           expect((await client.callTool({ name: SUGGEST_REPLIES_TOOL_NAME, arguments: { options: [" Review draft ", "Keep going", "x".repeat(75)] } })).structuredContent).toEqual({ status: "suggested" });

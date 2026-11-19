@@ -6,6 +6,7 @@ import type { ToolPolicyInput } from "@mono-agent/conversation";
 import type { TuiRestartAuthority } from "@mono-agent/channel-operator";
 import * as z from "zod/v4";
 import { createRequestScopedMcpRuntimeExtension } from "../../mcp/request-scoped-mcp.js";
+import { REPLY_PRESENTATION_CONTRACT } from "../../mcp/reply-presentation.js";
 import { mergeReplyParts, type ReplyPartBudget } from "../../delivery/reply-part-budget.js";
 import type { RuntimeOptionsExtension } from "../../composition/runtime-option-extensions.js";
 
@@ -104,14 +105,14 @@ function createProposalServer(propose: (reason: string | undefined) => { readonl
   const server = new McpServer({ name: PROPOSE_RESTART_SERVER_NAME, version: "1.0.0" });
   server.registerTool(PROPOSE_RESTART_TOOL_NAME, {
     title: "Propose an agent restart",
-    description: "Show one restart suggestion below this reply in the web console. This tool NEVER restarts the agent: the human must review the interruption warning and confirm separately. Do not claim that a restart occurred. An answer already written before this call counts as the reply; do not repeat or rephrase it. After success, add only genuinely new information if needed; otherwise end without extra prose. If you have not answered yet, write the answer as normal assistant prose; progress updates alone do not count.",
+    description: "Show one restart suggestion below this reply in the web console. This tool NEVER restarts the agent: the human must review the interruption warning and confirm separately. Do not claim that a restart occurred. " + REPLY_PRESENTATION_CONTRACT,
     inputSchema: INPUT,
   }, async ({ reason }) => {
     const result = propose(reason);
     return {
       ...(result.status === "unavailable" ? { isError: true } : {}),
       content: [{ type: "text" as const, text: result.status === "proposed"
-        ? "A restart proposal will appear beneath your reply text in the web console. An answer already written before this call counts as the reply; do not repeat or rephrase it. After success, add only genuinely new information if needed; otherwise end without extra prose. If you have not answered yet, write the answer as normal assistant prose; progress updates alone do not count. Nothing has been restarted; the user must confirm separately."
+        ? "Restart proposal attached beneath the reply. Nothing has been restarted; the user must confirm separately."
         : result.status === "already_proposed"
           ? "A restart was already proposed in this reply. Nothing has been restarted."
           : "A restart proposal could not be added to this reply. Nothing has been restarted." }],

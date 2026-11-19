@@ -4,6 +4,7 @@ import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/convers
 import { describe, expect, it, vi } from "vitest";
 import { createRestartProposalService, isProposeRestartToolAllowed, PROPOSE_RESTART_SERVER_NAME, PROPOSE_RESTART_TOOL_NAME } from "../service/restart/restart-proposal.js";
 import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
+import { REPLY_PRESENTATION_CONTRACT, REPLY_PRESENTATION_RESULT_FORBIDDEN_PHRASES } from "../mcp/reply-presentation.js";
 
 function request(metadata: Record<string, unknown> = { source: "web", web: { threadId: "one", turnId: "turn-1" } }): ConversationHarnessRuntimeOptionsInput {
   return { request: { conversationId: "web:one", userMessage: "work", abortSignal: new AbortController().signal, metadata },
@@ -52,19 +53,12 @@ describe("ProposeRestart request-scoped tool", () => {
           expect(first.structuredContent).toEqual({ status: "proposed", restarted: false });
           expect(JSON.stringify(first.content)).toContain("Nothing has been restarted");
           expect(JSON.stringify(first.content)).toContain("the user must confirm separately");
-          expect(JSON.stringify(first.content)).toContain("beneath your reply text");
-          for (const guidance of [
-            (await client.listTools()).tools.find((tool) => tool.name === PROPOSE_RESTART_TOOL_NAME)?.description,
-            JSON.stringify(first.content),
-          ]) {
-            expect(guidance).toContain("An answer already written before this call counts as the reply");
-            expect(guidance).toContain("do not repeat or rephrase it");
-            expect(guidance).toContain("If you have not answered yet, write the answer as normal assistant prose");
-            expect(guidance).toContain("progress updates alone do not count");
-            expect(guidance).toContain("add only genuinely new information if needed");
-            expect(guidance).toContain("otherwise end without extra prose");
-            expect(guidance).not.toContain("must still write");
-          }
+          expect(JSON.stringify(first.content)).toContain("beneath the reply");
+          const description = (await client.listTools()).tools.find((tool) => tool.name === PROPOSE_RESTART_TOOL_NAME)?.description;
+          // One fixed contract in the description; the result is a factual receipt only.
+          expect(description).toContain(REPLY_PRESENTATION_CONTRACT);
+          expect(description).toContain("never your reasoning");
+          for (const phrase of REPLY_PRESENTATION_RESULT_FORBIDDEN_PHRASES) expect(JSON.stringify(first.content).toLowerCase()).not.toContain(phrase);
           const second = await client.callTool({ name: PROPOSE_RESTART_TOOL_NAME, arguments: { reason: "another" } });
           expect(second.structuredContent).toEqual({ status: "already_proposed", restarted: false });
         } finally {
