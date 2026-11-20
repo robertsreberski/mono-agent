@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Stop reply-presentation tools from steering how the model writes its answer.
+  `SuggestReplies`, `ProposeRestart` and `PublishReplyFile` now return plain
+  receipts, and their descriptions share one rule: the user sees only normal
+  assistant text, never reasoning, so write the full answer before calling the
+  tool. Previously a result could tell the model its answer was "already
+  written" when it existed only in its reasoning, leaving the user with a
+  one-line filler reply beneath the buttons.
+
 - Make Usage analytics quota history easier to read with a separate line chart
   for each window, clearer reset estimates, and visible lines even for sparse
   checks or jittery provider timestamps.

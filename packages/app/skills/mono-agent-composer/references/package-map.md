@@ -114,12 +114,12 @@ supervised restart support verifies successfully and tool policy allows it.
 Restrictive `tools.allowedTools` must name `ProposeRestart`; its reply part is
 only a proposal and requires the operator to confirm in the web console.
 
-These three presentation tools count an answer already written as the reply,
-not a request to repeat or rephrase it. After success, add only genuinely new
-information if needed, otherwise end without extra prose. If you have not
-answered yet, write the answer as normal assistant prose; progress updates alone
-do not count as an answer. This is model guidance, not guaranteed compliance or a
-repair of existing duplicated history.
+These three presentation tools share one description contract in
+`src/mcp/reply-presentation.ts`: they attach to the visible reply, the user sees
+only normal assistant text (never reasoning), and the complete answer is written
+as normal text before the call. Their successful results are factual receipts
+with no composing instructions. This is model guidance, not guaranteed
+compliance or a repair of existing history.
 
 ```ts
 import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/conversation";

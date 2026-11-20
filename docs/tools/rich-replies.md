@@ -66,14 +66,15 @@ break the chain; their interim narration is not promoted. The settled web consol
 shows promoted text in the answer, not again in Activity.
 
 Presentation tools attach parts beneath the reply text; they do not replace the
-answer or themselves finish the turn. They do not require a second rendition of
-it: an answer already written before a presentation call counts as the reply.
-Do not repeat or rephrase it just because the tool returned. After success, add
-only genuinely new information if needed; otherwise the turn can end without
-extra prose. If you have not answered yet, write the answer as normal assistant
-prose; progress updates alone do not count as an answer. This is model guidance,
-not a guarantee that a model will never repeat itself; existing duplicated
-history is not changed.
+answer or themselves finish the turn. Each tool description carries the same
+fixed contract: the user sees only normal assistant text, never reasoning, so
+the complete answer is written as normal text before the presentation call.
+Successful results are factual receipts only (what was attached, that the run
+does not wait, that nothing was restarted). They give no composing instructions,
+because a tool result cannot see whether answer text exists yet: telling the
+model to write an answer causes repeats, and telling it one already exists lets
+an answer that lives only in reasoning stand in for the reply. This is model
+guidance, not guaranteed compliance; existing history is not changed.
 
 If a normally settled session turn contains no text at all, the runtime makes one
 same-session finalization request with tools disabled.
