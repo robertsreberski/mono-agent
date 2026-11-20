@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatProviderUsageLead, parseProviderUsageSnapshot, projectProviderUsage, projectProviderUsageWindow, PROVIDER_USAGE_SCHEMA } from "../provider-usage.js";
+import { formatProviderUsageLead, parseProviderUsageSnapshot, projectProviderUsage, projectProviderUsageWindow, sameProviderUsageResetPeriod, PROVIDER_USAGE_SCHEMA } from "../provider-usage.js";
 const good = { schema: PROVIDER_USAGE_SCHEMA, providers: [{ providerId: "anthropic", label: "Claude", fetchedAt: "2026-09-14T12:00:00.000Z", stale: false, windows: [{ kind: "session", label: "Session", usedPercent: 38, periodMs: 18000000 }] }] };
 describe("provider usage wire projection", () => {
   it("accepts valid snapshots and returns fresh copies", () => {
@@ -49,6 +49,35 @@ const weekly = (usedPercent: number, fetchedAt: string = halfWeek, resetsAt?: st
   kind: "weekly" as const, label: "Weekly" as const, usedPercent, periodMs: weekMs,
   ...(resetsAt === null ? {} : { resetsAt: resetsAt ?? weekReset }),
 });
+describe("provider reset periods", () => {
+  const session = {
+    kind: "session", label: "Session", usedPercent: 43,
+    periodMs: 18_000_000, resetsAt: "2032-06-01T12:00:00.000Z",
+  } as const;
+  it("matches jittered reset instants even if the percentage drops", () => {
+    expect(sameProviderUsageResetPeriod(session, {
+      ...session, usedPercent: 39, resetsAt: "2032-06-01T11:59:58.900Z",
+    })).toBe(true);
+    expect(sameProviderUsageResetPeriod(session, { ...session, kind: "weekly", label: "Weekly" })).toBe(false);
+  });
+  it("uses inclusive tolerance capped at ten minutes and at 5% of the period", () => {
+    expect(sameProviderUsageResetPeriod(session, { ...session, resetsAt: "2032-06-01T12:10:00.000Z" })).toBe(true);
+    expect(sameProviderUsageResetPeriod(session, { ...session, resetsAt: "2032-06-01T12:10:00.001Z" })).toBe(false);
+    expect(sameProviderUsageResetPeriod(session, { ...session, resetsAt: "2032-06-01T17:00:00.000Z" })).toBe(false);
+    const shorter = { ...session, periodMs: 3_600_000 };
+    expect(sameProviderUsageResetPeriod(shorter, { ...shorter, resetsAt: "2032-06-01T12:03:00.000Z" })).toBe(true);
+    expect(sameProviderUsageResetPeriod(shorter, { ...shorter, resetsAt: "2032-06-01T12:03:00.001Z" })).toBe(false);
+  });
+  it("falls back to usage when either reset is missing", () => {
+    const { resetsAt, ...undated } = session;
+    expect(sameProviderUsageResetPeriod(session, undated)).toBe(true);
+    expect(sameProviderUsageResetPeriod(undated, { ...session, usedPercent: 46 })).toBe(true);
+    expect(sameProviderUsageResetPeriod(undated, { ...session, usedPercent: 41 })).toBe(false);
+    expect(sameProviderUsageResetPeriod(session, { ...undated, usedPercent: 41 })).toBe(false);
+    expect(sameProviderUsageResetPeriod(undated, { ...undated, usedPercent: 41 })).toBe(false);
+  });
+});
+
 describe("provider usage burn projection", () => {
   it("reports on-track burn below 1x pace without a run-out", () => {
     expect(projectProviderUsageWindow(weekly(25), halfWeek)).toEqual({ pace: 0.5, elapsedFraction: 0.5, severity: "ok", confidence: "normal", projectedUnusedPercent: 50 });

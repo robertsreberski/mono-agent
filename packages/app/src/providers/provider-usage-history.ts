@@ -3,7 +3,8 @@ import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   PROVIDER_USAGE_HISTORY_SCHEMA, PROVIDER_USAGE_LABELS, PROVIDER_USAGE_SCHEMA, USAGE_HISTORY_RETENTION_DAYS,
-  parseProviderUsageSnapshot, parseProviderUsageHistory, parseProviderUsageHistoryQuery, usageHistoryBucket,
+  parseProviderUsageSnapshot, parseProviderUsageHistory, parseProviderUsageHistoryQuery,
+  sameProviderUsageResetPeriod, usageHistoryBucket,
   type ProviderUsage, type ProviderUsageHistory, type ProviderUsageHistoryQuery,
   type ProviderUsageHistorySample, type ProviderUsageId,
 } from "@mono-agent/contracts";
@@ -19,6 +20,18 @@ interface Row {
   id: number; first_at: number; last_at: number; observations: number; max_gap: number;
   payload: string; account_changed: number;
 }
+type SamplePayload = Pick<ProviderUsage, "windows" | "plan">;
+
+function sameSamplePeriods(before: SamplePayload, after: SamplePayload, unchangedUsage = false): boolean {
+  return before.plan === after.plan && before.windows.length === after.windows.length
+    && before.windows.every(window => {
+      const next = after.windows.find(candidate => candidate.kind === window.kind);
+      return next !== undefined && window.periodMs === next.periodMs
+        && (!unchangedUsage || window.usedPercent === next.usedPercent)
+        && sameProviderUsageResetPeriod(window, next);
+    });
+}
+
 /** Private host seam. Account material is immediately HMACed, never stored verbatim. */
 export interface ProviderUsageHistorySink {
   append(usage: ProviderUsage, accountMaterial: string | undefined, retain: () => boolean): Promise<void>;
@@ -199,14 +212,15 @@ export function createProviderUsageHistoryStore(options: {
               const last = db.prepare(`
                 SELECT * FROM samples WHERE scope=? AND provider=?
                 ORDER BY last_at DESC,id DESC LIMIT 1
-              `).get(scope, usage.providerId) as unknown as (Row & { payload: string }) | undefined;
+              `).get(scope, usage.providerId) as unknown as Row | undefined;
               // Close spans daily: compression never grows an unbounded timestamp array.
-              if (!changed && last?.payload === payload && at >= last.last_at
-                && Math.floor(at / DAY) === Math.floor(last.first_at / DAY)) {
+              if (!changed && last && at >= last.last_at
+                && Math.floor(at / DAY) === Math.floor(last.first_at / DAY)
+                && (last.payload === payload || sameSamplePeriods(JSON.parse(last.payload) as SamplePayload, usage, true))) {
                 db.prepare(`
                   UPDATE samples SET last_at=?,observations=MIN(observations+1,9007199254740991),
-                  max_gap=MAX(max_gap,?) WHERE id=?
-                `).run(at, at - last.last_at, last.id);
+                  max_gap=MAX(max_gap,?),payload=? WHERE id=?
+                `).run(at, at - last.last_at, payload, last.id);
               } else {
                 prune(h, 1);
                 db.prepare(`
@@ -240,7 +254,7 @@ export function createProviderUsageHistoryStore(options: {
                 .map(r => new Date(r.first_at).toISOString());
               const boundarySet = new Set(boundaries);
               for (const row of rows) {
-                const payload = JSON.parse(row.payload) as Pick<ProviderUsage, "windows" | "plan">;
+                const payload = JSON.parse(row.payload) as SamplePayload;
                 // Only actual observed endpoints, never interpolated measurements at range edges.
                 const times = [...new Set([row.first_at, row.last_at])].filter(at => at >= from && at < to);
                 for (const at of times) points.push({
@@ -269,10 +283,8 @@ export function createProviderUsageHistoryStore(options: {
                 }
                 // Preserve detected reset/plan/window transitions, not just percentage extrema.
                 for (let i = 1; i < group.length; i++) {
-                  const shape = (p: ProviderUsageHistorySample) => JSON.stringify([
-                    p.plan, p.windows.map(w => [w.kind, w.resetsAt, w.periodMs]),
-                  ]);
-                  if (shape(group[i - 1]!) !== shape(group[i]!)) { keep.add(group[i - 1]!); keep.add(group[i]!); }
+                  const before = group[i - 1]!, after = group[i]!;
+                  if (!sameSamplePeriods(before, after)) { keep.add(before); keep.add(after); }
                 }
               }
               const reduced = points.filter(p => keep.has(p));
