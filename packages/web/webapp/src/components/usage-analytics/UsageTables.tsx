@@ -33,6 +33,15 @@ export function QuotaObservationTable({ provider, zone, page, onPage }: {
   return (
     <details>
       <summary>Quota observations and account boundaries</summary>
+      <p className="usage-muted">
+        Lines join observations, not continuous measurements. A tick marks an isolated check.
+        At a reported reset, the dashed line holds the last value until the reset, drops to zero,
+        then rises from the start of the next observed period. Skipped periods and resets without
+        known timing leave gaps. Within a period, dashes indicate known gaps over twice the typical
+        check interval or six hours, whichever is longer. Light vertical marks show reported resets;
+        solid vertical marks show detected account changes, where the line stops. Pace is a
+        constant-rate estimate at the latest check for each window, not a forecast.
+      </p>
       {provider.accountChanges.length > 0 && (
         <ul>
           {provider.accountChanges.map((at, i) => (

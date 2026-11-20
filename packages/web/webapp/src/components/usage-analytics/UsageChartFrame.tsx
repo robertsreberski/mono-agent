@@ -1,6 +1,6 @@
 import { useId, type ReactNode } from "react";
 import type { UsageHistoryRange } from "@mono-agent/contracts/provider-usage";
-import { CHART, displayTimeZone, xAt, yAt } from "./usage-chart-geometry";
+import { CHART, displayTimeZone, yAt } from "./usage-chart-geometry";
 
 export function localTime(at: string, zone: string) {
   return new Date(at).toLocaleString(undefined, {
@@ -20,20 +20,17 @@ interface ChartTick {
 
 /** HTML labels stay at CSS font size; only the data geometry scales horizontally. */
 export function UsageChartFrame({
-  title, description, range, ticks, accountBoundary, children,
+  title, description, range, ticks, showTimeAxis = true, children,
 }: {
   readonly title: string;
   readonly description: string;
   readonly range: UsageHistoryRange;
   readonly ticks: readonly ChartTick[];
-  readonly accountBoundary?: string;
+  readonly showTimeAxis?: boolean;
   readonly children: ReactNode;
 }) {
   const id = useId();
   const zone = displayTimeZone(range);
-  const boundaryPercent = accountBoundary === undefined
-    ? undefined
-    : xAt(accountBoundary, range) / CHART.width * 100;
 
   return (
     <div className="usage-chart-frame">
@@ -49,21 +46,13 @@ export function UsageChartFrame({
         ))}
       </div>
       <div className="usage-chart-plot">
-        {boundaryPercent !== undefined && (
-          <span
-            className="usage-boundary-label"
-            aria-hidden="true"
-            style={{ left: `clamp(56px, ${boundaryPercent}%, calc(100% - 56px))` }}
-          >
-            Account changed
-          </span>
-        )}
         <svg
           className="usage-chart"
           viewBox={`0 0 ${CHART.width} ${CHART.height}`}
           preserveAspectRatio="none"
           role="img"
-          aria-labelledby={`${id}-title ${id}-description`}
+          aria-labelledby={`${id}-title`}
+          aria-describedby={`${id}-description`}
         >
           <title id={`${id}-title`}>{title}</title>
           <desc id={`${id}-description`}>{description}</desc>
@@ -81,10 +70,12 @@ export function UsageChartFrame({
           {children}
         </svg>
       </div>
-      <div className="usage-chart-x-axis" aria-hidden="true">
-        <span>{localTime(range.from, zone)}</span>
-        <span>{localTime(range.to, zone)}</span>
-      </div>
+      {showTimeAxis && (
+        <div className="usage-chart-x-axis" aria-hidden="true">
+          <span>{localTime(range.from, zone)}</span>
+          <span>{localTime(range.to, zone)}</span>
+        </div>
+      )}
     </div>
   );
 }

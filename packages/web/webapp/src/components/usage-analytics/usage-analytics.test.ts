@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, parseUsageAnalytics } from "../../api";
-import { usageAnalyticsFixture } from "../../test/usage-analytics-fixtures";
+import { jitteredQuotaHistoryFixture, usageAnalyticsFixture } from "../../test/usage-analytics-fixtures";
 import { browserCostWire } from "../../../../src/cost-wire";
 import { parseSettingsParam } from "../../settings-navigation";
-import { displayTimeZone, formatAnalyticsCost, knownSpend, MIN_LONG_GAP_MS, quotaPaths } from "./usage-chart-geometry";
+import { displayTimeZone, formatAnalyticsCost, knownSpend, MIN_LONG_GAP_MS, quotaPaths, xAt, yAt } from "./usage-chart-geometry";
 
 afterEach(() => vi.unstubAllGlobals());
 describe("analytics client and geometry", () => {
@@ -26,16 +26,98 @@ describe("analytics client and geometry", () => {
     expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({ "X-Mono-Agent-Web-Origin": window.location.origin });
     await expect(api.usageAnalytics("other-agent", range)).rejects.toThrow("Invalid usage analytics source");
   });
-  it("breaks connectors at account changes and reset windows, never synthesizing points", () => {
-    const { history } = usageAnalyticsFixture(); const provider = history.providers[0]!;
-    const withBoundary = quotaPaths(provider, "weekly", history);
-    const withoutBoundary = quotaPaths({ ...provider, accountChanges: [] }, "weekly", history);
-    expect(withBoundary.solid.split("M").length).toBe(withoutBoundary.solid.split("M").length - 1);
-    expect(withBoundary.uncertain).toBe("");
-    expect(withBoundary.dots).toBe(withoutBoundary.dots);
-    expect(quotaPaths(provider, "session", history).solid.split("M").length).toBeLessThan(withBoundary.solid.split("M").length);
+  it("connects every window in the jittered fixture and coalesces reset markers by window", () => {
+    const history = jitteredQuotaHistoryFixture();
+    const claude = history.providers[0]!;
+    for (const [kind, resetsInRange] of [["session", 10], ["weekly", 1], ["model", 1]] as const) {
+      const paths = quotaPaths(claude, kind, history);
+      expect(paths.solid).toContain("L");
+      expect(paths.uncertain).toContain("V");
+      expect(paths.dots.match(/h0/g)).toHaveLength(12);
+      expect(paths.resets).toHaveLength(resetsInRange);
+    }
+    const session = quotaPaths(claude, "session", history);
+    expect(session.resets[0]).toBe(Date.parse(claude.samples[1]!.windows[0]!.resetsAt!));
   });
-  it("reserves dotted connectors for known gaps exceeding twice typical or six hours", () => {
+  it.each([7, 17])("drops to zero at the reported reset and rises only from the next observed period at hour %i", hour => {
+    const { history } = usageAnalyticsFixture();
+    const provider = history.providers[0]!;
+    const at = (h: number) => Date.parse(history.from) + h * 3_600_000;
+    const [first, second] = provider.samples;
+    const samples = [first!, {
+      ...second!, fetchedAt: new Date(at(hour)).toISOString(),
+      windows: [{ ...second!.windows[0]!, resetsAt: new Date(at(hour + 3)).toISOString() }],
+    }];
+    const paths = quotaPaths({ ...provider, accountChanges: [], samples }, "session", history);
+    expect(paths.solid).toBe("");
+    expect(paths.uncertain).toBe(
+      `M${xAt(at(1), history)},${yAt(0.1)}H${xAt(at(5), history)}V${yAt(0)} `
+      + `M${xAt(at(hour - 2), history)},${yAt(0)}L${xAt(at(hour), history)},${yAt(0.3)} `,
+    );
+    expect(paths.dots.match(/h0/g)).toHaveLength(2);
+  });
+  it("uses the last reported reset even when a later check omits timing, and never draws backwards", () => {
+    const { history } = usageAnalyticsFixture();
+    const provider = history.providers[0]!;
+    const [first, second, third] = provider.samples;
+    const { resetsAt, ...untimed } = second!.windows[0]!;
+    const at = (hour: number) => Date.parse(history.from) + hour * 3_600_000;
+    const samples = [first!, { ...second!, windows: [untimed] }, {
+      ...third!, windows: [{ ...third!.windows[0]!, resetsAt: new Date(at(8)).toISOString() }],
+    }];
+    const paths = quotaPaths({ ...provider, accountChanges: [], samples }, "session", history);
+    // The nominal new start is hour 3, but the previous observed period reset at hour 5.
+    const resetX = xAt(at(5), history);
+    expect(paths.uncertain).toBe(
+      `M${xAt(at(2), history)},${yAt(0.3)}H${resetX}V${yAt(0)} `
+      + `M${resetX},${yAt(0)}L${resetX},${yAt(0.05)} `,
+    );
+  });
+  it("breaks both same-period lines and sawteeth at account changes", () => {
+    const { history } = usageAnalyticsFixture();
+    const provider = history.providers[0]!;
+    const comparison = (kind: "weekly" | "session") => [quotaPaths(provider, kind, history),
+      quotaPaths({ ...provider, accountChanges: [] }, kind, history)] as const;
+    const [weekly, weeklyContinuous] = comparison("weekly");
+    expect(weekly.solid.match(/L/g)!.length).toBe(weeklyContinuous.solid.match(/L/g)!.length - 1);
+    expect(weekly.dots).toBe(weeklyContinuous.dots);
+    const [session, sessionContinuous] = comparison("session");
+    expect(session.uncertain.match(/V/g)!.length).toBe(sessionContinuous.uncertain.match(/V/g)!.length - 1);
+    expect(session.dots).toBe(sessionContinuous.dots);
+  });
+  it("does not connect checks at the same instant as an account boundary", () => {
+    const { history } = usageAnalyticsFixture();
+    const provider = history.providers[0]!;
+    const [first, second] = provider.samples;
+    const samples = [first!, { ...second!, fetchedAt: first!.fetchedAt }];
+    const paths = quotaPaths({ ...provider, samples, accountChanges: [first!.fetchedAt] }, "session", history);
+    expect(paths.solid.match(/H/g)).toHaveLength(2);
+    expect(paths.solid).not.toContain("L");
+    expect(paths.uncertain).toBe("");
+  });
+  it("gives a sole in-range observation a clamped tick and a dot", () => {
+    const { history } = usageAnalyticsFixture();
+    const provider = history.providers[0]!;
+    const samples = provider.samples.slice(0, 2);
+    const paths = quotaPaths({ ...provider, samples }, "session", { ...history, from: samples[1]!.fetchedAt });
+    expect(paths.solid).toBe(`M0,${yAt(0.3)}H9.6 `);
+    expect(paths.dots).toBe(`M0,${yAt(0.3)}h0 `);
+    expect(paths.uncertain).toBe("");
+  });
+  it("connects increasing untimed observations but does not invent a timestamp for an untimed reset", () => {
+    const { history } = usageAnalyticsFixture();
+    const provider = history.providers[0]!;
+    const samples = provider.samples.slice(0, 3).map(sample => ({
+      ...sample,
+      windows: sample.windows.map(({ resetsAt, ...window }) => window),
+    }));
+    const paths = quotaPaths({ ...provider, samples }, "session", history);
+    expect(paths.solid.match(/L/g)).toHaveLength(1);
+    expect(paths.solid.match(/H/g)).toHaveLength(1);
+    expect(paths.uncertain).toBe("");
+    expect(paths.resets).toEqual([]);
+  });
+  it("reserves long-gap connectors for known gaps exceeding twice typical or six hours", () => {
     const { history } = usageAnalyticsFixture();
     const provider = history.providers[0]!;
     const sample = provider.samples[0]!;

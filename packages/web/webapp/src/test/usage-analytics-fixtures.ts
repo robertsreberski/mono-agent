@@ -29,6 +29,52 @@ export function usageAnalyticsFixture(partial = false, stale = false): { data: W
       ] })) })) },
   };
 }
+/** Fictional sparse checks: Claude's reported reset times drift by milliseconds or seconds. */
+export function jitteredQuotaHistoryFixture(): ProviderUsageHistory {
+  const hourMs = 3_600_000;
+  const from = Date.parse("2031-05-04T00:00:00.000Z");
+  const at = (hour: number, jitterMs = 0) => new Date(from + hour * hourMs + jitterMs).toISOString();
+  const hours = [2, 4, 8, 15.6, 22, 26, 31, 33, 43, 50.4, 57, 67];
+  const jitter = [-1250, 462, 841, -673, 114, 2210, -110, 546, -1730, 841, 287, -423];
+  return {
+    schema: "mono-agent.provider-usage-history.v1", retentionDays: 90, storage: "ready",
+    from: at(0), to: at(72), bucket: "day", timeZone: "UTC",
+    providers: (["anthropic", "openai-codex"] as const).map(providerId => {
+      const claude = providerId === "anthropic";
+      return {
+        providerId, label: claude ? "Claude" : "Codex", accountChanges: [], downsampled: false,
+        samples: hours.map((hour, i) => {
+          const reset = (hour: number) => at(hour, claude ? jitter[i]! : 0);
+          const weeklyReset = claude ? 47 : 62;
+          return {
+            fetchedAt: at(hour), observedThrough: at(hour), observations: 1, maxGapMs: 0,
+            ...(claude ? {} : { plan: "Plus" }),
+            windows: [
+              {
+                kind: "session", label: "Session", periodMs: 5 * hourMs,
+                usedPercent: (claude ? [22, 55, 63, 8, 36, 16, 24, 57, 78, 10, 41, 50]
+                  : [18, 47, 72, 7, 33, 12, 19, 48, 55, 13, 46, 44])[i]!,
+                resetsAt: reset((Math.floor(hour / 5) + 1) * 5),
+              },
+              {
+                kind: "weekly", label: "Weekly", periodMs: 168 * hourMs,
+                usedPercent: (claude ? [29, 33, 37, 42, 50, 55, 62, 66, 77, 5, 9, 17]
+                  : [17, 23, 26, 31, 37, 44, 51, 54, 63, 71, 80, 10])[i]!,
+                resetsAt: reset(hour < weeklyReset ? weeklyReset : weeklyReset + 168),
+              },
+              ...(claude ? [{
+                kind: "model" as const, label: "Fable" as const, periodMs: 168 * hourMs,
+                usedPercent: [8, 11, 16, 25, 31, 40, 45, 46, 54, 62, 68, 6][i]!,
+                resetsAt: reset(hour < 61 ? 61 : 229),
+              }] : []),
+            ],
+          };
+        }),
+      };
+    }),
+  };
+}
+
 function sum(rows: readonly WebUsageSlice[], partial: boolean): WebUsageSlice {
   return { tokens: { input: rows.reduce((n, r) => n + (r.tokens?.input ?? 0), 0), output: rows.reduce((n, r) => n + (r.tokens?.output ?? 0), 0), cacheRead: rows.reduce((n, r) => n + (r.tokens?.cacheRead ?? 0), 0), cacheWrite: rows.reduce((n, r) => n + (r.tokens?.cacheWrite ?? 0), 0) },
     ...(partial ? { costUsd: null, knownCostUsd: rows.reduce((n, r) => n + (r.costUsd ?? r.knownCostUsd ?? 0), 0), costPartial: true, tokensPartial: true } : { costUsd: rows.reduce((n, r) => n + (r.costUsd ?? 0), 0) }) };

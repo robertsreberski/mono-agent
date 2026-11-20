@@ -20,7 +20,7 @@ const prepareCapabilityScreenshots: BrowserCommand<[]> = async (context) => {
 
 const prepareUsageAnalyticsScreenshots: BrowserCommand<[]> = async (context) => {
   if (context.provider.name !== "playwright") throw new Error("Playwright required");
-  if (process.env.VITE_USAGE_ANALYTICS_SHOTS) await context.page.setViewportSize({ width: 1440, height: 2000 });
+  if (process.env.VITE_USAGE_ANALYTICS_SHOTS || process.env.VITE_USAGE_QUOTA_LINES_SHOTS) await context.page.setViewportSize({ width: 1440, height: 2000 });
 };
 
 const dragVoiceNote: BrowserCommand<[]> = async (context) => {
