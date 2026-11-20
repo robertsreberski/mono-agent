@@ -25,6 +25,7 @@
 .usage-summary strong { font-size: 22px; font-weight: 600; }
 .usage-summary p { margin-bottom: 0; }
 .usage-card { padding: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-subtle); min-width: 0; margin-bottom: 16px; }
+.usage-quota-grid { align-items: start; }
 .usage-quota-grid .usage-card { margin-bottom: 0; }
 .usage-card-heading > span { font-size: 11px; color: var(--text-soft); }
 .usage-chart-frame { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 10px 0; margin: 16px 0; }
@@ -34,12 +35,24 @@
 .usage-chart { display: block; width: 100%; height: 100%; overflow: visible; }
 .usage-chart-x-axis { grid-column: 2; grid-row: 2; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; font-size: 11px; line-height: 1.4; color: var(--text-soft); }
 .usage-chart-x-axis span:last-child { text-align: right; }
-.usage-boundary-label { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; color: var(--text); font-size: 11px; font-weight: 600; line-height: 1.3; }
-.usage-sample-dots { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; }
 .usage-grid { stroke: var(--line); stroke-width: 1; }
-.usage-reset { stroke: var(--text-soft); stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
-.usage-boundary { stroke: #cb5362; stroke-width: 1.5; fill: none; }
+.usage-quota-window { --quota-color: var(--accent); padding-top: 12px; border-top: 1px solid var(--line-strong); }
+.usage-quota-window + .usage-quota-window { margin-top: 14px; }
+.usage-quota-window:nth-child(2) { --quota-color: color-mix(in srgb, var(--warning) 78%, var(--text)); }
+.usage-quota-window:nth-child(3) { --quota-color: var(--cat-4); }
+.usage-quota-window-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.usage-quota-window-heading h4 { color: var(--quota-color); font-size: 13px; margin: 0; }
+.usage-quota-pace { border-radius: 999px; padding: 2px 7px; background: var(--accent-soft); color: var(--text); font-size: 11px; }
+.usage-quota-pace:is([data-severity="ahead"], [data-severity="unsustainable"]) { background: color-mix(in srgb, var(--warning) 19%, var(--surface-subtle)); }
+.usage-quota-reset-time { margin-inline-start: auto; color: var(--text-soft); }
+.usage-quota-window .usage-chart-frame { grid-template-columns: 40px minmax(0, 1fr); margin: 4px 0 0; gap: 12px 0; }
+.usage-quota-window .usage-chart-plot { height: 116px; color: var(--quota-color); }
+.usage-quota-window .usage-grid { stroke: var(--line-strong); }
+.usage-sample-dots { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; }
+.usage-reset { stroke: var(--text-soft); stroke-opacity: .35; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+.usage-boundary { stroke: var(--danger); stroke-width: 1.5; fill: none; }
 .usage-quota-line { stroke: currentColor; stroke-width: 2; fill: none; }
+.usage-quota-inferred { stroke-opacity: .78; stroke-dasharray: 8 4; }
 .usage-legend { list-style: none; padding: 0; margin: 10px 0; display: flex; gap: 8px 14px; flex-wrap: wrap; font-size: 11px; }
 .usage-legend li { display: inline-flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
 .usage-legend i { width: 12px; height: 8px; border-radius: 2px; flex: none; }
@@ -77,6 +90,8 @@
   .usage-summary strong { font-size: 17px; overflow-wrap: anywhere; }
   .usage-card { padding: 12px; }
   .usage-chart-plot { height: 200px; }
+  .usage-quota-window .usage-chart-plot { height: 100px; }
+  .usage-quota-reset-time { flex-basis: 100%; margin-inline-start: 0; }
   .usage-actions button { min-height: 40px; }
 }
 /* Keep labels readable when numeric columns overflow into the scoped scroller. */

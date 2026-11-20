@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Make Usage analytics quota history easier to read with a separate line chart
+  for each window, clearer reset estimates, and visible lines even for sparse
+  checks or jittery provider timestamps.
+
 - Keep paid warm automatic and manual compaction summaries that safely reduce
   context, even when they exceed the requested size or still omit protected
   details after one revision. Explain degraded successes in the console and

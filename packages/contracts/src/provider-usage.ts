@@ -22,6 +22,15 @@ export interface ProviderUsageWindow {
   /** Nominal duration only; resetsAt is authoritative (month = 30 days). */
   readonly periodMs: number;
 }
+/** Compare consecutive observations, allowing small provider reset-time jitter. */
+export function sameProviderUsageResetPeriod(before: ProviderUsageWindow, after: ProviderUsageWindow): boolean {
+  if (before.kind !== after.kind) return false;
+  if (before.resetsAt === undefined || after.resetsAt === undefined) {
+    return after.usedPercent >= before.usedPercent;
+  }
+  const toleranceMs = Math.min(600_000, Math.min(before.periodMs, after.periodMs) / 20);
+  return Math.abs(Date.parse(before.resetsAt) - Date.parse(after.resetsAt)) <= toleranceMs;
+}
 export interface ProviderUsage {
   readonly providerId: ProviderUsageId;
   readonly label: string;

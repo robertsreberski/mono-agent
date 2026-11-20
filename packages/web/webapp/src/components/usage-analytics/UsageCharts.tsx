@@ -3,6 +3,7 @@ import {
   projectProviderUsageWindow,
   type ProviderUsageHistory,
   type ProviderUsageHistoryProvider,
+  type ProviderUsageWindow,
 } from "@mono-agent/contracts/provider-usage";
 import type { WebUsageAnalytics, WebUsageSlice } from "../../../../src/contracts";
 import { formatTokenCount, formatUsd } from "../../usage";
@@ -12,58 +13,60 @@ import {
   CHART, displayTimeZone, knownSpend, modelColor, partialSpend, quotaPaths, tokenTotal, xAt,
 } from "./usage-chart-geometry";
 
-interface WindowSeries {
-  readonly kind: string;
-  readonly paths: ReturnType<typeof quotaPaths>;
-}
+const quotaTicks = [0, 50, 100].map(percent => ({ fraction: percent / 100, label: `${percent}%` }));
 
-function QuotaSeries({ series }: { readonly series: readonly WindowSeries[] }) {
-  return series.map(({ kind, paths }, index) => (
-    <g key={kind} style={{ color: modelColor(index) }}>
-      <path
-        className="usage-quota-line"
-        d={paths.solid}
-        vectorEffect="non-scaling-stroke"
-      />
-      <path
-        className="usage-quota-line"
-        strokeDasharray="3 5"
-        d={paths.uncertain}
-        vectorEffect="non-scaling-stroke"
-      />
-      <path
-        className="usage-sample-dots"
-        d={paths.dots}
-        vectorEffect="non-scaling-stroke"
-      />
-    </g>
-  ));
-}
-
-function QuotaLegend({ provider, series }: {
+function QuotaWindowChart({ provider, history, window, fetchedAt, showTimeAxis }: {
   readonly provider: ProviderUsageHistoryProvider;
-  readonly series: readonly WindowSeries[];
+  readonly history: ProviderUsageHistory;
+  readonly window: ProviderUsageWindow;
+  readonly fetchedAt: string;
+  readonly showTimeAxis: boolean;
 }) {
-  const last = provider.samples.at(-1)!;
+  const paths = quotaPaths(provider, window.kind, history);
+  const pace = projectProviderUsageWindow(window, fetchedAt);
+  const zone = displayTimeZone(history);
+  const markerPath = (times: readonly number[]) => times.map(at => (
+    `M${xAt(at, history)},${CHART.top}V${CHART.height - CHART.bottom}`
+  )).join(" ");
   return (
-    <ul className="usage-legend">
-      {series.map(({ kind }, index) => {
-        const window = last.windows.find(w => w.kind === kind);
-        const pace = window && projectProviderUsageWindow(window, last.fetchedAt);
-        return (
-          <li key={kind}>
-            <i style={{ background: modelColor(index) }} aria-hidden="true" />
-            {window?.label ?? kind}
-            {pace && (
-              <span className={pace.severity === "ok" ? "usage-muted" : "usage-warning"}>
-                {pace.pace.toFixed(2)}× pace
-                {pace.confidence === "low" ? " (early estimate)" : ""}
-              </span>
-            )}
-          </li>
-        );
-      })}
-    </ul>
+    <div className="usage-quota-window">
+      <div className="usage-quota-window-heading">
+        <h4>{window.label}</h4>
+        <strong>{Number(window.usedPercent.toFixed(1))}% used</strong>
+        <span className="usage-quota-pace" data-severity={pace?.severity}>
+          {pace ? `${pace.pace.toFixed(2)}× pace${pace.confidence === "low" ? " (early)" : ""}` : "Pace unavailable"}
+        </span>
+        <span className="usage-quota-reset-time">
+          {window.resetsAt ? (
+            <>Resets <time dateTime={window.resetsAt}>{localTime(window.resetsAt, zone)}</time></>
+          ) : "Reset not reported"}
+        </span>
+      </div>
+      <UsageChartFrame
+        title={`${provider.label} ${window.label} quota history`}
+        description={
+          "Percent used from 0 to 100. Dots mark checks; dashed segments show inferred resets "
+          + "or long gaps. Lines stop at account changes. Exact observations are in the table."
+        }
+        range={history}
+        ticks={quotaTicks}
+        showTimeAxis={showTimeAxis}
+      >
+        <path className="usage-reset" d={markerPath(paths.resets)} vectorEffect="non-scaling-stroke" />
+        <path
+          className="usage-boundary"
+          d={markerPath(provider.accountChanges.map(at => Date.parse(at)))}
+          vectorEffect="non-scaling-stroke"
+        />
+        <path className="usage-quota-line" d={paths.solid} vectorEffect="non-scaling-stroke" />
+        <path
+          className="usage-quota-line usage-quota-inferred"
+          d={paths.uncertain}
+          vectorEffect="non-scaling-stroke"
+        />
+        <path className="usage-sample-dots" d={paths.dots} vectorEffect="non-scaling-stroke" />
+      </UsageChartFrame>
+    </div>
   );
 }
 
@@ -73,18 +76,13 @@ export function QuotaHistoryChart({ provider, history }: {
 }) {
   const [page, setPage] = useState(0);
   const zone = displayTimeZone(history);
-  const kinds = [...new Set(provider.samples.flatMap(sample => sample.windows.map(w => w.kind)))];
-  const series = kinds.map(kind => ({ kind, paths: quotaPaths(provider, kind, history) }));
+  const windows = new Map<ProviderUsageWindow["kind"], { window: ProviderUsageWindow; fetchedAt: string }>();
+  for (const sample of provider.samples) {
+    for (const window of sample.windows) windows.set(window.kind, { window, fetchedAt: sample.fetchedAt });
+  }
   const last = provider.samples.at(-1);
   const boundary = provider.accountChanges.at(-1);
   const stale = last !== undefined && Date.now() - Date.parse(last.fetchedAt) > 300_000;
-  const resets = [...new Set(provider.samples.flatMap(sample => sample.windows.flatMap(window => (
-    window.resetsAt && window.resetsAt >= history.from && window.resetsAt < history.to
-      ? [window.resetsAt] : []
-  ))))];
-  const markerPath = (times: readonly string[]) => times.map(at => (
-    `M${xAt(at, history)},${CHART.top}V${CHART.height - CHART.bottom}`
-  )).join(" ");
 
   return (
     <article className="usage-card" aria-label={`${provider.label} quota history`}>
@@ -108,37 +106,23 @@ export function QuotaHistoryChart({ provider, history }: {
       )}
       {last && (
         <>
-          <UsageChartFrame
-            title={`${provider.label} quota percentages`}
-            description={
-              "Percent used from 0 to 100. Lines connect actual observations, not continuous "
-              + "measurements. Dotted lines indicate unusually long known gaps: over twice the "
-              + "typical interval or six hours, whichever is longer. Lines break at account "
-              + "changes and resets. Exact observations are in the table."
-            }
-            range={history}
-            ticks={[0, 50, 100].map(percent => ({ fraction: percent / 100, label: `${percent}%` }))}
-            {...(boundary ? { accountBoundary: boundary } : {})}
-          >
-            <path
-              className="usage-reset"
-              d={markerPath(resets)}
-              vectorEffect="non-scaling-stroke"
-            />
-            <path
-              className="usage-boundary"
-              d={markerPath(provider.accountChanges)}
-              vectorEffect="non-scaling-stroke"
-            />
-            <QuotaSeries series={series} />
-          </UsageChartFrame>
-          <QuotaLegend provider={provider} series={series} />
-          <p className="usage-muted">
-            Lines join observed samples, not continuous measurements. Dotted: known gaps over
-            max(2× typical interval, 6h); with fewer than three intervals, 6h.
-            Dashed vertical: reported reset · Solid vertical: account boundary.
-            Pace is constant-rate extrapolation at the actual check, not a forecast.
-          </p>
+          {windows.size > 0 ? (
+            <>
+              <div className="usage-quota-windows">
+                {[...windows.values()].map(({ window, fetchedAt }, index) => (
+                  <QuotaWindowChart
+                    key={window.kind}
+                    provider={provider}
+                    history={history}
+                    window={window}
+                    fetchedAt={fetchedAt}
+                    showTimeAxis={index === windows.size - 1}
+                  />
+                ))}
+              </div>
+              <p className="usage-muted">Dots mark checks; dashed lines show estimated resets or long gaps.</p>
+            </>
+          ) : <p>No quota windows were reported in this range.</p>}
           <QuotaObservationTable provider={provider} zone={zone} page={page} onPage={setPage} />
         </>
       )}

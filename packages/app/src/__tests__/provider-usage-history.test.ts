@@ -43,6 +43,32 @@ describe("owner-private quota history", () => {
     expect(history.providers[0]?.samples).toHaveLength(2); // actual first/last endpoints, not interpolation
     expect(history.providers[0]?.samples[0]).toMatchObject({ observations: 2, maxGapMs: 300_000 });
   });
+  it("compresses unchanged observations with jitter and retains the latest reset estimate", async () => {
+    const cwd = await root(), sink = store(cwd).forScope("auth");
+    const first = usage();
+    const firstWindow = first.windows[0]!;
+    const latestReset = "2026-10-25T14:59:58.712Z";
+    await sink.append(first, undefined, retained);
+    await sink.append({ ...usage(NOW + 300_000), windows: [{ ...firstWindow, resetsAt: latestReset }] }, undefined, retained);
+    expect(count(cwd)).toBe(1);
+    const history = await sink.read(q, ["anthropic"]);
+    expect(history.providers[0]?.samples.map(p => [p.observations, p.maxGapMs, p.windows[0]?.resetsAt]))
+      .toEqual(Array(2).fill([2, 300_000, latestReset]));
+  });
+  it("reduces jitter-only transitions but keeps observations on either side of a real reset", async () => {
+    const cwd = await root(), sink = store(cwd).forScope("auth");
+    const percents = [13, 20, 26, 31, 35, 40];
+    for (const [i, used] of percents.entries()) {
+      const point = usage(NOW + i * 300_000, used);
+      const resetMs = NOW + 900_000 + i * 283 + (i < 3 ? 0 : 18_000_000);
+      const windows = [{ ...point.windows[0]!, resetsAt: new Date(resetMs).toISOString() }];
+      await sink.append({ ...point, windows }, undefined, retained);
+    }
+    expect(count(cwd)).toBe(6); // changed percentages, so this exercises read reduction
+    const history = await sink.read(q, ["anthropic"]);
+    expect(history.providers[0]?.downsampled).toBe(true);
+    expect(history.providers[0]?.samples.map(p => p.windows[0]?.usedPercent)).toEqual([13, 26, 31, 40]);
+  });
   it("does not lose a retained fetch when a no-create read owns the initialization flight", async () => {
     const cwd = await root(), s = store(cwd), sink = s.forScope("auth");
     await Promise.all([sink.read(q, ["anthropic"]), sink.append(usage(), undefined, retained)]);

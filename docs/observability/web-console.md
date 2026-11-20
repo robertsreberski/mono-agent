@@ -579,16 +579,22 @@ analytics** re-reads those datasets. **Refresh usage** alone requests an explici
 vendor check through the existing refresh/backoff path. **Clear quota history**
 requires confirmation and leaves conversation usage unchanged.
 
-The screen offers 6h, 24h, 7d, 30d and 90d ranges, provider/window quota lines,
-reported reset markers, detected account boundaries and the existing measured
-pace concept. Lines do not connect across detected account changes or resets;
-dotted connectors indicate known gaps over twice the typical observation interval
-or six hours, whichever is longer. The typical interval is the median of at least
-three gaps within an account/reset segment; fewer intervals use the six-hour floor.
-Compression and reduction alone do not establish missing checks. Connecting lines
-join actual observations, never continuous measurements. Empty, stale, storage-unavailable and unsupported/offline states
-remain separate. Historical quota stays agent/sign-in scoped as described below;
-conversation spend covers retained conversations across sign-ins.
+The screen offers 6h, 24h, 7d, 30d and 90d ranges. Each provider card shows one
+plot per quota window on a shared time axis, with the latest checked percentage,
+measured pace, and reported reset time. Dots mark actual checks, and an isolated
+check also has a short tick. Solid lines join observations within a period;
+dashed segments show estimated holds and drops to zero at resets, rises from the
+start of the next observed period, and known long gaps within a period. Skipped
+periods and resets without known timing leave gaps. Reset markers are deduplicated
+per window; account boundaries break the line.
+
+A long gap exceeds twice the typical interval or six hours, whichever is longer.
+The typical interval is the median of at least three same-period gaps between
+checks of the same account; fewer intervals use the six-hour floor. Compression
+and reduction alone do not establish missing checks. Lines are not continuous
+measurements. Empty, stale, storage-unavailable, and unsupported or offline
+states remain separate. Historical quota stays agent/sign-in scoped as described
+below; conversation spend covers retained conversations across sign-ins.
 
 Token/cost bars stack by recorded model, with input, output, cache-read and
 cache-write detail, known-spend/partial labels, and top conversations/projects.
@@ -654,11 +660,13 @@ restart the exact failed attempts are unknown.
 The agent stores owner-private SQLite under `.mono-agent/provider-usage-v1/`,
 separate from console conversation usage. Retention is 90 days, capped at 50,000
 compressed sample rows, 64 auth-scope/provider partitions and a 128 MiB database
-plus bounded rollback journal. Consecutive identical observations share a daily
-payload; first/last timestamps are actual checks, and gap/count metadata is not
-evidence of continuous monitoring. Reductions retain first/last, extrema and
-reset/account boundaries. Capacity truncation is explicit. Missing intervals
-are not zero usage.
+plus bounded rollback journal. Consecutive observations with unchanged usage in
+the same period share a daily payload with the latest reset estimate. Reset
+estimates within 5% of the period (up to ten minutes) count as the same reset;
+when a reset is not reported, a drop in usage signals a new period. First/last
+timestamps are actual checks, and gap/count metadata is not evidence of continuous
+monitoring. Reductions retain first/last, extrema and reset/account boundaries.
+Capacity truncation is explicit. Missing intervals are not zero usage.
 
 History belongs to this agent and configured sign-in scope, not the rotating
 access token. It remains readable for activated providers after sign-out.

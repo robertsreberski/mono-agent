@@ -610,6 +610,7 @@ readString
 redactedSecret
 registerNativeNotifyRequest
 restoreGuardedSettingsJson
+sameProviderUsageResetPeriod
 sanitizeInboundHttpHeaders
 sanitizeReplyPartDeliveryOutcomes
 sanitizeRestartProposalReason
@@ -653,6 +654,7 @@ parseProviderUsageSnapshot
 parseUsageHistoryRange
 projectProviderUsage
 projectProviderUsageWindow
+sameProviderUsageResetPeriod
 usageHistoryBucket
 ```
 
