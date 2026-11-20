@@ -33,7 +33,8 @@ import {
   type ReplyArtifactService,
 } from "../artifacts/reply-artifacts.js";
 import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
-import { REPLY_PRESENTATION_CONTRACT, REPLY_PRESENTATION_RESULT_FORBIDDEN_PHRASES } from "../mcp/reply-presentation.js";
+import { REPLY_PRESENTATION_CONTRACT } from "../mcp/reply-presentation.js";
+import { REPLY_PRESENTATION_RESULT_FORBIDDEN_PHRASES } from "./fixtures/reply-presentation.js";
 
 const tempDirs: string[] = [];
 

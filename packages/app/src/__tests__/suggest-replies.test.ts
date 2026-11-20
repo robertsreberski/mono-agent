@@ -4,7 +4,8 @@ import type { ConversationHarnessRuntimeOptionsInput } from "@mono-agent/convers
 import { describe, expect, it } from "vitest";
 import { createSuggestRepliesService, isSuggestRepliesToolAllowed, SUGGEST_REPLIES_SERVER_NAME, SUGGEST_REPLIES_TOOL_NAME } from "../request-tools/suggest-replies.js";
 import { createReplyPartBudget } from "../delivery/reply-part-budget.js";
-import { REPLY_PRESENTATION_CONTRACT, REPLY_PRESENTATION_RESULT_FORBIDDEN_PHRASES } from "../mcp/reply-presentation.js";
+import { REPLY_PRESENTATION_CONTRACT } from "../mcp/reply-presentation.js";
+import { REPLY_PRESENTATION_RESULT_FORBIDDEN_PHRASES } from "./fixtures/reply-presentation.js";
 
 function request(metadata: Record<string, unknown> = { source: "web", web: { threadId: "one", turnId: "turn-1" } }): ConversationHarnessRuntimeOptionsInput {
   return { request: { conversationId: "web:one", userMessage: "work", abortSignal: new AbortController().signal, metadata },
