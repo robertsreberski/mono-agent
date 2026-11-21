@@ -30,9 +30,14 @@
   compaction in the console without exposing provider text. Ignore stale provider
   usage after a successful cut and hide unpaid automatic no-op markers.
 
-- Add GPT-6.2 Sol and Astra on `openai` and `openai-codex` to model
-  resolution, pickers, guided setup and validation, with long-input pricing
-  and the same effort and `context1M` support as their sibling models.
+- Upgrade the bundled Pi runtime to 1.6.0. Select Gemini 4 Neon on Google AI
+  Studio (`google:gemini-4-neon`, Gemini API key only) or GitHub Copilot
+  (`github-copilot:gemini-4-neon`, subject to account access). Both routes offer
+  low, medium and high effort; Copilot also offers extra high. Google keys can
+  be stored through masked authentication or supplied via `GEMINI_API_KEY`.
+- Use Pi's native GPT-6.2 Sol and Astra entries on `openai` and `openai-codex`
+  in place of the temporary backfill, retaining their pricing, effort and
+  `context1M` support. Pi also adds the models to GitHub Copilot.
 
 - Remove the split conversation-history tool surface.
 

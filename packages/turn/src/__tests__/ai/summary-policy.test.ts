@@ -99,7 +99,7 @@ it("reserves shared-cap reasoning room for other always-on reasoning families", 
   expect(policy.canDispatch).toBe(true);
 });
 
-it("puts the protected text target in a Codex payload without inventing a wire output cap", async () => {
+it("puts the protected text target in the Codex developer message and uses Pi’s native wire cap", async () => {
   const { normalizeContext } = await import("@earendil-works/pi-ai");
   const { streamSimple } = await import("@earendil-works/pi-ai/api/openai-codex-responses");
   const codex = { ...model, provider: "openai-codex", api: "openai-codex-responses", id: "fictional-codex", name: "Fictional Codex", input: ["text"],
@@ -117,8 +117,10 @@ it("puts the protected text target in a Codex payload without inventing a wire o
     await facade.completeSimple(codex, { systemPrompt: "Summarize fictional records.", messages: [] }, { maxTokens: 5763 });
     expect(requests[0]).toMatchObject({ providerMaxTokens: 8645, textTargetTokens: 5763, reasoningAllowance: 2882 });
     expect(payload).toHaveBeenCalledTimes(1);
-    expect(payload.mock.calls[0]![0]).toMatchObject({ instructions: expect.stringContaining("23052 UTF-16 characters"), reasoning: { effort: "low" } });
-    expect(payload.mock.calls[0]![0]).not.toHaveProperty("max_output_tokens");
+    const body = payload.mock.calls[0]![0];
+    expect(body).toMatchObject({ reasoning: { effort: "low" }, max_output_tokens: 8645 });
+    expect(body.input[0]).toMatchObject({ role: "developer", content: expect.stringContaining("23052 UTF-16 characters") });
+    expect(body).not.toHaveProperty("instructions");
     expect(network).not.toHaveBeenCalled();
   } finally { vi.unstubAllGlobals(); }
 });

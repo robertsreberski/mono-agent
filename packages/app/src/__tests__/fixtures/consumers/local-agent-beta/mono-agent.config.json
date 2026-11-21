@@ -4,8 +4,8 @@
     "model": "openai-codex:gpt-6.1-terra",
     "fallbacks": [
       {
-        "model": "opencode-go:glm-5.2",
-        "effort": "xhigh"
+        "model": "opencode-go:glm-5.3",
+        "effort": "high"
       }
     ],
     "effort": "xhigh",

@@ -15,6 +15,41 @@ const tempDirs: string[] = [];
 afterEach(async () => await Promise.all(tempDirs.splice(0).map(async (dir) => await rm(dir, { recursive: true, force: true }))));
 
 describe("provider auth operator", () => {
+  it("offers only Google's masked key prompt and hands the key only to persistence", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-google-auth-"));
+    tempDirs.push(dir);
+    const authPath = join(dir, "auth.json");
+    const base = config("google:gemini-4-neon");
+    const operator = createProviderAuthOperator({
+      config: { ...base, providers: { ...base.providers, piAuthPath: authPath } },
+      env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} },
+      observations: createProviderAuthObservationTracker(),
+      // Keep synthetic credentials in the test scratch directory; the real
+      // transaction independently refuses to install credentials in Git trees.
+      persist: async ({ resolveCredential }) => {
+        const key = await resolveCredential();
+        await writeFile(authPath, JSON.stringify({ google: key }), { mode: 0o600 });
+      },
+    });
+    try {
+      const fixture = "fictional-gemini-key";
+      const readGoogle = async () => (await operator.status()).providers.find((row) => row.providerId === "google");
+      expect(await readGoogle()).toMatchObject({
+        state: "missing", verification: "not_verified",
+        methods: [{ authType: "api_key", strategy: "api_key_prompt", recommended: true }],
+      });
+      const session = await operator.start({ providerId: "google", authType: "api_key", strategy: "api_key_prompt" });
+      expect(session).toMatchObject({ state: "awaiting_input", prompt: { type: "secret", message: "Enter Gemini API key" } });
+      await operator.submit(session.id, { promptId: session.prompt!.id, value: fixture });
+      await vi.waitFor(async () => expect(await operator.get(session.id)).toMatchObject({ state: "succeeded" }));
+      expect(JSON.parse(await readFile(authPath, "utf8"))).toEqual({ google: { type: "api_key", key: fixture } });
+      expect((await stat(authPath)).mode & 0o777).toBe(0o600);
+      const stored = await readGoogle();
+      expect(stored).toMatchObject({ state: "present", credentialType: "api_key", source: "stored", verification: "not_verified" });
+      expect(JSON.stringify([stored, await operator.get(session.id)])).not.toContain(fixture);
+    } finally { await operator.stop(); }
+  });
+
   it("replaces an active valid login, rejects its old prompt, and ignores its late events", async () => {
     const observations = createProviderAuthObservationTracker();
     const persisted = vi.spyOn(observations, "credentialPersisted");

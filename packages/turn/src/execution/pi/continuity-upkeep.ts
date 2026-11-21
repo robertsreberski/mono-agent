@@ -16,6 +16,9 @@ const REQUEST_CAPS: Record<string, readonly string[]> = {
   "bedrock-converse-stream": ["inferenceConfig", "maxTokens"], "mistral-conversations": ["maxTokens"], "pi-messages": ["options", "maxTokens"],
 };
 export function upkeepCapEnforcement(api: string): "request" | "stream_abort" {
+  // Pi 1.6 sends a cap where the model allows it, but an emitted field
+  // is not proof of Codex account/backend enforcement. Retain the visible
+  // stream guard and fail closed for request-cap-only admission.
   if (api === "openai-codex-responses") return "stream_abort";
   if (!REQUEST_CAPS[api]) throw new Error("cap_unsupported");
   return "request";
@@ -77,8 +80,8 @@ export async function prepareContinuityUpkeep(options: RuntimeRunOptions, requir
   } catch { return undefined; }
 }
 
-/** One SSE completion, no session/tools/router/repair. Codex lacks a wire cap in
- * pi-ai 1.2.0; its visible stream is guarded, not its hidden reasoning/quota. */
+/** One SSE completion, no session/tools/router/repair. Codex's request cap is
+ * best effort; only the visible stream is guarded, not hidden reasoning/quota. */
 export async function completeContinuityUpkeep(prompt: string, options: RuntimeRunOptions, requireRequestCap = false, budget?: { readonly operationId: string; readonly inputTokens: 64000 | 128000; maxEntries?: number | undefined }): Promise<ContinuityUpkeepResult> {
   const started = performance.now(), operationId = budget?.operationId ?? randomUUID();
   const inputBudget = budget?.inputTokens === 128000 ? 128000 : 64000;

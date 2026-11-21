@@ -14,7 +14,14 @@ export function effectivePayloadEffort(payload: any, model: any): string | undef
   if (model.api === "openai-completions") {
     return bounded(payload.reasoning_effort) ?? (payload.thinking?.type === "disabled" || payload.enable_thinking === false || !model.reasoning ? "none" : undefined);
   }
-  if (["openai-responses", "openai-codex-responses", "azure-openai-responses"].includes(model.api)) return bounded(payload.reasoning?.effort) ?? (!model.reasoning ? "none" : undefined);
+  if (["openai-responses", "openai-codex-responses", "azure-openai-responses"].includes(model.api)) {
+    // Pi sends a fixed cache anchor at the top level when the transcript
+    // carries the actual reasoning effort as configuration updates.
+    const active = Array.isArray(payload.input)
+      ? payload.input.findLast((item: any) => item?.type === "configuration_update")
+      : undefined;
+    return bounded(active?.reasoning?.effort) ?? bounded(payload.reasoning?.effort) ?? (!model.reasoning ? "none" : undefined);
+  }
   const thinking = payload.config?.thinkingConfig;
   return bounded(thinking?.thinkingLevel) ?? (thinking?.thinkingBudget === 0 || !model.reasoning ? "none" : undefined);
 }

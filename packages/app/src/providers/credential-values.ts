@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import { MAX_PI_AUTH_STORE_BYTES } from "./pi-auth-store-inspection.js";
 export const PI_API_KEY_PROVIDERS: Readonly<Record<string, string>> = {
+  google: "GEMINI_API_KEY",
   "opencode-go": "OPENCODE_API_KEY",
   openai: "OPENAI_API_KEY",
 };
@@ -22,7 +23,7 @@ export function isUsableStoredPiCredential(provider: string, value: unknown): bo
   if (!isRecord(value)) return false;
   if (!isBoundedCredentialValue(value)) return false;
   if (value.type === "oauth") {
-    return (isBoundedCredentialString(value.access) || isBoundedCredentialString(value.refresh))
+    return provider !== "google" && (isBoundedCredentialString(value.access) || isBoundedCredentialString(value.refresh))
       && (value.expires === undefined || (typeof value.expires === "number" && Number.isFinite(value.expires)))
       && hasUsablePiOAuthClientId(provider, value);
   }

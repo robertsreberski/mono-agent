@@ -73,7 +73,7 @@ Four surfaces share names with the deleted runtime bridges and are unaffected by
 
 ## The Pi runtime
 
-`<provider>:<model>` resolves through the Pi SDK provider gateway, which fronts 15+ providers including `openai`, `openai-codex`, `anthropic`, `github-copilot`, `opencode-go`, `openrouter`, `ollama`, and `lmstudio`. Subscription/account-backed providers are reachable here, including OpenAI-Codex, Anthropic, GitHub Copilot, and OpenCode-Go.
+`<provider>:<model>` resolves through the Pi SDK provider gateway, which fronts 15+ providers including `openai`, `openai-codex`, `anthropic`, `github-copilot`, `google`, `opencode-go`, `openrouter`, `ollama`, and `lmstudio`. Subscription/account-backed providers are reachable here, including OpenAI-Codex, Anthropic, GitHub Copilot, and OpenCode-Go.
 
 Pi includes GPT models under both first-party OpenAI providers:
 `openai:gpt-6-astra` uses either ChatGPT sign-in or an OpenAI API key, while
@@ -84,18 +84,18 @@ change the provider's model catalog or default route. For example, Pi's
 `openai-codex` also offers `minimal`. Confirm the exact model in your selected
 provider's catalog before editing a route.
 
-The pinned Pi 1.5.2 catalog is temporarily supplemented with `gpt-6.2-sol`
-and `gpt-6.2-astra` on both `openai` and `openai-codex`. They appear in the web
-picker and guided setup and pass `doctor`/`validate` like built-ins, with the
-same authentication and effort maps as GPT-6.1 Sol/GPT-6 Astra (no disabled
-reasoning or `ultra`). Sol is $2/$10 and Astra $8/$40 per million input/output
-tokens; above 272K prompt tokens, input/cache rates double and output is 1.5x
-for the whole request. Default windows match siblings (272K; Codex Sol 500K),
-with the same explicit `context1M` eligibility. See OpenAI's
-[Sol model page](https://developers.openai.com/api/docs/models/gpt-6.2-sol) and
-[Astra model page](https://developers.openai.com/api/docs/models/gpt-6.2-astra).
-Upstream rows always take precedence; the supplement can be removed once Pi
-ships all four provider/model pairs. No GitHub Copilot rows are inferred.
+Pi 1.6.0 supplies `gpt-6.2-sol` and `gpt-6.2-astra` natively on `openai`,
+`openai-codex` and `github-copilot`. Existing OpenAI and Codex routes retain
+pricing and `context1M` eligibility. Sol costs $2/$10 and Astra $8/$40 per million
+input/output tokens; above 272K prompt tokens, input/cache rates double and
+output is 1.5x for the whole request.
+
+Gemini 4 Neon is available through `google:gemini-4-neon` (Google AI Studio's
+Gemini API) or `github-copilot:gemini-4-neon` (depending on Copilot account
+access). Both offer a 1,048,576-token context, 65,536-token maximum output and
+`low`, `medium`, and `high` effort; Copilot also offers `xhigh`. To authenticate
+Google, run `mono-agent auth login google` for a masked key prompt or supply
+`GEMINI_API_KEY` in the agent environment. This route does not use Google OAuth.
 
 ```json
 {

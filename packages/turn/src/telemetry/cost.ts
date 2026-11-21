@@ -1,8 +1,8 @@
 // @ts-check
 
-// Share the runtime catalog, including temporary gaps, for resolution and pricing.
+// Use the same native chat catalog for resolution and pricing.
 import { calculateCost as calculatePiCost } from "@earendil-works/pi-ai";
-import { getPiCatalogModel as getPiModel } from "../providers/pi/supplement.js";
+import { getNativePiModel } from "../providers/pi/builtin-models.js";
 
 function finiteOrNull(value: any): number | null {
   if (value == null || value === "") return null;
@@ -98,7 +98,7 @@ function piCatalogModel(parsed: ParsedModelReference | null | undefined): import
   try {
     // `provider` may be caller-supplied (including custom providers), wider
     // than pi-ai's built-in provider union; guard the catalog read below.
-    return getPiModel(((parsed.provider) as any), parsed.model) || null;
+    return getNativePiModel(parsed.provider, parsed.model) || null;
   } catch {
     return null;
   }

@@ -362,7 +362,7 @@ export async function verifyE2NativeLineage(bytes, hold, state, assignment, read
     if (authenticated) {
       const expected = await deriveE2SummaryRequest({ root: assignment.outputRoot, state, index: assignment.index, hold, native, predecessor: authenticated, readArtifact });
       const body = JSON.parse(bytes);
-      need(body.instructions === expected.instructions && canonicalDigest(body.input) === canonicalDigest(expected.input));
+      need(!Object.hasOwn(body, "instructions") && canonicalDigest(body.input) === canonicalDigest(expected.input));
       // Active retained authority overrides archive-original equality, including
       // otherwise recognized original frames. Unknown/perturbed prefix templates
       // never turn a retained operation into an ordinary generated-only cut.

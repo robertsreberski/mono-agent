@@ -1,8 +1,8 @@
 import { zstdDecompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { builtinModels, getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
+import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import { getPiBuiltinModel, listPiBuiltinModels, reasoningLevelsForPiModel } from "../../providers/pi/catalog.js";
-import { registerPiSupplementModels } from "../../providers/pi/supplement.js";
+import { effectivePayloadEffort } from "../../providers/pi/effective-effort.js";
 import { resolvePiRuntimeModel } from "../../providers/pi/models.js";
 import { supportsPiContext1M } from "../../providers/pi/context-1m.js";
 import { estimateCost, resolvePricing } from "../../telemetry/cost.js";
@@ -14,25 +14,18 @@ const variants = ["sol", "astra"] as const;
 afterEach(() => vi.unstubAllGlobals());
 
 for (const provider of providers) for (const variant of variants) {
-  const id = `gpt-6.2-${variant}`;
+  const id = `gpt-6.2-${variant}` as const;
   const reference = `${provider}:${id}`;
-  const siblingId = variant === "sol" ? "gpt-6.1-sol" : "gpt-6-astra";
   const input = variant === "sol" ? 2 : 8;
 
   describe(reference, () => {
-    it("backfills only the pinned upstream gap with sibling capabilities", () => {
-      // Remove this supplement once these preconditions stop holding after a Pi upgrade.
-      expect(getBuiltinModel(provider as any, id)).toBeUndefined();
-      const sibling = getBuiltinModel(provider, siblingId)!;
+    it("uses Pi's native GPT-6.2 row without changing the model reference or opt-in context", () => {
       const model = getPiBuiltinModel(provider, id)!;
-      expect(model).toEqual({ ...sibling, id, name: `GPT-6.2 ${variant === "sol" ? "Sol" : "Astra"}`, cost: {
-        input, output: input * 5, cacheRead: input / 20, cacheWrite: input * 1.25,
-        tiers: [{ inputTokensAbove: 272000, input: input * 2, output: input * 7.5, cacheRead: input / 10, cacheWrite: input * 2.5 }],
-      } });
+      expect(model).toEqual(getBuiltinModel(provider, id));
+      expect(model).toMatchObject({ id, name: `GPT-6.2 ${variant === "sol" ? "Sol" : "Astra"}`, maxTokens: 128_000 });
       expect(listPiBuiltinModels(provider).filter((row) => row.id === id)).toEqual([model]);
-      expect(reasoningLevelsForPiModel(model)).toEqual(reasoningLevelsForPiModel(sibling));
       expect(reasoningLevelsForPiModel(model)).not.toContain("none");
-      expect(supportsPiContext1M(reference)).toBe(supportsPiContext1M(`${provider}:${siblingId}`));
+      expect(supportsPiContext1M(reference)).toBe(true);
       const runtime = resolvePiRuntimeModel({ provider, model: id }, {});
       expect(runtime.model).toEqual(model);
       expect(resolvePiRuntimeModel({ provider, model: id }, { context1MModels: { [reference]: true } }).model.contextWindow).toBe(1_000_000);
@@ -58,8 +51,8 @@ for (const provider of providers) for (const variant of variants) {
       const access = ["fictional", Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64"), "fictional"].join(".");
       const credential = provider === "openai-codex"
         ? { type: "oauth" as const, access, refresh: "fictional", expires: Date.now() + 3_600_000 }
-        : { type: "api_key" as const, key: "fictional-unused-key" };
-      const resolver = Object.assign(async () => "fictional-unused-key", { readCredential: async () => credential });
+        : { type: "api_key" as const, key: "sk-fictional-test-only" };
+      const resolver = Object.assign(async () => "sk-fictional-test-only", { readCredential: async () => credential });
       const models = buildRunModels({ apiKeys: new Map() } as PiRuntime, { resolvePiApiKey: resolver }, []);
       const model = models.getModel(provider, id)!;
       expect(model).toEqual(getPiBuiltinModel(provider, id));
@@ -76,32 +69,13 @@ for (const provider of providers) for (const variant of variants) {
       const body = new Headers(init.headers).get("content-encoding") === "zstd"
         ? zstdDecompressSync(Buffer.from(init.body as Uint8Array)).toString()
         : init.body as string;
-      expect(JSON.parse(body)).toMatchObject({ model: id, reasoning: { effort: "high" } });
+      const payload = JSON.parse(body);
+      expect(payload.model).toBe(id);
+      expect(payload.reasoning.effort).toBeDefined();
+      // Native mid-conversation effort puts the selected level on the input,
+      // not on the fixed top-level reasoning cache anchor.
+      expect(effectivePayloadEffort(payload, model)).toBe("high");
+      expect(payload.input).toContainEqual(expect.objectContaining({ type: "configuration_update", reasoning: { effort: "high" } }));
     });
   });
 }
-
-it("registers both missing rows per provider once, preserves siblings, and is idempotent", () => {
-  const models = builtinModels();
-  const setProvider = vi.spyOn(models, "setProvider");
-  registerPiSupplementModels(models);
-  registerPiSupplementModels(models);
-  expect(setProvider).toHaveBeenCalledTimes(2);
-  for (const provider of providers) {
-    for (const id of ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-astra"]) {
-      expect(models.getModel(provider, id)?.id).toBe(id);
-    }
-  }
-});
-
-it("does not populate absent providers or alter the verbatim Models seam", () => {
-  const models = { getProvider: () => undefined, setProvider: vi.fn() };
-  registerPiSupplementModels(models as never);
-  expect(models.setProvider).not.toHaveBeenCalled();
-  expect(buildRunModels({} as PiRuntime, { piResolvedModels: models as never }, [])).toBe(models);
-});
-
-it("keeps unknown refs and unverified providers out of the supplement", () => {
-  expect(() => resolvePiRuntimeModel({ provider: "openai-codex", model: "gpt-6.3-sol" }, {})).toThrow("pi model not found");
-  expect(getPiBuiltinModel("github-copilot", "gpt-6.2-sol")).toBeUndefined();
-});

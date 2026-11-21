@@ -51,7 +51,7 @@ it("finds max-output spellings at every payload depth, including arrays (seriali
   expect(maxOutputFields({ reasoning: { effort: "high" }, input: [{ text: "max_output_tokens is text, not a key" }] })).toEqual([]);
 });
 
-it("captures the installed Codex Sol serializer through options.fetch: no request-local output cap, one send, no egress", async () => {
+it("captures the installed Codex Sol serializer through options.fetch: serializes the native cap without proving backend enforcement", async () => {
   const piRoot = join(root, "packages/turn/node_modules/@earendil-works/pi-ai");
   const pkg = JSON.parse(await readFile(join(piRoot, "package.json"), "utf8"));
   const { createModels } = await import(pathToFileURL(join(piRoot, pkg.exports["."].import)).href);
@@ -84,9 +84,10 @@ it("captures the installed Codex Sol serializer through options.fetch: no reques
   const capture = captures[0];
   expect(capture.url).toBe("https://chatgpt.com/backend-api/codex/responses"); expect(capture.method).toBe("POST");
   expect(capture.encoding).toBe("zstd"); // Node 24 exercises the real compressed-body path.
-  expect(capture.payload.model).toBe("gpt-6.1-sol"); expect(capture.payload.reasoning.effort).toBe("high");
-  // Fail on any new max-output spelling, not just max_output_tokens.
-  expect(maxOutputFields(capture.payload)).toEqual([]);
+  expect(capture.payload.model).toBe("gpt-6.1-sol");
+  expect(capture.payload.input).toContainEqual({ type: "configuration_update", reasoning: { effort: "high" } });
+  expect(maxOutputFields(capture.payload)).toEqual(["max_output_tokens"]);
+  expect(capture.payload.max_output_tokens).toBe(17);
 });
 
 it("reports output-cap, input-envelope and pricing readiness independently, with unknown/unsupported blocking", () => {

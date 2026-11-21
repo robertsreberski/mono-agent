@@ -32,6 +32,12 @@ it.each([false, true])("real host turn with reasoning replay/tool or outage refu
       const bytes = new Headers(init.headers).get("content-encoding") === "zstd" ? zstdDecompressSync(init.body) : Buffer.from(init.body);
       const body = JSON.parse(bytes.toString("utf8"));
       expect(body.prompt_cache_key).toBe(promptCacheKey);
+      expect(body).not.toHaveProperty("instructions");
+      expect(body.input.find(item => item.type !== "additional_tools")).toEqual({ role: "developer", content: "Fictional instructions." });
+      expect(body.max_output_tokens).toBeGreaterThanOrEqual(16);
+      expect(body.max_output_tokens).toBeLessThanOrEqual(128000);
+      expect(body.reasoning.effort).toBe("medium");
+      expect(body.input.at(-1)).toEqual({ type: "configuration_update", reasoning: { effort: "high" } });
       let output;
       if (rounds === 1) {
         const tool = codexWireTools(body).find(t => t.name.toLowerCase() === "read"); expect(tool).toBeTruthy();

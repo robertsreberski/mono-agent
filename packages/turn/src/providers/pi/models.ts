@@ -1,6 +1,5 @@
-// Resolve built-in chat models through the runtime-owned temporary catalog supplement.
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { getPiCatalogModel as getPiModel } from "./supplement.js";
+import { getNativePiModel, withGoogleAdapterThinkingLevels } from "./builtin-models.js";
 import { withContext1M } from "./context-1m.js";
 import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
 
@@ -159,22 +158,24 @@ export function resolvePiRuntimeModel(resolved: any, options: any): {
     throw new Error("invalid pi model reference: provider and model are required");
   }
   if (options.customProvider) return resolveCustomPiModel(resolved, options);
-  const catalogModel = getPiModel((provider) as any, model);
-  if (!catalogModel) {
+  const nativeModel = getNativePiModel(provider, model);
+  if (!nativeModel) {
     // Phrasing matters: this must match telemetry/failure.js's NON_RETRYABLE_PROVIDER_RE
     // `model[_ ]not[_ ]found` alternation so the router classifies a catalog miss
     // as non-retryable and bails cleanly instead of retrying/misclassifying it as
     // a transient provider_unavailable failure.
     throw new Error(`pi model not found: ${provider}:${model}`);
   }
+  const catalogModel = structuredClone(withGoogleAdapterThinkingLevels(nativeModel));
+  const reasoningLevels = reasoningLevelsForPiModel(catalogModel);
   return {
     model: withContext1M(catalogModel, options.context1MModels),
     capabilities: {
       tool_use: true,
       reasoning: !!catalogModel.reasoning,
       reasoning_mode: catalogModel.reasoning ? "effort" : "none",
-      reasoning_levels: catalogModel.reasoning ? reasoningLevelsForPiModel(catalogModel) : undefined,
-      reasoning_disable_supported: true,
+      reasoning_levels: catalogModel.reasoning ? reasoningLevels : undefined,
+      reasoning_disable_supported: reasoningLevels.includes("none"),
       vision: Array.isArray(catalogModel.input) ? catalogModel.input.includes("image") : false,
       json_mode: true,
     },

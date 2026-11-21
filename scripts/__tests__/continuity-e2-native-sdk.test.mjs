@@ -273,7 +273,9 @@ it.each(["quotation", "carry"].flatMap(carrier => ["summary", "two-split"].map(s
     expect(options).toMatchObject({method:"completeSimple",reasoning:"low",transport:"sse",maxRetries:0});
     expect(options.maxTokens).toBeGreaterThan(0); expect(options.maxTokens).toBeLessThan(128000);
     expect(route.report.summaryRequests[i].maxOutputTokens).toBe(options.maxTokens);
-    expect(result.received[i+1].reasoning.effort).toBe("low"); // Not the fixture's old fixed high effort.
+    const body = result.received[i+1];
+    expect(body.reasoning.effort).toBe("medium"); // Pi's fixed cache anchor is not effective effort.
+    expect(body.input.at(-1)).toEqual({ type: "configuration_update", reasoning: { effort: "low" } });
   }
   const holds = slot.holds.slice(1,1+count), messages = [];
   const expected = [SDK_RETAINED_HISTORY,SDK_RETAINED_PREFIX].slice(0,count);

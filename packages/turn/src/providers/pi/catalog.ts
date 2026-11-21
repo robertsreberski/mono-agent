@@ -5,11 +5,13 @@
 import {
   builtinModels,
   builtinProviders,
+  getBuiltinModels,
   getBuiltinProviders,
+  type BuiltinProvider,
 } from "@earendil-works/pi-ai/providers/all";
-import { getPiCatalogModel, listPiCatalogModels } from "./supplement.js";
 import { getPiOAuthAuth, resolveOAuthApiKey, toAuthInteraction } from "./oauth-compat.js";
 import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./models.js";
+import { getNativePiModel, withGoogleAdapterThinkingLevels } from "./builtin-models.js";
 
 // Derive all catalog data fields from the pinned upstream model, including
 // optional thinking-map entries and new input/cache metadata. The facade has
@@ -110,14 +112,15 @@ function cloneInteropValue<T>(value: T): T {
  * Callers cannot mutate the upstream catalog's shared state.
  */
 export function listPiBuiltinModels(providerId: string): PiBuiltinModelSnapshot[] {
-  return listPiCatalogModels(providerId);
+  return cloneInteropValue(getBuiltinModels(providerId as BuiltinProvider).map(withGoogleAdapterThinkingLevels));
 }
 
 /**
  * Read a defensive snapshot of one Pi built-in chat model.
  */
 export function getPiBuiltinModel(providerId: string, modelId: string): PiBuiltinModelSnapshot | undefined {
-  return getPiCatalogModel(providerId, modelId);
+  const model = getNativePiModel(providerId, modelId);
+  return model === undefined ? undefined : cloneInteropValue(withGoogleAdapterThinkingLevels(model));
 }
 
 let builtinProviderLabels: Map<string, string> | undefined;

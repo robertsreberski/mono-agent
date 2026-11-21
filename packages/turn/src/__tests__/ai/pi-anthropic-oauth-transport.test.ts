@@ -21,7 +21,7 @@ async function capturedRequest(model: Model<string> | undefined, apiKey: string)
   return captured!;
 }
 
-describe("Pi 1.5.2 Anthropic OAuth transport", () => {
+describe("Pi 1.6.0 Anthropic OAuth transport", () => {
   it("sends the upstream Claude Code 2.1.322 identity for native Opus 5.5", async () => {
     const model = builtinModels().getModel("anthropic", "claude-opus-5-5");
     expect(model).toBeDefined();

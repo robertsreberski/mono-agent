@@ -74,6 +74,8 @@ export function shortModelName(model: string, displayName?: string): string {
   if (gpt) return `${gpt[2]![0]!.toUpperCase()}${gpt[2]!.slice(1)} ${gpt[1]}${gpt[3] ? ` ${gpt[3].slice(1)}` : ""}`;
   const muse = leaf.match(/^muse-spark-(\d+(?:\.\d+)*)(-contributor)?$/iu);
   if (muse) return `Muse ${muse[1]}${muse[2] ? " C" : ""}`;
+  const gemini = leaf.match(/^gemini-(4)-(neon|carbon|hydrogen|argon)$/iu);
+  if (gemini) return displayName?.trim() || `Gemini ${gemini[1]} ${gemini[2]![0]!.toUpperCase()}${gemini[2]!.slice(1).toLowerCase()}`;
   return displayName?.trim() || leaf.trim() || model.trim();
 }
 

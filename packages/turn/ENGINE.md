@@ -361,7 +361,7 @@ See the [runtime public API inventory](./README.md#public-api).
 
 ## Dependency Boundary
 
-Only exact-pinned Pi AI and Pi Agent Core 1.5.2 and Node built-ins. No dependency
+Only exact-pinned Pi AI and Pi Agent Core 1.6.0 and Node built-ins. No dependency
 on `turn` (including its host integration), `conversation`, channels or host config.
 
 ## What This Package Does Not Own
