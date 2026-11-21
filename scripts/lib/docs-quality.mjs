@@ -14,6 +14,9 @@ const GENERIC_LINK_LABELS = new Set([
 ]);
 
 const PACKAGE_ADJACENT_DOCS = new Set(["ARCHITECTURE.md", "MIGRATION.md"]);
+// Example content shown byte-for-byte on the marketing site, not project docs:
+// its Markdown is an agent's own files (a one-line scratch README, skills).
+const EXAMPLE_CONTENT_PREFIXES = ["marketing/src/example-agent/"];
 const FIRST_PARTY_DOCUMENTATION_HOST = "docs.mono-agent.dev";
 const FIRST_PARTY_GITHUB_PATH = /^\/robertsreberski\/mono-agent\/(blob|tree)\/main\/(.+)$/u;
 const OBSOLETE_DOCUMENTATION_HOSTS = new Map([
@@ -26,6 +29,7 @@ export function collectPublicMarkdownFiles(root) {
   walk(root, (absolutePath) => {
     const repositoryPath = toRepositoryPath(root, absolutePath);
     const fileName = basename(absolutePath);
+    if (EXAMPLE_CONTENT_PREFIXES.some((prefix) => repositoryPath.startsWith(prefix))) return;
     if (fileName === "README.md"
       || repositoryPath === "PACKAGES.md"
       || repositoryPath.startsWith("docs/") && extname(fileName) === ".md"

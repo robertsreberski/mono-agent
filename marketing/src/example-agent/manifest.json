@@ -1,0 +1,20 @@
+[
+  { "path": "IDENTITY.md", "kind": "file", "role": "Role", "number": "02", "note": "The job, in your own words." },
+  { "path": "cron", "kind": "dir", "role": "Routine", "number": "05", "note": "Work it does on a schedule." },
+  { "path": "cron/morning-check.md", "kind": "file", "role": "Routine", "number": "05", "note": "A weekday check on yesterday’s tests." },
+  { "path": "webhook", "kind": "dir", "role": "CI hook", "number": "07", "note": "What to do when CI fails." },
+  { "path": "webhook/ci-failed.md", "kind": "file", "role": "CI hook", "number": "07", "note": "What to do with a failed CI run." },
+  { "path": "skills", "kind": "dir", "role": "Skills", "number": "03", "note": "How you want recurring work done." },
+  { "path": "skills/flaky-tests", "kind": "dir", "role": "Skill", "number": "", "note": "Notes for spotting a flaky test." },
+  { "path": "skills/flaky-tests/SKILL.md", "kind": "file", "role": "Skill", "number": "03", "note": "Tell a flake from a repeatable failure." },
+  { "path": "skills/triage", "kind": "dir", "role": "Skill", "number": "", "note": "Notes for tracking down a failure." },
+  { "path": "skills/triage/SKILL.md", "kind": "file", "role": "Skill", "number": "03", "note": "Find out why a test failed." },
+  { "path": "mono-agent.config.json", "kind": "file", "role": "Settings", "number": "01", "note": "Pick the models and tools." },
+  { "path": "mcp.json", "kind": "file", "role": "Tools", "number": "06", "note": "Connects to the payments repo." },
+  { "path": "scratch", "kind": "dir", "role": "Scratch", "number": "04", "note": "A place for test output." },
+  { "path": "scratch/README.md", "kind": "file", "role": "Scratch", "number": "04", "note": "Where to leave test output." },
+  { "path": ".env.example", "kind": "file", "role": "Key names, no values", "number": "", "note": "Copy this to .env and add your keys." },
+  { "path": ".gitignore", "kind": "file", "role": "Keeps keys and history out of git", "number": "", "note": "What stays out of git." },
+  { "path": ".env", "kind": "private", "role": "", "number": "", "note": "Your keys and sign-ins stay on your machine." },
+  { "path": ".mono-agent", "label": ".mono-agent/", "kind": "private", "role": "", "number": "", "note": "Conversations, memory and logs stay on your machine." }
+]

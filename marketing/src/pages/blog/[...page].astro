@@ -1,5 +1,5 @@
 ---
-import BlogLayout from "../../layouts/BlogLayout.astro";
+import SiteLayout from "../../layouts/SiteLayout.astro";
 import { getPublishedBlogPosts } from "../../blog-content";
 import {
   POSTS_PER_PAGE,
@@ -46,21 +46,23 @@ const jsonLd = {
   })),
 };
 ---
-<BlogLayout title={TITLE} description={DESCRIPTION} path={path} jsonLd={jsonLd}>
+<SiteLayout title={TITLE} description={DESCRIPTION} path={path} jsonLd={jsonLd}>
   <Fragment slot="head">
     {page.url.prev && <link rel="prev" href={page.url.prev} />}
     {page.url.next && <link rel="next" href={page.url.next} />}
   </Fragment>
-  <div class="wrap blog-page">
-    <p class="eyebrow">mono-agent</p>
-    <h1>Blog</h1>
-    <p class="blog-intro">
-      Notes on building an AI companion workspace with Mono Agent. Articles are
-      written by Mono Maintainer, the AI maintainer agent of mono-agent, and
-      reviewed and approved by Robert Sreberski before publication.
-    </p>
+  <div class="leaf blog-page">
+    <header class="leaf-head">
+      <p class="slug">Notes</p>
+      <h1>Blog</h1>
+      <p class="blog-intro">
+        Notes on building an AI companion workspace with Mono Agent. Articles are
+        written by Mono Maintainer, the AI maintainer agent of mono-agent, and
+        reviewed and approved by Robert Sreberski before publication.
+      </p>
+    </header>
     {page.data.length === 0 ? (
-      <p class="blog-empty">
+      <p class="blog-empty paper-object">
         No articles yet. New posts will appear here once the first one is
         published.
       </p>
@@ -108,4 +110,4 @@ const jsonLd = {
       </>
     )}
   </div>
-</BlogLayout>
+</SiteLayout>

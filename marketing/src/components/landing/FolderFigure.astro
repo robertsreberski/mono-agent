@@ -1,0 +1,50 @@
+---
+import { FILES, MANIFEST, ROOT_NAME, escapeHtml, escapeText, type ManifestEntry } from "../../example-agent/files";
+
+// Server-rendered native disclosures are the complete no-JavaScript view;
+// /folder.js reads the same data-* attributes and swaps in the explorer.
+const children = (dir: string) =>
+  MANIFEST.filter((entry) => entry.path.split("/").slice(0, -1).join("/") === dir);
+const label = (entry: ManifestEntry) => {
+  if (entry.label) return entry.label;
+  const name = entry.path.split("/").at(-1)!;
+  return entry.kind === "dir" ? `${name}/` : name;
+};
+function render(entry: ManifestEntry): string {
+  const attrs = [
+    `data-path="${escapeHtml(entry.path)}"`,
+    `data-kind="${entry.kind}"`,
+    `data-note="${escapeHtml(entry.note)}"`,
+    entry.role ? `data-role="${escapeHtml(entry.role)}"` : "",
+    entry.number ? `data-number="${entry.number}"` : "",
+  ].filter(Boolean).join(" ");
+  const tag = entry.kind === "private" ? "Kept private" : entry.number ? `${entry.number} · ${entry.role}` : entry.role;
+  const summary = `<summary><code>${escapeText(label(entry))}</code> <span>${escapeText(tag)}</span></summary>`;
+  if (entry.kind === "dir") return `<details ${attrs}>${summary}<div>${children(entry.path).map(render).join("")}</div></details>`;
+  const note = `<p>${escapeText(entry.note)}</p>`;
+  if (entry.kind === "private") return `<details ${attrs}>${summary}${note}</details>`;
+  return `<details ${attrs}>${summary}${note}<pre><code>${escapeText(FILES[entry.path])}</code></pre></details>`;
+}
+const fallback = `<p class="explorer-title">${ROOT_NAME}</p>${children("").map(render).join("\n")}`;
+const symbols: Array<[string, string, string, number, number]> = [
+  ["folio-config", "ink-config-1", "config", 270, 290],
+  ["folio-role", "ink-role-1", "role", 274, 290],
+  ["folio-skill", "ink-skill-1", "skill", 290, 225],
+  ["folio-cron", "ink-routine-1", "routine", 276, 290],
+  ["folio-tools", "ink-connector-1", "connector", 275, 290],
+  ["folio-folder", "ink-folder-1", "folder", 369, 304],
+];
+---
+<figure class="folder-figure">
+  <div class="figure-head"><b>Fig. 1 — What’s inside</b></div>
+  <svg class="drawing-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">{symbols.map(([id, mask, art, w, h]) => <symbol id={id} viewBox={`0 0 ${w} ${h}`}><defs><mask id={mask} style="mask-type:alpha"><image href={`/art/folder-art-${art}.webp`} width={w} height={h}/></mask></defs><rect fill="currentColor" width={w} height={h} mask={`url(#${mask})`}/></symbol>)}</svg>
+  <div class="folder-fallback" set:html={fallback} />
+  <div class="folder-window" hidden>
+    <div class="explorer-title"><svg aria-hidden="true" viewBox="0 0 369 304"><use href="#folio-folder"/></svg><p>{ROOT_NAME}</p><span class="window-tag">Example · read-only</span></div>
+    <div class="folder-workspace">
+      <div class="folder-nav"></div>
+      <div class="folder-view" hidden></div>
+    </div>
+  </div>
+  <figcaption class="figure-caption">Share the folder through git and your team gets the same setup. They add their own keys. The example’s <code>.gitignore</code> keeps keys, history and test output out.</figcaption>
+</figure>

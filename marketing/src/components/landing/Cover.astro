@@ -1,0 +1,94 @@
+---
+import PenArt from "../site/PenArt.astro";
+import IndexTab from "../site/IndexTab.astro";
+import { FILES, escapeText } from "../../example-agent/files";
+import { GITHUB_URL, RELEASE, TUTORIAL_URL } from "../../site-links.mjs";
+
+// The note on the hero sheet is the example's real cron file. Wrap the same
+// bytes the prototype highlights; textContent stays identical to the file.
+const NOTE_PATH = "cron/morning-check.md";
+const raw = FILES[NOTE_PATH];
+const lines = raw.split("\n");
+const close = lines.indexOf("---", 1);
+if (lines[0] !== "---" || close < 0 || lines.length !== close + 3 || lines.at(-1) !== "") {
+  throw new Error(`${NOTE_PATH} must be front matter followed by one instruction line.`);
+}
+const frontmatter = lines.slice(0, close + 1).map((line) => {
+  const field = line.match(/^([A-Za-z]+):(.*)$/);
+  if (!field) return escapeText(line);
+  const [, key, value] = field;
+  if (key === "expression" || key === "notify") return `<strong>${escapeText(`${key}:`)}</strong>${escapeText(value)}`;
+  if (key === "model") return `${escapeText(`${key}:`)} <span class="sheet-model">${escapeText(value.trimStart())}</span>`;
+  return escapeText(line);
+});
+const sheetHtml = `<span class="frontmatter">${frontmatter.join("\n")}</span>\n<span class="sheet-instruction">${escapeText(lines[close + 1])}</span>\n`;
+---
+<header class="cover">
+  <h1><span>The coworker</span> <span>in a folder</span></h1>
+  <p class="deck">Write the job down in a few plain files. Mono Agent runs that folder as an AI coworker you can reach from your laptop or your phone.</p>
+  <div class="cover-side">
+    <figure class="note-input">
+      <figcaption class="note-caption">The note you wrote</figcaption>
+      <div class="note-folder">
+        <PenArt layer stretch class="hero-layer folder-manila" art="hero-manila" w={720} h={480} id="mask-hero-manila" />
+        <PenArt layer stretch class="hero-layer folder-back" art="hero-back" w={720} h={480} id="mask-hero-back" />
+        <div class="note-sheet paper-object">
+          <PenArt layer stretch class="hero-layer sheet-stock" art="hero-sheet-edge" w={500} h={690} id="mask-hero-sheet-paper" />
+          <PenArt layer stretch class="hero-layer sheet-ink" art="hero-sheet" w={500} h={690} id="mask-hero-sheet" />
+          <div class="sheet-text">
+            <p class="sheet-path">{NOTE_PATH}</p>
+            <pre><code set:html={sheetHtml} /></pre>
+            <div class="sheet-annotations">
+              <span class="sheet-margin time-margin">Weekdays 8:00</span>
+              <span class="sheet-margin send-margin">Sends the result</span>
+            </div>
+          </div>
+        </div>
+        <PenArt layer stretch class="hero-layer folder-stock" art="hero-pocket" w={720} h={480} id="mask-hero-pocket" />
+        <PenArt layer stretch class="hero-layer folder-front" art="hero-front" w={720} h={480} id="mask-hero-front" />
+        <p class="sheet-gloss">Weekdays at 8:00 · sends you the result</p>
+      </div>
+    </figure>
+    <figure class="note-output">
+      <figcaption class="note-caption">The note it left you</figcaption>
+      <div class="note-slip paper-object">
+        <PenArt layer stretch class="hero-layer slip-stock" art="slip-stock" w={720} h={412} id="mask-slip-stock" />
+        <PenArt layer stretch class="hero-layer slip-ink" art="slip-ink" w={720} h={412} id="mask-slip-ink" />
+        <div class="slip-head"><p>Payments maintainer</p><p class="slip-hour"><span class="slip-today">· Today </span><time datetime="08:00">08:00</time></p><span class="slip-example">Example</span></div>
+        <div class="slip-body">
+          <p><strong>Two tests failed overnight.</strong></p>
+          <p><code>retry_after_timeout</code> is flaky — it passed on two reruns. Owner: Dana.</p>
+          <p><code>refund_rounding</code> is a real failure that started with yesterday's currency change. Owner: Sam.</p>
+        </div>
+      </div>
+    </figure>
+  </div>
+  <div class="start">
+    <IndexTab class="index-tab primary-tab paper-object start-link" href={TUTORIAL_URL}>Build your first agent</IndexTab>
+    <!-- Primer Octicons v19.22.0, icons/mark-github-16.svg
+    MIT License
+
+    Copyright (c) 2026 GitHub Inc.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+    -->
+    <a class="index-tab start-link github-tab" href={GITHUB_URL}><svg class="github-mark" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false"><path d="M6.766 11.695C4.703 11.437 3.25 9.904 3.25 7.92c0-.806.281-1.677.75-2.258-.203-.532-.172-1.662.062-2.129.626-.081 1.469.258 1.969.726.594-.194 1.219-.291 1.985-.291.765 0 1.39.097 1.953.274.484-.451 1.343-.79 1.969-.709.218.435.25 1.564.046 2.113.5.613.766 1.436.766 2.274 0 1.984-1.453 3.485-3.547 3.759.531.355.891 1.129.891 2.016v1.678c0 .484.39.758.859.564C13.781 14.824 16 11.905 16 8.291 16 3.726 12.406 0 7.984 0 3.562 0 0 3.726 0 8.291c0 3.581 2.203 6.55 5.172 7.663A.595.595 0 0 0 6 15.389v-1.291c-.219.097-.5.162-.75.162-1.031 0-1.641-.581-2.078-1.662-.172-.435-.36-.693-.719-.742-.187-.016-.25-.097-.25-.193 0-.194.313-.339.625-.339.453 0 .844.29 1.25.887.313.468.641.678 1.031.678.391 0 .641-.146 1-.516.266-.275.469-.517.657-.678Z"/></svg><span>View on GitHub</span></a>
+  </div>
+  <p class="cover-release-line">{RELEASE.tag} · <time datetime={RELEASE.iso}>{RELEASE.label}</time> · GPL-3.0</p>
+</header>

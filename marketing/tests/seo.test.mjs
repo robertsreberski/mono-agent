@@ -149,15 +149,30 @@ function assertMatchesGeneratedSchema(value, schema, path = "config") {
   if (typeof schema.type === "string") assert.equal(typeof value, schema.type, `${path} has generated type ${schema.type}`);
 }
 
+// Visible copy: text content plus the attribute text assistive technology
+// reads, without markup, scripts, templates or comments.
+function visibleCopy(page) {
+  const attrs = [...page.matchAll(/\s(?:alt|aria-label|title|data-note|data-role)="([^"]*)"/g)].map((m) => m[1]);
+  const text = page
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style|template)\b[\s\S]*?<\/\1>/g, " ")
+    .replace(/<title>[\s\S]*?<\/title>/g, " ")
+    .replace(/<[^>]+>/g, " ");
+  return decodeHtmlText(`${text} ${attrs.join(" ")}`).replace(/\s+/g, " ");
+}
+
+function textOf(fragment) {
+  return decodeHtmlText(fragment.replace(/<[^>]+>/g, ""));
+}
+
+const EXAMPLE_ROOT = join(REPO_ROOT, "marketing/src/example-agent/payments-maintainer");
+const exampleFile = (path) => readFileSync(join(EXAMPLE_ROOT, path), "utf8");
+
 describe("marketing built output", () => {
   const html = readDist("index.html");
 
   it("declares the exact title, description, and canonical URL", () => {
-    mustContain(
-      html,
-      "<title>Mono Agent — Embeddable AI Companion &amp; TypeScript Framework</title>",
-      "exact <title>",
-    );
+    mustContain(html, "<title>The coworker in a folder — Mono Agent</title>", "exact <title>");
     const description = html.match(/<meta name="description" content="([^"]+)"\/?>/);
     assert.ok(description, "meta description must exist");
     assert.ok(description[1].length >= 100 && description[1].length <= 170,
@@ -166,6 +181,7 @@ describe("marketing built output", () => {
     mustContain(html, 'lang="en"', "html lang");
     mustContain(html, 'name="viewport"', "viewport meta");
     mustContain(html, 'rel="icon"', "favicon link");
+    assert.ok(!/name="robots" content="noindex/.test(html), "production page is indexable");
   });
 
   it("publishes absolute Open Graph and Twitter card URLs", () => {
@@ -191,36 +207,43 @@ describe("marketing built output", () => {
     assert.equal(meta.width, 1200, "og card width");
     assert.equal(meta.height, 630, "og card height");
     assert.ok(statSync(path).size < 180_000, "og card stays small");
-    // The card carries real brand typography: both image alts must describe
-    // the actual card, not the bare artwork.
+    // The card is a capture of the real homepage: both alts describe it.
     for (const attr of ["property=\"og:image:alt\"", "name=\"twitter:image:alt\""]) {
       const match = html.match(new RegExp(`<meta ${attr} content="([^"]+)"`));
       assert.ok(match, `${attr} must exist`);
-      assert.ok(match[1].includes("mono-agent"), `${attr} names the brand`);
-      assert.ok(
-        match[1].toLowerCase().includes("an agent workspace"),
-        `${attr} carries the descriptor`,
-      );
+      const alt = decodeHtmlText(match[1]);
+      assert.ok(alt.includes("Mono Agent"), `${attr} names the brand`);
+      assert.ok(alt.includes("The coworker in a folder"), `${attr} carries the headline`);
     }
   });
 
-  it("keeps hero art responsive, decorative, and small", async () => {
-    for (const width of [640, 960, 1440]) {
-      for (const ext of ["webp"]) {
-        const rel = `hero-${width}.${ext}`;
-        const path = join(DIST, rel);
-        assert.ok(existsSync(path), `dist/${rel} must exist`);
-        const meta = await sharp(path).metadata();
-        assert.ok(meta.width === width, `${rel} width`);
-        assert.ok(statSync(path).size < 180_000, `${rel} stays small`);
-      }
+  it("keeps the ink drawings decorative and the console captures honest and bounded", async () => {
+    const art = [...new Set([...html.matchAll(/(?:href|src|srcset)="(\/art\/[^"]+)"/g)].map((m) => m[1]))];
+    assert.ok(art.length >= 20, `homepage references its art (${art.length})`);
+    for (const rel of art) {
+      const path = join(DIST, rel);
+      assert.ok(existsSync(path), `dist${rel} must exist`);
+      const meta = await sharp(path).metadata();
+      assert.ok(meta.width <= 2200 && meta.height <= 2200, `${rel} stays bounded`);
+      assert.ok(statSync(path).size < 180_000, `${rel} stays small`);
     }
-    // The artwork is decorative brand art: empty alt, never a screenshot.
-    assert.ok(/<img[^>]*alt=""/.test(html), "hero image carries empty alt");
-    mustContain(html, "not a product screenshot", "honest art caption");
-    assert.ok(!/screenshot of|product screenshot(?!")|app screenshot/i.test(
-      html.replace("not a product screenshot", "")),
-      "no screenshot claims elsewhere");
+    // Masked ink drawings are decorative SVG, hidden from assistive tech.
+    for (const svg of html.match(/<svg[^>]*class="(?:hero-layer|pen-art)[^"]*"[^>]*>/g) ?? []) {
+      assert.ok(svg.includes('aria-hidden="true"'), `decorative drawing is hidden: ${svg.slice(0, 60)}`);
+    }
+    // Real console captures, one per colour scheme, with alt text and the transcript.
+    for (const [light, dark] of [["folder-console-light.webp", "folder-console-dark.webp"], ["folder-console-phone-light.webp", "folder-console-phone-dark.webp"]]) {
+      mustContain(html, `srcset="/art/${dark}"`, `${dark} dark source`);
+      const img = html.match(new RegExp(`<img[^>]*src="/art/${light}"[^>]*>`))?.[0];
+      assert.ok(img, `${light} image exists`);
+      assert.ok(/alt="[^"]{20,}"/.test(img), `${light} has descriptive alt`);
+      assert.ok(img.includes('aria-describedby="capture-transcript"'), `${light} links the transcript`);
+      const meta = await sharp(join(DIST, "art", light)).metadata();
+      assert.equal(`${meta.width}x${meta.height}`, `${img.match(/width="(\d+)"/)[1]}x${img.match(/height="(\d+)"/)[1]}`, `${light} declares its real size`);
+    }
+    mustContain(html, 'id="capture-transcript"', "console transcript");
+    mustContain(html, "Real console, example conversation", "console provenance");
+    assert.ok(!/screenshot of|product screenshot|app screenshot/i.test(visibleCopy(html)), "no screenshot claims");
   });
 
   it("serves sitemap.xml and robots.txt with absolute URLs", () => {
@@ -298,69 +321,55 @@ describe("marketing built output", () => {
   it("keeps one H1 with the exact headline and resolves every anchor", () => {
     const h1s = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/g) ?? [];
     assert.equal(h1s.length, 1, "exactly one H1");
-    assert.ok(h1s[0].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").includes("An agent workspace you can build on."),
-      "exact hero headline");
+    assert.equal(textOf(h1s[0]).replace(/\s+/g, " ").trim(), "The coworker in a folder", "exact hero headline");
     const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
     const anchors = [...html.matchAll(/href="#([^"]*)"/g)].map((m) => m[1]);
     assert.ok(anchors.length > 0, "in-page anchors exist");
     for (const anchor of anchors) {
       assert.ok(ids.has(anchor), `anchor #${anchor} resolves to an id`);
     }
+    for (const plate of ["plate-i", "plate-ii", "plate-iii", "plate-iv", "plate-v"]) {
+      mustContain(html, `id="${plate}"`, `${plate} anchor`);
+    }
   });
 
-  it("makes the central configuration prominent and keeps its example valid", () => {
-    const hero = html.match(/<section class="hero"[\s\S]*?<\/section>/)?.[0] ?? "";
-    mustContain(hero, "mono-agent.config.json", "hero configuration filename");
-    mustContain(html, "One JSON file.", "configuration thesis headline");
-    mustContain(html, "Your agent’s blueprint.", "configuration thesis continuation");
-    mustContain(html, 'id="configuration"', "configuration anchor");
-
-    const code = html.match(/<code id="config-blueprint-json">([\s\S]*?)<\/code>/);
-    assert.ok(code, "rendered configuration example exists");
-    const renderedConfig = decodeHtmlText(code[1]);
-    assert.ok(renderedConfig.split("\n").length <= 25, "configuration stays compact");
-    const config = JSON.parse(renderedConfig);
+  it("shows the real example config, valid against the generated schema", () => {
+    const source = exampleFile("mono-agent.config.json");
+    const config = JSON.parse(source);
     const schema = JSON.parse(readFileSync(
       join(REPO_ROOT, "packages/app/schema/mono-agent.config.schema.json"),
       "utf8",
     ));
     assertMatchesGeneratedSchema(config, schema);
-    assert.deepEqual(Object.keys(config), ["runtime", "context", "memory", "tools", "telegram"]);
-    assert.equal(config.memory.mode, "lite");
-    assert.equal(config.telegram.botToken, undefined, "example keeps secrets out of JSON");
-  });
-
-  it("renders decorative arrows as accessible SVG, never emoji-prone text", () => {
-    const css = readDist("styles.css");
-    assert.ok(
-      !/[↗↓↑←→↖↘↙]/u.test(html),
-      "built HTML has no Unicode arrow glyphs",
-    );
-    assert.ok(
-      !/[↗↓↑←→↖↘↙]/u.test(css),
-      "built CSS has no Unicode arrow glyphs",
-    );
-    const arrows = [...html.matchAll(/<svg[^>]*class="arrow-icon"[^>]*>/g)].map(
-      (match) => match[0],
-    );
-    assert.ok(
-      arrows.length >= 20,
-      `expected reusable SVG arrows (${arrows.length})`,
-    );
-    for (const arrow of arrows) {
-      assert.ok(
-        arrow.includes('aria-hidden="true"'),
-        "decorative arrow is hidden from assistive tech",
-      );
-      assert.ok(
-        arrow.includes('focusable="false"'),
-        "decorative arrow cannot receive focus",
-      );
+    assert.equal(config.$schema, "https://mono-agent.dev/schema.json", "example points editors at the hosted schema");
+    assert.equal(config.$schema, schema.$id, "hosted schema URL is the schema $id");
+    const rendered = html.match(/<details data-path="mono-agent\.config\.json"[^>]*>[\s\S]*?<pre><code>([\s\S]*?)<\/code><\/pre>/);
+    assert.ok(rendered, "rendered configuration exists");
+    assert.equal(decodeHtmlText(rendered[1]), source, "page shows the config byte-for-byte");
+    // Keys and sign-ins stay out of the shared files.
+    assert.ok(!/(token|secret|apiKey|password)"\s*:/i.test(source), "config keeps secrets out");
+    for (const line of exampleFile(".env.example").trimEnd().split("\n")) {
+      assert.match(line, /^(#.*|[A-Z][A-Z0-9_]*=)$/, `.env.example carries key names only: ${line}`);
     }
   });
 
-  it("links GitHub as primary CTA and docs as secondary", () => {
-    assert.ok(html.includes(`href="${GITHUB_URL}"`), "GitHub links present");
+  it("renders decorative arrows as accessible SVG, never emoji-prone text", () => {
+    const glyphs = /[↗↓↑←→↖↘↙]/u;
+    assert.ok(!glyphs.test(html), "built HTML has no Unicode arrow glyphs");
+    assert.ok(!glyphs.test(readDist("styles.css")), "built CSS has no Unicode arrow glyphs");
+    assert.ok(!glyphs.test(readDist("folder.js")), "enhancement script has no Unicode arrow glyphs");
+    const marks = [...html.matchAll(/<svg[^>]*class="(?:tab-arrow|github-mark)"[^>]*>/g)].map((m) => m[0]);
+    assert.ok(marks.length >= 3, `expected SVG arrows and marks (${marks.length})`);
+    for (const mark of marks) {
+      assert.ok(mark.includes('aria-hidden="true"'), "decorative mark is hidden from assistive tech");
+      assert.ok(mark.includes('focusable="false"'), "decorative mark cannot receive focus");
+    }
+  });
+
+  it("leads with the tutorial and keeps GitHub and docs one click away", () => {
+    const start = html.match(/<div class="start">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    assert.match(start, /<a class="index-tab primary-tab[^"]*" href="https:\/\/docs\.mono-agent\.dev\/getting-started\/tutorial\/">Build your first agent/);
+    assert.ok(start.includes(`href="${GITHUB_URL}"`), "hero links GitHub");
     const githubCount = html.split(`href="${GITHUB_URL}"`).length - 1;
     assert.ok(githubCount >= 3, `GitHub linked repeatedly (${githubCount})`);
     assert.ok(html.includes(`href="${DOCS_URL}"`), "docs links present");
@@ -369,73 +378,62 @@ describe("marketing built output", () => {
   it("loads bounded local enhancement and consent-gated analytics modules", () => {
     const scripts = [...html.matchAll(/<script(?![^>]*ld\+json)[^>]*>/g)].map(m => m[0]);
     assert.equal(scripts.length, 3);
-    for (const asset of ["interactions.js", "analytics.js"]) {
-      assert.ok(scripts.some(script => script.includes(`src="/${asset}"`) && script.includes('type="module"')));
-      assert.ok(statSync(join(DIST, asset)).size < 9000);
+    for (const [asset, budget] of [["folder.js", 12_000], ["analytics.js", 9_000]]) {
+      assert.ok(scripts.some(script => script.includes(`src="/${asset}"`) && script.includes('type="module"')), `${asset} loads as a module`);
+      assert.ok(statSync(join(DIST, asset)).size < budget, `${asset} stays under ${budget} bytes`);
     }
     const sdk = [...html.matchAll(/<script type="module">([\s\S]*?)<\/script>/g)].find(match => match[1].includes('vercel-analytics'));
     assert.ok(sdk && Buffer.byteLength(sdk[1]) < 9000, "bounded bundled native Astro SDK");
     assert.match(html, /<template[^>]*id="analytics-template"[^>]*>[\s\S]*?<vercel-analytics[\s\S]*?<\/template>/);
     assert.ok(!html.replace(/<template[\s\S]*?<\/template>/g, '').includes('<vercel-analytics'), 'no active analytics element before consent');
     assert.ok(!html.includes('posthog'));
-
   });
 
-  it("provides a source-linked harness comparison", () => {
-    for (const name of ["Codex CLI", "Claude Code", "OpenCode", "Hermes Agent", "OpenClaw"]) mustContain(html, name, "comparison harness");
-    mustContain(html, 'id="comparison"', "comparison anchor");
-    mustContain(html, "not a feature or performance ranking", "comparison limit");
-    assert.ok(!html.includes('data-workflow-explorer'), "retired workflow UI is removed");
-  });
-
-  it("grounds the market position in workspace benefits and real composition APIs", () => {
-    const text = decodeHtmlText(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ");
-    for (const benefit of ["Your companion. Your way of working.", "Choose the model. Keep the work.", "Check what ran. Then carry on."]) mustContain(text, benefit, "workspace proof");
-    mustContain(html, "createConfiguredAgentResponder", "real TypeScript API");
-    mustContain(html, "TypeScript excerpt", "excerpt label");
-    mustContain(html, "Imports &amp; full example", "complete composition example link");
-    mustContain(html, "not a zero-setup hosted assistant", "audience tradeoff");
-    mustContain(html, "not automatically resume work", "recovery boundary");
-    mustContain(html, "releases/tag/v0.22.0", "verified release notes");
-    assert.ok(!text.includes("subagents and console projects/tags require the current source build"), "no obsolete source-only claim");
-    assert.ok(!/every (?:UI|interface) action/i.test(text), "no universal UI/tool parity claim");
-    const appExports = readFileSync(join(REPO_ROOT, "packages/app/src/index.ts"), "utf8");
-    assert.ok(appExports.includes("createConfiguredAgentResponder"), "composition excerpt uses a package-root export");
-  });
-
-  it("ships bounded real-console captures with provenance", async () => {
-    for (const name of ["console-desktop.webp"]) {
-      const image = join(DIST, name);
-      const meta = await sharp(image).metadata();
-      assert.ok(meta.width <= 2000 && meta.height <= 2000);
-      assert.ok(statSync(image).size < 180000);
+  it("compares tools by what you reach for, not by ranking", () => {
+    const selection = html.match(/<dl class="selection">([\s\S]*?)<\/dl>/)?.[1] ?? "";
+    assert.deepEqual(
+      [...selection.matchAll(/<dt>([^<]+)<\/dt>/g)].map((m) => m[1]),
+      ["Mono Agent", "Claude Code", "OpenClaw", "Hermes Agent", "Mastra"],
+    );
+    mustContain(html, "Same files, not necessarily the same answers.", "comparison limit");
+    for (const retired of ["harness-row", "block-chapter", "data-workflow-explorer", "agent-map"]) {
+      assert.ok(!html.includes(retired), `retired ${retired} UI is removed`);
     }
-    mustContain(html, "synthetic example data", "console fixture provenance");
-    mustContain(html, "current source build", "console release boundary");
   });
 
-  it("keeps sculptural assets truly transparent and bounded", async () => {
-    for (const name of ["hero-640.webp", "hero-960.webp", "hero-1440.webp", "hero-mobile-320.webp", "hero-mobile-640.webp"]) {
-      const path = join(DIST,name);
-      const meta = await sharp(path).metadata();
-      assert.ok(meta.hasAlpha, `${name} must blend without a baked backdrop`);
-      assert.ok(meta.width <= 2000 && meta.height <= 2000);
-      const corner = await sharp(path).extract({left:0,top:0,width:1,height:1}).raw().toBuffer();
-      assert.equal(corner[3],0,`${name} corner must be transparent`);
-      assert.ok(statSync(path).size < 180000);
+  it("keeps the approved v0.27.1 claims and copy rules", () => {
+    const copy = visibleCopy(html);
+    assert.match(html, /<p class="cover-release-line">v0\.27\.1 · <time datetime="2026-11-16">16 Nov 2026<\/time> · GPL-3\.0<\/p>/);
+    for (const route of ["anthropic:claude-opus-5-5", "openai-codex:gpt-6.1-sol", "opencode-go:deepseek-v4.1-flash", "ollama:gemma4:31b"]) {
+      assert.ok(copy.replace(/\s/g, "").includes(route), `model route ${route}`);
     }
-    let fontsSize=0;
-    for (const font of ["instrument-serif.woff2", "instrument-serif-italic.woff2", "manrope.woff2"]) fontsSize+=statSync(join(DIST,"fonts",font)).size;
-    assert.ok(fontsSize<60000, "total local font budget");
-    for (const license of ["InstrumentSerif-OFL.txt", "Manrope-OFL.txt"]) {
-      assert.ok(existsSync(join(DIST,"fonts",license)));
+    mustContain(copy, "There’s no login, so keep it on a network you trust.", "console exposure warning");
+    mustContain(copy, "You’ll also need a model", "model prerequisite");
+    mustContain(copy, "Example · read-only", "example label");
+    mustContain(copy, "Example", "example slip");
+    mustContain(html, `href="${GITHUB_URL}/releases/tag/v0.27.1"`, "release notes match the version line");
+    for (const word of ["specimen", "plate", "terminal", "coupon", "fictional"]) {
+      assert.ok(!new RegExp(`\\b${word}`, "i").test(copy), `visible copy never says "${word}"`);
     }
+  });
+
+  it("self-hosts only the five subset fonts with their licenses", () => {
+    const fonts = ["source-serif-4.woff2", "barlow-condensed-500.woff2", "barlow-condensed-700.woff2", "courier-prime-400.woff2", "courier-prime-700.woff2"];
+    let total = 0;
+    for (const font of fonts) total += statSync(join(DIST, "fonts", font)).size;
+    assert.ok(total < 130_000, `total local font budget (${total})`);
+    for (const license of ["SourceSerif4-OFL.txt", "BarlowCondensed-OFL.txt", "CourierPrime-OFL.txt"]) {
+      assert.match(readDist(`fonts/${license}`), /SIL Open Font License, Version 1\.1/, license);
+    }
+    assert.deepEqual(readdirSync(join(DIST, "fonts")).sort(), [...fonts, "SourceSerif4-OFL.txt", "BarlowCondensed-OFL.txt", "CourierPrime-OFL.txt"].sort(), "no retired fonts ship");
+    for (const retired of ["hero-1440.webp", "console-desktop.webp", "interactions.js"]) {
+      assert.ok(!existsSync(join(DIST, retired)), `retired ${retired} is gone`);
+    }
+    assert.ok(!/fonts\.(googleapis|gstatic)\.com/.test(html + readDist("styles.css")), "no font-provider requests");
   });
 
   it("avoids unsupported product claims", () => {
-    const lower = html.toLowerCase();
-    // Promise-shaped phrases only: honest framing such as "not instant" or
-    // "can take several minutes" must keep passing.
+    const lower = visibleCopy(html).toLowerCase();
     for (const pattern of [
       /instant(ly)? (setup|install|deploy|agent)/,
       /5-minute/,
@@ -448,9 +446,6 @@ describe("marketing built output", () => {
     ]) {
       assert.ok(!pattern.test(lower), `no unsupported claim matching ${pattern}`);
     }
-    // Setup honesty is load-bearing copy: keep it.
-    mustContain(html, "not instant", "honest setup framing");
-    mustContain(html, "several minutes", "honest setup duration");
   });
 });
 
@@ -806,15 +801,16 @@ describe("marketing blog", () => {
     }
   });
 
-  it("links the blog from the landing header, footer, and head", () => {
+  it("links the blog from the landing footer and head", () => {
     const html = readDist("index.html");
-    mustContain(html, '<li><a href="/blog/">Blog</a></li>', "landing nav links the blog");
     mustContain(
       html,
       '<link rel="alternate" type="application/rss+xml" title="mono-agent blog" href="/blog/rss.xml"',
       "landing links the feed",
     );
-    const footer = html.slice(html.indexOf('<footer class="site-footer">'));
-    mustContain(footer, '<a href="/blog/">Blog</a>', "landing footer links the blog");
+    const footer = html.slice(html.indexOf('<footer class="colophon">'));
+    assert.ok(html.includes('<footer class="colophon">'), "landing has the colophon footer");
+    mustContain(footer, '<li><a href="/blog/">Blog</a></li>', "landing footer links the blog");
+    mustContain(footer, '<li><a href="/privacy/">Privacy</a></li>', "landing footer links privacy");
   });
 });

@@ -7,8 +7,9 @@ export default defineConfig({
   trailingSlash: "always",
   compressHTML: true,
   markdown: {
-    // Single dark theme matching the site canvas; blog code blocks inherit it.
-    shikiConfig: { theme: "github-dark" },
+    // Blog code is printed on light note paper in both colour schemes, like
+    // every paper sheet on the site, so it uses one high-contrast light theme.
+    shikiConfig: { theme: "github-light-high-contrast" },
   },
   // Every page and crawler endpoint is pre-rendered; JS only enhances the UI.
 });

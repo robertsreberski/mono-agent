@@ -1,89 +1,94 @@
-// Browser contracts for the built marketing page: accessibility (axe, WCAG
-// 2.0/2.1 A+AA and 2.2 AA), responsive behavior at 390 and 1440 widths, skip
-// link and landmark structure, and reduced-motion handling.
+// Browser contracts for the built homepage ("The coworker in a folder"):
+// accessibility (axe, WCAG 2.0/2.1 A+AA and 2.2 AA) in both colour schemes,
+// phone and desktop layout, the example-folder explorer, copy buttons,
+// console annotations, reduced motion, no-JavaScript fallbacks, and a clean
+// network/console record on every page.
 //
 // Runs against `astro preview` on 127.0.0.1:4330 (see playwright.config.ts):
 //   pnpm run build && pnpm run test:browser
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
 
 const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
+const SCHEMES = ["light", "dark"] as const;
+const EXAMPLE = new URL("../src/example-agent/", import.meta.url);
+const manifest: Array<{ path: string; kind: string }> = JSON.parse(readFileSync(new URL("manifest.json", EXAMPLE), "utf8"));
+const FILES = manifest.filter((entry) => entry.kind === "file").map((entry) => entry.path);
+const DIRS = manifest.filter((entry) => entry.kind === "dir").map((entry) => entry.path);
+const exact = (path: string) => readFileSync(new URL(`payments-maintainer/${path}`, EXAMPLE), "utf8");
 
-const VIEWPORTS = [
-  { name: "desktop", width: 1440, height: 1000 },
-  { name: "mobile", width: 390, height: 844 },
-] as const;
+async function settle(page: Page) {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await Promise.all([...document.images].filter((img) => img.loading !== "lazy").map((img) => img.decode().catch(() => {})));
+  });
+  await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running"), null, { timeout: 5000 });
+}
 
-for (const viewport of VIEWPORTS) {
-  test.describe(`${viewport.name} ${viewport.width}x${viewport.height}`, () => {
-    test.use({ viewport: { width: viewport.width, height: viewport.height } });
+async function axe(page: Page, label: string) {
+  const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+  expect(results.violations, `${label}: ${JSON.stringify(results.violations, null, 2)}`).toEqual([]);
+}
 
-    test("has no WCAG A/AA violations", async ({ page }) => {
-      const response = await page.goto("/", { waitUntil: "networkidle" });
-      expect(response?.ok()).toBe(true);
-      const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
-      expect(
-        results.violations,
-        JSON.stringify(results.violations, null, 2),
-      ).toEqual([]);
+for (const colorScheme of SCHEMES) {
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    test.describe(`${colorScheme} ${viewport.width}x${viewport.height}`, () => {
+      test.use({ viewport, colorScheme });
+
+      test("has no WCAG A/AA violations, including with a file open", async ({ page }) => {
+        const response = await page.goto("/", { waitUntil: "networkidle" });
+        expect(response?.ok()).toBe(true);
+        await settle(page);
+        await axe(page, "initial");
+        if (viewport.width > 660) {
+          await page.locator('.tree-item[data-key="mono-agent.config.json"] > .folder-row').click();
+        } else {
+          await page.locator('.folder-nav button[data-key="skills"]').click();
+          await page.locator('.folder-nav button[data-key="skills/triage"]').click();
+          await page.locator('.folder-nav button[data-key="skills/triage/SKILL.md"]').click();
+        }
+        await expect(page.locator(".file-text")).toBeVisible();
+        await axe(page, "file open");
+      });
+
+      test("keeps both cover tabs fully inside the first viewport", async ({ page }) => {
+        await page.goto("/", { waitUntil: "networkidle" });
+        await settle(page);
+        for (const name of ["Build your first agent", "View on GitHub"]) {
+          const box = await page.locator(".start").getByRole("link", { name }).boundingBox();
+          expect(box, name).not.toBeNull();
+          expect(box!.x).toBeGreaterThanOrEqual(0);
+          expect(box!.y).toBeGreaterThanOrEqual(0);
+          expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
+          expect(box!.y + box!.height, `${name} bottom`).toBeLessThanOrEqual(viewport.height);
+        }
+        await expect(page.getByRole("heading", { level: 1, name: "The coworker in a folder" })).toBeVisible();
+      });
     });
+  }
 
-    test("has no horizontal overflow", async ({ page }) => {
+  test(`${colorScheme}: no horizontal overflow from 320px to desktop`, async ({ browser }) => {
+    for (const width of [320, 375, 390, 430, 768, 1024, 1440]) {
+      const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme });
+      const page = await context.newPage();
       await page.goto("/", { waitUntil: "networkidle" });
-      const overflow = await page.evaluate(() => ({
-        scrollWidth: document.documentElement.scrollWidth,
-        innerWidth: window.innerWidth,
-      }));
-      expect(
-        overflow.scrollWidth,
-        `scrollWidth ${overflow.scrollWidth} exceeds viewport ${overflow.innerWidth}`,
-      ).toBeLessThanOrEqual(overflow.innerWidth);
-    });
+      await settle(page);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth), `${width}px`).toBeLessThanOrEqual(width);
+      await expect(page.locator(".folder-window")).toBeVisible();
+      await expect(page.locator(".selection > div")).toHaveCount(5);
+      await context.close();
+    }
+  });
+}
 
-    test("keeps the hero headline and CTAs visible", async ({ page }) => {
-      await page.goto("/", { waitUntil: "networkidle" });
-      await expect(
-        page.getByRole("heading", {
-          name: "An agent workspace you can build on.",
-        }),
-      ).toBeVisible();
-    });
-
-    test("keeps both hero CTAs fully inside the initial viewport", async ({
-      page,
-    }) => {
-      await page.goto("/", { waitUntil: "networkidle" });
-      // Deterministic settle: no webfonts to load, but wait out the
-      // entrance animation so the measured boxes are final.
-      await page.evaluate(() => document.fonts.ready);
-      await page.waitForFunction(
-        () =>
-          document
-            .getAnimations()
-            .every((animation) => animation.playState !== "running"),
-        null,
-        { timeout: 5000 },
-      );
-      const viewport = page.viewportSize();
-      expect(viewport).not.toBeNull();
-      for (const name of ["GitHub", "Blueprint"]) {
-        const box = await page.locator(".hero-actions")
-          .getByRole("link", { name })
-          .first()
-          .boundingBox();
-        expect(box, `${name} has a bounding box`).not.toBeNull();
-        expect(box!.x, `${name} left edge`).toBeGreaterThanOrEqual(0);
-        expect(box!.y, `${name} top edge`).toBeGreaterThanOrEqual(0);
-        expect(
-          box!.x + box!.width,
-          `${name} right edge`,
-        ).toBeLessThanOrEqual(viewport!.width);
-        expect(
-          box!.y + box!.height,
-          `${name} bottom edge`,
-        ).toBeLessThanOrEqual(viewport!.height);
-      }
-    });
+for (const width of [375, 430]) {
+  test(`cover tabs are visible without scrolling at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/", { waitUntil: "networkidle" });
+    await settle(page);
+    const bottom = await page.locator(".start").evaluate((el) => el.getBoundingClientRect().bottom);
+    expect(bottom).toBeLessThanOrEqual(844);
   });
 }
 
@@ -93,68 +98,55 @@ test("exposes landmarks, one H1, and a working skip link", async ({ page, browse
   await expect(page.getByRole("banner")).toBeAttached();
   await expect(page.getByRole("main")).toBeAttached();
   await expect(page.getByRole("contentinfo")).toBeAttached();
-  await expect(page.getByRole("navigation")).not.toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Project links" })).toBeVisible();
 
   const skipLink = page.getByRole("link", { name: "Skip to content" });
   // Real keyboard tab (not script focus) so :focus-visible applies.
   // macOS WebKit follows Safari’s link-navigation preference: Option+Tab visits links.
   await page.keyboard.press(browserName === "webkit" ? "Alt+Tab" : "Tab");
   await expect(skipLink).toBeFocused();
-  await expect
-    .poll(() => skipLink.evaluate((el) => el.getBoundingClientRect().top))
-    .toBeGreaterThanOrEqual(0);
+  await expect.poll(() => skipLink.evaluate((el) => el.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
   await skipLink.press("Enter");
   expect(new URL(page.url()).hash).toBe("#main");
 });
 
-test("section navigation reaches every anchored section", async ({ page }) => {
-  await page.goto("/", { waitUntil: "networkidle" });
-  for (const section of ["configuration", "console", "comparison"]) {
-    await page.getByRole("navigation", { name: "Sections" })
-      .locator(`a[href="#${section}"]`)
-      .click();
-    await expect(page.locator(`#${section}`)).toBeInViewport();
+test("numbered sections are deep-linkable, also with reduced motion", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  for (const id of ["plate-i", "plate-iii", "plate-v"]) {
+    await page.goto(`/#${id}`, { waitUntil: "networkidle" });
+    await expect(page.locator(`#${id} h2`)).toBeInViewport();
   }
 });
 
-test("disables entrance motion when reduced motion is requested", async ({
-  browser,
-}) => {
-  const context = await browser.newContext({ reducedMotion: "reduce" });
-  const page = await context.newPage();
-  await page.goto("/", { waitUntil: "networkidle" });
-  const animation = await page.evaluate(() =>
-    getComputedStyle(document.querySelector(".hero-copy")!).animationName,
-  );
-  expect(animation === "none" || animation === "").toBe(true);
-  await context.close();
+test("the arriving note respects reduced motion", async ({ browser }) => {
+  for (const [reducedMotion, expected] of [["reduce", "none"], ["no-preference", "slip-arrives"]] as const) {
+    const context = await browser.newContext({ reducedMotion, viewport: { width: 1440, height: 1000 } });
+    const page = await context.newPage();
+    await page.goto("/");
+    expect(await page.locator(".note-slip").evaluate((el) => getComputedStyle(el).animationName)).toBe(expected);
+    await context.close();
+  }
 });
 
-for (const width of [320, 430, 768, 1024]) {
-  test(`editorial layout stays within ${width}px viewport`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 900 });
-    await page.goto("/", { waitUntil: "networkidle" });
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-    await expect(page.locator(".config-blueprint")).toBeVisible();
-    await expect(page.locator(".harness-row")).toHaveCount(6);
-  });
-}
-
-test("comparison content and native FAQ work without JavaScript", async ({ browser }) => {
-  const context = await browser.newContext({ javaScriptEnabled: false });
+test("without JavaScript the folder, setup and links stay complete", async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
   await page.goto("/");
-  await expect(page.locator(".harness-row")).toHaveCount(6);
-  await expect(page.locator("#comparison")).toContainText("OpenClaw");
-  await expect(page.locator("#configuration")).toContainText("mono-agent.config.json");
-  await expect(page.locator("#configuration .block-links a")).toHaveCount(12);
-  await expect(page.getByRole("button", { name: /Copy command/ })).toHaveCount(0);
-  const question = page.locator(".faq summary").first();
-  await question.click();
-  await expect(page.locator(".faq details").first()).toHaveAttribute("open", "");
+  await expect(page.getByRole("navigation", { name: "Project links" })).toBeVisible();
+  await expect(page.locator(".folder-window")).toBeHidden();
+  await expect(page.locator(".folder-fallback details[data-kind]")).toHaveCount(manifest.length);
+  await expect(page.locator('.folder-fallback details[data-kind="private"]')).toHaveCount(2);
+  const config = page.locator('.folder-fallback details[data-path="mono-agent.config.json"]');
+  await config.locator("summary").click();
+  await expect(config.locator("pre code")).toHaveText(exact("mono-agent.config.json"));
+  await expect(page.locator(".copy-command")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: /Copy/ })).toHaveCount(0);
+  const windows = page.locator(".windows-note");
+  await windows.locator("summary").click();
+  await expect(windows).toHaveAttribute("open", "");
+  await expect(page.getByRole("contentinfo").getByRole("link", { name: "Blog" })).toBeVisible();
   await context.close();
 });
-
 
 test("installer extension routes serve static shell bytes without a trailing-slash redirect", async ({ request }) => {
   const response = await request.get('/install.sh', { maxRedirects: 0 });
@@ -177,495 +169,281 @@ test("config schema route serves static JSON without a trailing-slash redirect",
   expect(schema.title).toBe('mono-agent.config.json');
 });
 
-test("copy command reports success only after clipboard resolves", async ({ page }) => {
-  await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", {
-    value: { writeText: async (text: string) => { (window as any).copied = text; } },
-  }));
-  await page.goto("/");
-  await page.getByRole("button", { name: /Copy command/ }).click();
-  await expect(page.getByRole("status")).toHaveText("Install command copied.");
-  expect(await page.evaluate(() => (window as any).copied)).toBe("curl -fsSL https://mono-agent.dev/install.sh | sh");
-});
+test.describe("copy buttons", () => {
+  const INSTALL = "curl -fsSL https://mono-agent.dev/install.sh | sh";
 
-test("clipboard refusal leaves honest manual instructions", async ({ page }) => {
-  await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", {
-    value: { writeText: async () => { throw new Error("denied"); } },
-  }));
-  await page.goto("/");
-  await page.getByRole("button", { name: /Copy command/ }).click();
-  await expect(page.getByRole("status")).toHaveText("Copy unavailable. Select and copy the command above.");
-  await expect(page.getByRole("button", { name: /Copy command/ })).toBeEnabled();
-});
-
-
-
-test("missing Clipboard API remains an honest manual-copy path", async ({ page }) => {
-  await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", { value: undefined }));
-  await page.goto("/");
-  await page.getByRole("button", { name: /Copy command/ }).click();
-  await expect(page.getByRole("status")).toContainText("Copy unavailable.");
-});
-
-
-for (const width of [320, 390, 640]) {
-  test(`mobile menu is compact, keyboard-operable and closes at ${width}px`, async ({ page }) => {
-    await page.setViewportSize({width, height:844});
-    await page.goto('/');
-    const menu = page.getByRole('button', {name:'Menu'});
-    const nav = page.getByRole('navigation', {name:'Sections'});
-    await expect(nav).not.toBeVisible();
-    expect((await page.locator('.site-header').boundingBox())!.height).toBeLessThan(85);
-    await menu.focus(); await page.keyboard.press('Enter');
-    await expect(nav).toBeVisible();
-    await page.keyboard.press('Escape');
-    await expect(menu).toBeFocused();
-    await expect(nav).not.toBeVisible();
-    await menu.click(); await nav.getByRole('link', {name:'Console', exact:true}).click();
-    await expect(nav).not.toBeVisible();
-    await expect(page.locator('#console')).toBeInViewport();
-    await expect(page.locator('#config-blueprint-json')).toBeVisible();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-  });
-}
-test('console screenshot is real component evidence with disclosed synthetic state', async ({page}) => {
-  await page.goto('/');
-  await expect(page.locator('.console-shot')).toContainText('synthetic example data');
-  await expect(page.locator('.console-shot')).toContainText('current source build');
-  const result = await new AxeBuilder({page}).withTags(WCAG_TAGS).analyze();
-  expect(result.violations).toEqual([]);
-});
-test('mobile document keeps a bounded reading length with visible configuration', async ({page}) => {
-  await page.setViewportSize({width:390,height:844}); await page.goto('/');
-  await page.evaluate(() => document.fonts.ready);
-  await expect(page.locator('[data-scroll-story]')).toHaveCount(0);
-  // Main comparisons and readable cards retain a bounded page; secondary
-  // coding-harness details use a native disclosure, not another long section.
-  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThan(7800);
-});
-
-test('navigation and blueprint remain usable without JavaScript', async ({browser}) => {
-  const context = await browser.newContext({javaScriptEnabled:false,viewport:{width:390,height:844}});
-  const page = await context.newPage(); await page.goto('/');
-  await expect(page.getByRole('navigation',{name:'Sections'})).toBeVisible();
-  await expect(page.locator('#config-blueprint-json')).toBeVisible();
-  await context.close();
-});
-test('comparison deep link stays visible with reduced motion', async ({page}) => {
-  await page.emulateMedia({reducedMotion:'reduce'});
-  await page.goto('/#configuration');
-  await page.goto('/#comparison',{waitUntil:'networkidle'});
-  await expect(page.locator('#comparison')).toBeInViewport();
-});
-
-test('building blocks stay readable and disclose source availability', async ({page}) => {
-  await page.goto('/');
-  const blocks=page.locator('.building-blocks');
-  await expect(blocks.locator('.block-links a')).toHaveCount(12);
-  await expect(blocks).toContainText('Subagents');
-  await expect(blocks).toContainText('Background jobs');
-  await expect(blocks).toContainText('v0.22.0');
-});
-test('desktop console stays sharp and uncropped on phones', async ({page}) => {
-  await page.setViewportSize({width:390,height:844}); await page.goto('/');
-  const image=page.locator('.console-shot img');
-  await expect(page.getByRole('link',{name:'Open full resolution desktop console screenshot'})).toHaveAttribute('href','/console-desktop.webp');
-  await image.scrollIntoViewIfNeeded();
-  await expect.poll(()=>image.evaluate((el: HTMLImageElement)=>el.naturalWidth)).toBe(1920);
-  const geometry=await image.evaluate((el: HTMLImageElement)=>({width:el.clientWidth,height:el.clientHeight,ratio:el.naturalWidth/el.naturalHeight}));
-  expect(geometry.width/geometry.height).toBeCloseTo(geometry.ratio,1);
-});
-test('mobile hero is complete and sits above the CTA', async ({page}) => {
-  await page.setViewportSize({width:390,height:844}); await page.goto('/');
-  const image=await page.locator('.hero-art img').boundingBox();
-  const cta=await page.locator('.hero-actions').boundingBox();
-  expect(image!.y+image!.height).toBeLessThanOrEqual(cta!.y+1);
-  expect(image!.width/image!.height).toBeCloseTo(1,1);
-  expect(await page.locator('.hero-art img').evaluate(el=>getComputedStyle(el).maskImage)).toBe('none');
-});
-
-test('mobile page uses one compact deck stage and no duplicated cards', async ({page}) => {
-  await page.setViewportSize({width:390,height:844}); await page.goto('/');
-  await expect(page.locator('.block-chapter')).toHaveCount(4);
-  await expect(page.locator('.block-links a')).toHaveCount(12);
-  await expect(page.locator('[data-block-story], .block-layer, .workflow-art')).toHaveCount(0);
-  expect((await page.locator('.block-summary').boundingBox())!.height).toBe(740);
-  expect((await page.locator('.building-blocks').boundingBox())!.height).toBeLessThan(1500);
-  expect((await page.locator('.hero-actions').boundingBox())!.y).toBeLessThan(740);
-});
-test('high density mobile loads the mobile hero and compressed local fonts', async ({browser}) => {
-  const context=await browser.newContext({viewport:{width:390,height:844},deviceScaleFactor:3});
-  const page=await context.newPage(); const requests:string[]=[];
-  page.on('request',request=>requests.push(request.url()));
-  await page.goto('/'); await page.evaluate(()=>document.fonts.ready);
-  expect(await page.locator('.hero-art img').evaluate((el:HTMLImageElement)=>el.currentSrc)).toMatch(/hero-mobile-640.webp$/);
-  expect(requests.some(url=>/hero-1440|module-|\.ttf/.test(url))).toBe(false);
-  expect(requests.filter(url=>url.includes('/fonts/')).every(url=>url.endsWith('.woff2'))).toBe(true);
-  await context.close();
-});
-
-async function seekDeck(page: import("@playwright/test").Page, timeline: number) {
-  const cards = page.locator(".block-summary");
-  await cards.evaluate((el, timeline) => {
-    const grid = el.querySelector<HTMLElement>(".block-chapters")!;
-    const bounds = el.getBoundingClientRect();
-    const stickyTop = parseFloat(getComputedStyle(grid).top);
-    const inset = parseFloat(getComputedStyle(el).paddingTop);
-    const travel = el.clientHeight - grid.clientHeight - inset * 2;
-    scrollTo({
-      top: scrollY + bounds.top + inset - stickyTop + (timeline / 3) * travel,
-      behavior: "instant",
-    });
-  }, timeline);
-  await expect.poll(() => cards.getAttribute("data-active-card")).toBe(String(Math.round(timeline)));
-}
-
-async function activeCardGeometry(page: import("@playwright/test").Page) {
-  return page.locator('.block-chapter[data-active="true"]').evaluate((el) => {
-    const box = el.getBoundingClientRect();
-    return {
-      left: box.left,
-      right: box.right,
-      top: box.top,
-      bottom: box.bottom,
-      width: box.width,
-      height: box.height,
-      transform: getComputedStyle(el).transform,
-      opacity: Number(getComputedStyle(el).opacity),
-    };
-  });
-}
-
-for (const width of [390, 1440]) {
-  test(`native scroll stacks, lifts, tosses and reverses cards at ${width}px`, async ({ page }) => {
-    await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+  test("report success only after the clipboard resolves", async ({ page }) => {
+    await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: async (text: string) => { (window as any).copied = text; } },
+    }));
     await page.goto("/");
-    await page.evaluate(() => document.fonts.ready);
-    const cards = page.locator(".block-summary");
-    const layers = cards.locator(".block-chapter");
+    await page.getByRole("button", { name: "Copy install command" }).click();
+    await expect(page.locator(".copy-status")).toHaveText("Copied");
+    await expect(page.getByRole("button", { name: "Copy install command" })).toHaveText("Copied");
+    expect(await page.evaluate(() => (window as any).copied)).toBe(INSTALL);
+    await page.getByRole("button", { name: "Copy init command" }).click();
+    expect(await page.evaluate(() => (window as any).copied)).toBe("mono-agent init");
+  });
 
-    await seekDeck(page, 0);
-    const initial = await layers.evaluateAll((elements) => elements.map((el) => {
-      const box = el.getBoundingClientRect();
-      return { left: box.left, top: box.top, right: box.right, bottom: box.bottom, transform: getComputedStyle(el).transform };
-    }));
-    expect(initial.every((card) => card.transform !== "none")).toBe(true);
-    const overlapWidth = Math.min(initial[0].right, initial[1].right) - Math.max(initial[0].left, initial[1].left);
-    const overlapHeight = Math.min(initial[0].bottom, initial[1].bottom) - Math.max(initial[0].top, initial[1].top);
-    expect(overlapWidth).toBeGreaterThan(200);
-    expect(overlapHeight).toBeGreaterThan(200);
+  test("fall back to a legacy copy when the clipboard refuses", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", { value: { writeText: async () => { throw new Error("denied"); } } });
+      document.execCommand = () => true;
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Copy install command" }).click();
+    await expect(page.locator(".copy-status")).toHaveText("Copied");
+  });
 
-    for (const timeline of [0, 1, 2, 3]) {
-      await seekDeck(page, timeline);
-      const geometry = await activeCardGeometry(page);
-      expect(geometry.left).toBeGreaterThanOrEqual(0);
-      expect(geometry.right).toBeLessThanOrEqual(width);
-      expect(geometry.top).toBeGreaterThanOrEqual(0);
-      expect(geometry.bottom).toBeLessThanOrEqual(width === 390 ? 844 : 1000);
-      expect(geometry.transform).not.toBe("none");
-      expect(geometry.opacity).toBeGreaterThan(.95);
-      const stage = await cards.boundingBox();
-      expect(geometry.top).toBeGreaterThanOrEqual(stage!.y);
-      expect(geometry.bottom).toBeLessThanOrEqual(stage!.y + stage!.height);
-      if (timeline > 0) await expect(layers.nth(timeline - 1)).toHaveCSS("opacity", "0");
-    }
+  test("select the command when nothing can copy", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", { value: { writeText: async () => { throw new Error("denied"); } } });
+      document.execCommand = () => false;
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Copy install command" }).click();
+    await expect(page.locator(".copy-status")).toHaveText("Couldn’t copy — the command is selected");
+    expect(await page.evaluate(() => getSelection()?.toString())).toBe(INSTALL);
+    await expect(page.getByRole("button", { name: "Copy install command" })).toBeEnabled();
+  });
 
-    await seekDeck(page, 1);
-    const settledLeft = (await layers.nth(1).boundingBox())!.x;
-    await seekDeck(page, 1.7);
-    const tossed = await layers.nth(1).evaluate((el) => ({
-      box: el.getBoundingClientRect().toJSON(),
-      opacity: Number(getComputedStyle(el).opacity),
-      transform: getComputedStyle(el).transform,
-    }));
-    expect(Math.abs(tossed.box.x - settledLeft)).toBeGreaterThan(45);
-    expect(tossed.opacity).toBeLessThan(.55);
-    expect(tossed.transform).not.toBe("none");
-    await expect(cards).toHaveAttribute("data-active-card", "2");
+  test("handle a missing Clipboard API honestly", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", { value: undefined });
+      document.execCommand = () => false;
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Copy init command" }).click();
+    await expect(page.locator(".copy-status")).toHaveText("Couldn’t copy — the command is selected");
+    expect(await page.evaluate(() => getSelection()?.toString())).toBe("mono-agent init");
+  });
+});
 
-    for (const timeline of [3, 2, 1, 0]) await seekDeck(page, timeline);
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-
-    await page.setViewportSize({ width: width === 390 ? 430 : 1280, height: 900 });
-    await seekDeck(page, 3);
-    await expect(layers.last()).toHaveAttribute("data-active", "true");
-    const final = await activeCardGeometry(page);
-    expect(final.top).toBeGreaterThanOrEqual(0);
-    expect(final.bottom).toBeLessThanOrEqual(900);
+// The prototype's tap-target audit: every visible control on the homepage.
+for (const width of [320, 375, 390, 430]) {
+  test(`controls are at least 44px tap targets at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/", { waitUntil: "networkidle" });
+    await settle(page);
+    const small = await page.evaluate(() => {
+      const visible = (el: Element) => el.getClientRects().length > 0 && getComputedStyle(el).visibility === "visible";
+      return [...document.querySelectorAll("a, button, summary")]
+        .filter((el) => visible(el) && !el.closest("[hidden]"))
+        .map((el) => ({ text: el.textContent!.trim().slice(0, 40), box: el.getBoundingClientRect() }))
+        .filter(({ box }) => box.width && box.height && (box.height < 43.98 || box.width < 43.98))
+        .map(({ text, box }) => `${text} ${box.width.toFixed(1)}x${box.height.toFixed(1)}`);
+    });
+    expect(small).toEqual([]);
+    expect((await page.locator(".masthead").boundingBox())!.height).toBeLessThan(110);
   });
 }
 
-test("reduced motion and no-JavaScript expose a static readable card layout", async ({ browser }) => {
-  for (const options of [
-    { javaScriptEnabled: true, reducedMotion: "reduce" as const },
-    { javaScriptEnabled: false, reducedMotion: "no-preference" as const },
-  ]) {
-    const context = await browser.newContext({ ...options, viewport: { width: 390, height: 844 } });
+test.describe("console annotations", () => {
+  test("desktop callout points at the switch without covering the intro", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto("/#plate-iii", { waitUntil: "networkidle" });
+    await settle(page);
+    const m = await page.evaluate(() => {
+      const box = (s: string) => document.querySelector(s)!.getBoundingClientRect();
+      const raster = box(".capture img"), label = box(".switch-callout span"), tip = box(".switch-tip");
+      const introText = [...document.querySelector(".console-intro")!.children].flatMap((el) => {
+        const range = new Range(); range.selectNodeContents(el); return [...range.getClientRects()];
+      });
+      return {
+        overlaps: introText.some((b) => b.right > label.left && b.left < label.right && b.bottom > label.top && b.top < label.bottom),
+        labelGap: raster.top - label.bottom,
+        tipDelta: tip.top + tip.height / 2 - (raster.top + raster.height * 0.426),
+        tipEdge: tip.left - raster.right,
+        leaderGap: box(".handset").left - raster.right - box(".switch-callout svg").width,
+      };
+    });
+    expect(m.overlaps).toBe(false);
+    expect(m.labelGap).toBeGreaterThan(3);
+    expect(Math.abs(m.tipDelta)).toBeLessThan(1);
+    expect(m.tipEdge).toBeGreaterThanOrEqual(-0.01);
+    expect(m.leaderGap).toBeGreaterThanOrEqual(5.5);
+  });
+
+  for (const width of [320, 390, 430]) {
+    test(`phone legend badges line up with the conversation at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/#plate-iii", { waitUntil: "networkidle" });
+      await settle(page);
+      const m = await page.evaluate(() => {
+        const screen = document.querySelector(".handset-screen img")!.getBoundingClientRect();
+        const painted = Math.min(screen.height, (screen.width * 1920) / 1032);
+        const points = [0.428, 0.48, 0.951].map((y) => screen.top + y * painted);
+        const badges = [...document.querySelectorAll(".handset-rail > span")].map((el, i) => {
+          const b = el.getBoundingClientRect();
+          return { delta: (b.top + b.bottom) / 2 - points[i], left: b.left, top: b.top, bottom: b.bottom };
+        });
+        return { right: screen.right, badges, legend: [...document.querySelectorAll(".phone-legend li p")].map((el) => el.textContent) };
+      });
+      for (const badge of m.badges) {
+        expect(Math.abs(badge.delta)).toBeLessThan(5);
+        expect(badge.left).toBeGreaterThanOrEqual(m.right);
+      }
+      expect(m.badges[1].top).toBeGreaterThan(m.badges[0].bottom);
+      expect(m.legend).toEqual(["Same conversation, picked up on the phone.", "Switched from Opus to Sol mid‑conversation.", "The next message goes to Sol."]);
+    });
+  }
+
+  test("each colour scheme loads its own real console capture", async ({ browser }) => {
+    for (const colorScheme of SCHEMES) {
+      const context = await browser.newContext({ colorScheme, viewport: { width: 1440, height: 1000 } });
+      const page = await context.newPage();
+      await page.goto("/", { waitUntil: "networkidle" });
+      await expect(page.locator(".console-plate .figure-head")).toContainText("Real console, example conversation");
+      expect(await page.locator(".capture img").evaluate((img: HTMLImageElement) => img.currentSrc)).toMatch(new RegExp(`folder-console-${colorScheme}\\.webp$`));
+      expect(await page.locator(".handset-screen img").evaluate((img: HTMLImageElement) => img.currentSrc)).toMatch(new RegExp(`folder-console-phone-${colorScheme}\\.webp$`));
+      await context.close();
+    }
+  });
+});
+
+test.describe("example folder explorer", () => {
+  test("desktop tree shows every file byte-for-byte", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto("/");
+    await expect(page.locator('.folder-tree[role="tree"]')).toBeVisible();
+    for (const dir of DIRS) await page.locator(`.tree-item[data-key="${dir}"] > .folder-row`).click();
+    for (const path of FILES) {
+      await page.locator(`.tree-item[data-key="${path}"] > .folder-row`).click();
+      await expect(page.locator(`.tree-item[data-key="${path}"]`)).toHaveAttribute("aria-selected", "true");
+      expect(await page.locator(".file-text code").textContent(), path).toBe(exact(path));
+    }
+    await expect(page.locator(".folder-private")).toContainText("Kept on your machine");
+  });
+
+  test("desktop tree follows the ARIA tree keyboard pattern", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto("/");
+    const item = (key: string) => page.locator(`.tree-item[data-key="${key}"]`);
+    await item("IDENTITY.md").focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(item("cron")).toBeFocused();
+    await expect(item("cron")).toHaveAttribute("aria-expanded", "false");
+    await page.keyboard.press("ArrowRight");
+    await expect(item("cron")).toHaveAttribute("aria-expanded", "true");
+    await page.keyboard.press("ArrowDown");
+    await expect(item("cron/morning-check.md")).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(item("cron/morning-check.md")).toHaveAttribute("aria-selected", "true");
+    expect(await page.locator(".file-text code").textContent()).toBe(exact("cron/morning-check.md"));
+    await page.keyboard.press("ArrowLeft");
+    await expect(item("cron")).toBeFocused();
+    await page.keyboard.press("ArrowLeft");
+    await expect(item("cron")).toHaveAttribute("aria-expanded", "false");
+    await page.keyboard.press("End");
+    await expect(item(".gitignore")).toBeFocused();
+    await page.keyboard.press("Home");
+    await expect(item("IDENTITY.md")).toBeFocused();
+    expect(await page.locator('.tree-item[tabindex="0"]').count()).toBe(1);
+  });
+
+  for (const width of [320, 390]) {
+    test(`phone drill-down shows every file and returns focus at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/");
+      for (const path of FILES) {
+        const chain = path.split("/");
+        let prefix = "";
+        for (const part of chain) {
+          prefix = prefix ? `${prefix}/${part}` : part;
+          const row = page.locator(`.folder-nav button[data-key="${prefix}"]`);
+          if (!(await row.isVisible())) await page.locator(".more-files > summary").click();
+          await row.click();
+        }
+        expect(await page.locator(".file-text code").textContent(), path).toBe(exact(path));
+        const fits = await page.locator(".file-text").evaluate((el) => {
+          const range = new Range(); range.selectNodeContents(el);
+          const max = el.getBoundingClientRect().right;
+          return [...range.getClientRects()].every((rect) => rect.right < max + 0.75);
+        });
+        expect(fits, `${path} wraps inside the sheet`).toBe(true);
+        await expect(page.locator(".folder-view .explorer-back").first()).toContainText("Back to");
+        for (const _ of chain) await page.locator(".folder-window :not([hidden]) > .explorer-back").first().click();
+        expect(await page.evaluate(() => (document.activeElement as HTMLElement).dataset.key)).toBe(chain[0]);
+      }
+    });
+  }
+});
+
+test("uses the self-hosted field-manual typefaces", async ({ page }) => {
+  await page.goto("/");
+  await settle(page);
+  const families = await page.evaluate(() => ({
+    h1: getComputedStyle(document.querySelector("h1")!).fontFamily,
+    body: getComputedStyle(document.querySelector(".deck")!).fontFamily,
+    code: getComputedStyle(document.querySelector(".sheet-text pre")!).fontFamily,
+    loaded: ["700 16px 'Barlow Condensed'", "500 16px 'Barlow Condensed'", "400 16px 'Source Serif 4'", "400 16px 'Courier Prime'", "700 16px 'Courier Prime'"].map((font) => document.fonts.check(font)),
+  }));
+  expect(families.h1).toMatch(/^"?Barlow Condensed/);
+  expect(families.body).toMatch(/^"?Source Serif 4/);
+  expect(families.code).toMatch(/^"?Courier Prime/);
+  expect(families.loaded).toEqual([true, true, true, true, true]);
+});
+
+test("phones request only same-origin assets and woff2 fonts", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3 });
+  const page = await context.newPage();
+  const requests: string[] = [];
+  page.on("request", (request) => requests.push(request.url()));
+  await page.goto("/", { waitUntil: "networkidle" });
+  await settle(page);
+  expect(requests.filter((url) => new URL(url).origin !== "http://127.0.0.1:4330")).toEqual([]);
+  const fonts = requests.filter((url) => url.includes("/fonts/"));
+  expect(fonts.length).toBeGreaterThan(0);
+  expect(fonts.every((url) => url.endsWith(".woff2"))).toBe(true);
+  await context.close();
+});
+
+test("the page stock follows the colour scheme", async ({ browser }) => {
+  for (const [colorScheme, background] of [["light", "rgb(233, 236, 223)"], ["dark", "rgb(19, 35, 28)"]] as const) {
+    const context = await browser.newContext({ colorScheme });
     const page = await context.newPage();
     await page.goto("/");
-    const cards = page.locator(".block-summary");
-    const layers = cards.locator(".block-chapter");
-    await expect(layers).toHaveCount(4);
-    await expect(cards.locator(".block-links a")).toHaveCount(12);
-    const geometry = await layers.evaluateAll((elements) => elements.map((el) => {
-      const box = el.getBoundingClientRect();
-      return { top: box.top, bottom: box.bottom, position: getComputedStyle(el).position, transform: getComputedStyle(el).transform };
-    }));
-    expect(geometry.every((card) => card.position === "static" && card.transform === "none")).toBe(true);
-    for (let index = 1; index < geometry.length; index++) expect(geometry[index].top).toBeGreaterThanOrEqual(geometry[index - 1].bottom);
-    if (options.javaScriptEnabled) {
-      await expect(cards).toHaveAttribute("data-motion-state", "reduced");
-      await expect(page.getByRole("button", { name: "Pause motion" })).toBeHidden();
-    }
+    expect(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor)).toBe(background);
     await context.close();
   }
 });
 
-test("pause and keyboard traversal reveal every real card in static flow", async ({ page, browserName }) => {
+test("the phone page keeps a bounded reading length", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  const cards = page.locator(".block-summary");
-  const toggle = page.locator(".motion-toggle");
-  await toggle.evaluate((button: HTMLButtonElement) => button.click());
-  await expect(cards).toHaveAttribute("data-motion-state", "paused");
-  await expect(cards.locator(".block-chapter").first()).toHaveCSS("position", "static");
-  await toggle.evaluate((button: HTMLButtonElement) => button.click());
-  await seekDeck(page, 2);
-
-  await toggle.focus();
-  const forward = browserName === "webkit" ? "Alt+Tab" : "Tab";
-  const backward = browserName === "webkit" ? "Alt+Shift+Tab" : "Shift+Tab";
-  const links = cards.locator(".block-links a");
-  for (let index = 0; index < 12; index++) {
-    await page.keyboard.press(forward);
-    await expect(links.nth(index)).toBeFocused();
-    await expect(cards).toHaveAttribute("data-motion-state", "focused");
-    await expect(links.nth(index)).toBeInViewport();
-    await expect(links.nth(index).locator("xpath=ancestor::li[contains(@class,'block-chapter')]")).toHaveCSS("position", "static");
-  }
-  await page.keyboard.press(forward);
-  await expect(cards).toHaveAttribute("data-motion-state", "scroll");
-  await expect(page.locator(".blocks-note a")).toBeFocused();
-  await expect(page.locator(".blocks-note a")).toBeInViewport();
-  await page.keyboard.press(backward);
-  await expect(links.last()).toBeFocused();
-  await expect(links.last()).toBeInViewport();
-  await expect(cards).toHaveAttribute("data-motion-state", "focused");
+  await settle(page);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThan(6900);
 });
 
-test("live reduced-motion changes preserve keyboard focus and readable geometry", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+test("every GitHub link carries readable text and only decorative marks", async ({ page }) => {
   await page.goto("/");
-  const link = page.locator(".block-links a").nth(7);
-  await link.focus();
-  await expect(link).toBeFocused();
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect(link).toBeFocused();
-  await expect(link).toBeInViewport();
-  await expect(page.locator(".block-summary")).toHaveAttribute("data-motion-state", "focused");
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  await expect(link).toBeFocused();
-  await expect(link).toBeInViewport();
-});
-
-test("every GitHub CTA has an accessible decorative GitHub mark", async ({
-  page,
-}) => {
-  await page.goto("/");
-  const links = page.locator(
-    'a[href="https://github.com/robertsreberski/mono-agent"]',
-  );
+  const links = page.locator('a[href="https://github.com/robertsreberski/mono-agent"]');
+  expect(await links.count()).toBeGreaterThanOrEqual(3);
   for (const link of await links.all()) {
-    await expect(link.locator("svg.github-icon")).toHaveAttribute(
-      "aria-hidden",
-      "true",
-    );
-    expect(await link.textContent()).toMatch(/GitHub|Get the code/);
+    expect(await link.textContent()).toMatch(/GitHub/);
+    for (const svg of await link.locator("svg").all()) await expect(svg).toHaveAttribute("aria-hidden", "true");
   }
 });
 
-test("building blocks use four distinct decorative schematics and twelve links", async ({
-  page,
-}) => {
-  await page.goto("/");
-  const blocks = page.locator(".building-blocks");
-  await expect(blocks.locator(".block-diagram")).toHaveCount(4);
-  for (const name of ["foundation", "connections", "delegated", "continuity"]) {
-    await expect(
-      blocks.locator(`.diagram-${name} svg[aria-hidden="true"]`),
-    ).toHaveCount(1);
-  }
-  await expect(blocks.locator(".block-links a")).toHaveCount(12);
-  await expect(blocks.locator(".block-chapter dd")).toHaveCount(0);
-});
-
-for (const viewport of [
-  { width: 390, height: 844, body: 14, cta: 13, code: 11, cardTitle: 20 },
-  { width: 1440, height: 1000, body: 15, cta: 14, code: 12, cardTitle: 24 },
-]) {
-  test(`uses the coherent type scale at ${viewport.width}px`, async ({
-    page,
-  }) => {
-    await page.setViewportSize({
-      width: viewport.width,
-      height: viewport.height,
-    });
-    await page.goto("/");
-    const sizes = await page.evaluate(() =>
-      Object.fromEntries(
-        Object.entries({
-          body: document.body,
-          cta: document.querySelector(".hero-actions .btn"),
-          card: document.querySelector(".block-chapter>p"),
-          cardLink: document.querySelector(".block-links a"),
-          label: document.querySelector(".section-label"),
-          code: document.querySelector(".config-blueprint pre"),
-          cardTitle: document.querySelector(".block-chapter h4"),
-          caption: document.querySelector(".console-shot figcaption"),
-        }).map(([key, element]) => [
-          key,
-          parseFloat(getComputedStyle(element!).fontSize),
-        ]),
-      ),
-    );
-    expect(sizes).toEqual({
-      body: viewport.body,
-      cta: viewport.cta,
-      card: 13,
-      cardLink: 13,
-      label: 11,
-      code: viewport.code,
-      cardTitle: viewport.cardTitle,
-      caption: 12,
-    });
-  });
-}
-
-// A pointer click must not reflow the deck between pointerdown and click.
-test("focused deck links remain genuine pointer targets", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
-  await seekDeck(page, 2);
-  const link = page.locator('.block-chapter[data-active="true"] .block-links a').first();
-  await link.evaluate(el => el.addEventListener("click", event => {
-    event.preventDefault();
-    el.setAttribute("data-clicked", "true");
-  }));
-  const before = await link.boundingBox();
-  await link.click();
-  await expect(link).toHaveAttribute("data-clicked", "true");
-  await expect(page.locator(".block-summary")).toHaveAttribute("data-motion-state", "scroll");
-  const after = await link.boundingBox();
-  expect(Math.abs(after!.y - before!.y)).toBeLessThan(2);
-});
-
-for (const width of [320, 390, 430]) {
-  test(`compact labels and card faces fit at ${width}px`, async ({ page }) => {
-    await page.setViewportSize({width,height:844}); await page.goto('/');
-    await page.evaluate(() => document.fonts.ready);
-    const layout = await page.evaluate(() => {
-      const ctas = [...document.querySelectorAll('.hero-actions a')].map(el => el.getBoundingClientRect().toJSON());
-      const caption = [...document.querySelectorAll('.config-blueprint figcaption strong, .config-blueprint figcaption>span:last-child')].map(el => el.getBoundingClientRect().toJSON());
-      return {ctas,caption};
-    });
-    expect(Math.abs(layout.ctas[0].top-layout.ctas[1].top)).toBeLessThan(2);
-    expect(Math.abs(layout.caption[0].top-layout.caption[1].top)).toBeLessThan(3);
-    for(const turn of [0,1,2,3]) {
-      await seekDeck(page,turn);
-      const face=page.locator('.block-chapter[data-active="true"]');
-      const box=await face.boundingBox();
-      for(const link of await face.locator('a').all()) {
-        const b=await link.boundingBox();
-        expect(b!.y+b!.height).toBeLessThanOrEqual(box!.y+box!.height);
-        expect(b!.x+b!.width).toBeLessThanOrEqual(box!.x+box!.width);
-      }
+test("no page makes third-party requests or logs errors without consent", async ({ browser, request }) => {
+  const sitemap = await (await request.get("/sitemap.xml")).text();
+  const paths = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => new URL(match[1]).pathname);
+  expect(paths).toContain("/");
+  expect(paths).toContain("/privacy/");
+  for (const colorScheme of SCHEMES) {
+    const context = await browser.newContext({ colorScheme });
+    const page = await context.newPage();
+    const problems: string[] = [];
+    page.on("request", (req) => { if (new URL(req.url()).origin !== "http://127.0.0.1:4330") problems.push(`request ${req.url()}`); });
+    page.on("console", (message) => { if (message.type() === "error") problems.push(`console ${message.text()}`); });
+    page.on("pageerror", (error) => problems.push(`pageerror ${error.message}`));
+    for (const path of paths) {
+      const response = await page.goto(path, { waitUntil: "networkidle" });
+      expect(response?.ok(), path).toBe(true);
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await page.waitForLoadState("networkidle");
     }
-    expect(await page.locator('.block-summary').evaluate(el=>el.clientHeight)).toBeLessThanOrEqual(760);
-  });
-}
-test('comparison links official sources without a feature-ranking claim', async ({page}) => {
-  await page.goto('/#comparison');
-  await page.locator('.comparison-more summary').click();
-  await expect(page.locator('.harness-row')).toHaveCount(6);
-  for(const name of ['Mono Agent','Codex CLI','Claude Code','OpenCode','Hermes Agent','OpenClaw']) {
-    await expect(page.locator('.harness-list').getByRole('link',{name,exact:true})).toHaveAttribute('href', /^https:\/\//);
+    expect(problems, colorScheme).toEqual([]);
+    await context.close();
   }
-  await expect(page.locator('.comparison-note')).toContainText('not a feature or performance ranking');
 });
-test('native deck scroll does not remeasure card widths per frame', async ({page}) => {
-  await page.goto('/'); await page.evaluate(()=>document.fonts.ready);
-  await seekDeck(page,0);
-  const reads=await page.evaluate(async () => {
-    let count=0;
-    const descriptor=Object.getOwnPropertyDescriptor(HTMLElement.prototype,'offsetWidth')!;
-    Object.defineProperty(HTMLElement.prototype,'offsetWidth',{...descriptor,get(){
-      if(this.matches('.block-chapter')) count++;
-      return descriptor.get!.call(this);
-    }});
-    try {
-      for(let i=0;i<24;i++) {
-        window.scrollBy({top:5,behavior:'instant'});
-        await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-      }
-      return count;
-    } finally { Object.defineProperty(HTMLElement.prototype,'offsetWidth',descriptor); }
-  });
-  expect(reads).toBeLessThanOrEqual(1);
-});
-test('FAQ heading has breathing room and opened answers stay separated', async ({page}) => {
-  await page.setViewportSize({width:390,height:844}); await page.goto('/#faq'); await page.evaluate(()=>document.fonts.ready);
-  // Read relative geometry in one frame: Safari can still be scrolling to
-  // the hash between separate boundingBox calls even after fonts are ready.
-  const gap = await page.evaluate(() => {
-    const heading = document.querySelector('#faq-heading')!.getBoundingClientRect();
-    const first = document.querySelector('.faq details')!.getBoundingClientRect();
-    return first.top - heading.bottom;
-  });
-  expect(gap).toBeGreaterThanOrEqual(24);
-  await page.locator('.faq details').first().locator('summary').click();
-  const answerGap = await page.evaluate(() => {
-    const answer = document.querySelector('.faq details .faq-answer')!.getBoundingClientRect();
-    const next = document.querySelectorAll('.faq details')[1].getBoundingClientRect();
-    return next.top - answer.bottom;
-  });
-  expect(answerGap).toBeGreaterThanOrEqual(0);
-});
-
-for (const width of [390, 1440]) {
-  test(`workspace proof and TypeScript excerpt remain readable at ${width}px`, async ({page}) => {
-    await page.setViewportSize({width, height: 1000});
-    await page.goto('/');
-    await page.evaluate(() => document.fonts.ready);
-    const proof = page.locator('#why');
-    await expect(proof.locator('article')).toHaveCount(3);
-    await expect(proof).toContainText('Give it a role');
-    await expect(proof).toContainText('persistent subagent');
-    await expect(proof).toContainText('retained tool results');
-    const excerpt = page.locator('.composition-code');
-    await excerpt.scrollIntoViewIfNeeded();
-    await expect(excerpt).toBeVisible();
-    const bounds = await excerpt.evaluate(el => ({left: el.getBoundingClientRect().left, right: el.getBoundingClientRect().right, width: el.clientWidth, content: el.scrollWidth}));
-    expect(bounds.left).toBeGreaterThanOrEqual(0);
-    expect(bounds.right).toBeLessThanOrEqual(width);
-    expect(bounds.content).toBeLessThanOrEqual(bounds.width);
-    await expect(page.getByRole('link', {name: 'Imports & full example'})).toHaveAttribute('href', 'https://docs.mono-agent.dev/programmatic/composition/');
-    await expect(page.locator('.blocks-note')).toContainText('v0.22.0');
-  });
-}
-
-for (const width of [320, 390, 768, 1440]) {
-  test(`overview preserves readable live text and flow at ${width}`, async ({page}) => {
-    await page.setViewportSize({width, height:1000}); await page.goto('/');
-    const map = page.locator('.agent-map');
-    await expect(map.locator('li')).toHaveCount(3);
-    await expect(map).toContainText('Your folder');
-    await expect(map).toContainText('mono-agent.config.json');
-    await expect(map).toContainText('Your workspace');
-    await expect(map).toContainText('Models: cloud or local');
-    const boxes = await map.locator('li').evaluateAll(items => items.map(el => {
-      const b=el.getBoundingClientRect(); return {x:b.x,y:b.y,right:b.right,bottom:b.bottom};
-    }));
-    for(const box of boxes) {expect(box.x).toBeGreaterThanOrEqual(0);expect(box.right).toBeLessThanOrEqual(width);}
-    if(width<=700) expect(boxes[1].y).toBeGreaterThan(boxes[0].bottom);
-    else expect(boxes[1].x).toBeGreaterThan(boxes[0].right);
-  });
-}

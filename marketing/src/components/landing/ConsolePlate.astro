@@ -1,0 +1,38 @@
+---
+import Plate from "./Plate.astro";
+import PenArt from "../site/PenArt.astro";
+---
+<Plate id="plate-iii" numeral="III" headingId="title-iii" title="Reach it from your phone.">
+  <figure class="console-plate">
+    <div class="figure-head"><b>Fig. 3 — Laptop and phone</b><span>Real console, example conversation</span></div>
+    <div class="console-panel">
+      <div class="console-intro"><p>Mono Agent runs on your computer. Open its console from your phone on your home network or over Tailscale.</p><p>There’s no login, so keep it on a network you trust.</p></div>
+      <div class="console-grid">
+        <div class="capture">
+          <picture><source media="(prefers-color-scheme: dark)" srcset="/art/folder-console-dark.webp" /><img src="/art/folder-console-light.webp" width="2094" height="1818" loading="eager" decoding="async" alt="The Mono Agent console switches from Claude Opus 5.5 to GPT-6.1 Sol during a conversation about a failing retry test." aria-describedby="capture-transcript" /></picture>
+          <div class="switch-callout" aria-hidden="true">
+            <span>Switched to Sol here</span>
+            <svg viewBox="0 0 18 100" preserveAspectRatio="none"><path d="M1.6 .2 C10.4 .05 15.1 1.1 14.7 5.1 C15.2 16.7 13.2 31.5 14.2 44.1 C13.6 56.9 15.3 76.1 13.7 92.5 C13.9 98.4 9.6 99.1 2 99.8"/></svg>
+            <svg class="switch-tip" viewBox="0 0 9 10"><path d="M7.7 1.4Q4.1 3.2 2 5q2.7 1.5 5.2 3.9"/></svg>
+          </div>
+        </div>
+        <div class="handset">
+          <PenArt class="pen-art pen-phone" art="handset-hidpi" w={393} h={724} id="ink-phone-1" />
+          <div class="handset-screen"><picture><source media="(prefers-color-scheme: dark)" srcset="/art/folder-console-phone-dark.webp" /><img src="/art/folder-console-phone-light.webp" width="1032" height="1920" loading="eager" decoding="async" alt="The same conversation in the mobile console, including the model switch and an enabled message box." aria-describedby="capture-transcript" /></picture></div>
+          <div class="handset-rail" aria-hidden="true"><span>1</span><span>2</span><span>3</span></div>
+        </div>
+      </div>
+    </div>
+    <figcaption class="figure-caption console-caption">
+      <p class="switch-summary"><strong>Switch models mid‑conversation</strong> — Claude Opus 5.5 to GPT-6.1 Sol.</p>
+      <ol class="phone-legend" aria-label="Three moments in the phone conversation">
+        <li><span aria-hidden="true">1</span><p>Same conversation, picked up on the phone.</p></li>
+        <li><span aria-hidden="true">2</span><p>Switched from Opus to Sol mid‑conversation.</p></li>
+        <li><span aria-hidden="true">3</span><p>The next message goes to Sol.</p></li>
+      </ol>
+      <div class="phone-push paper-object"><b>Example · 08:00</b><p>Morning check ready</p></div>
+      <p class="push-caption">Install it like an app and get push notifications. On iPhone, use HTTPS and add the console to your Home Screen first.</p>
+    </figcaption>
+    <p id="capture-transcript" hidden>Example conversation. The user asks why a retry test fails and asks the coworker not to edit anything yet. Claude Opus 5.5 points out that the second request starts before the first connection closes. The user switches to GPT-6.1 Sol and asks what to test first. Sol suggests waiting for the connection-close event, rerunning just that case and leaving the retry logic alone if the test passes.</p>
+  </figure>
+</Plate>

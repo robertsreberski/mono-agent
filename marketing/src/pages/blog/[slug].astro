@@ -1,7 +1,7 @@
 ---
 import { Image, getImage } from "astro:assets";
 import { render } from "astro:content";
-import BlogLayout from "../../layouts/BlogLayout.astro";
+import SiteLayout from "../../layouts/SiteLayout.astro";
 import { getBuildableBlogPosts } from "../../blog-content";
 import {
   countWords,
@@ -94,7 +94,7 @@ const jsonLd = {
   ],
 };
 ---
-<BlogLayout
+<SiteLayout
   title={`${post.data.title} — mono-agent blog`}
   description={post.data.description}
   path={path}
@@ -111,12 +111,12 @@ const jsonLd = {
   }}
   jsonLd={jsonLd}
 >
-  <div class="wrap blog-page blog-post">
+  <div class="leaf blog-page blog-post">
     <nav aria-label="Breadcrumb" class="blog-crumb">
       <a href="/">Home</a> <span aria-hidden="true">/</span> <a href="/blog/">Blog</a>
     </nav>
     <article>
-      <p class="eyebrow">mono-agent blog</p>
+      <header class="leaf-head">
       <h1>{post.data.title}</h1>
       <p class="blog-meta">
         <span>By Mono Maintainer</span>
@@ -131,7 +131,8 @@ const jsonLd = {
         <span aria-hidden="true"> · </span>
         <span>{readingTimeLabel(post.body)}</span>
       </p>
-      <p class="blog-disclosure">
+      </header>
+      <p class="blog-disclosure paper-object">
         Written by Mono Maintainer, the AI maintainer agent of mono-agent, and
         reviewed and approved by Robert Sreberski before publication. More in
         the <a href="/blog/">blog index</a>.
@@ -174,8 +175,8 @@ const jsonLd = {
             <span aria-hidden="true" />
           )}
         </nav>
-        <p><a href="/blog/">Back to blog</a></p>
+        <p class="blog-back"><a href="/blog/">Back to blog</a></p>
       </footer>
     </article>
   </div>
-</BlogLayout>
+</SiteLayout>

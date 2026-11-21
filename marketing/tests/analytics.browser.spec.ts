@@ -49,7 +49,7 @@ test('unapproved hosts never mount analytics', async ({page}) => {
   expect(requests).toEqual([]);
   expect(await page.locator('body > vercel-analytics').count()).toBe(0);
 });
-for (const width of [390, 1440]) {
+for (const width of [320, 390, 1440]) {
   test(`consent controls are accessible and fit at ${width}`, async ({page}) => {
     await page.setViewportSize({width,height:844});
     const {requests} = await configured(page);

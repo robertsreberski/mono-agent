@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Redesign the mono-agent.dev homepage as "The coworker in a folder": a real,
+  validated example agent folder shown file by file, mixed model routes, the
+  phone console, memory, and a two-command setup, in light and dark. The blog
+  and privacy pages share the new look, and the social card is regenerated
+  from the page.
+
 - Serve the config JSON Schema from `https://mono-agent.dev/schema.json`.
   `mono-agent init`, setup presets, the schema `$id` and the generated config
   reference now use that URL, so editors fetch it from the project website.

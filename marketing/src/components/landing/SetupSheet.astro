@@ -1,0 +1,33 @@
+---
+import Plate from "./Plate.astro";
+import PenArt from "../site/PenArt.astro";
+import IndexTab from "../site/IndexTab.astro";
+import { DOCS_URL, GITHUB_URL, RELEASE, TUTORIAL_URL } from "../../site-links.mjs";
+---
+<div class="perforation" aria-hidden="true"><span class="detach-mark">
+  <svg viewBox="0 0 32 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="5" cy="6" r="4"/><circle cx="5" cy="18" r="4"/><path d="M8.5 7.8 29 21M8.5 16.2 29 3"/></g></svg>
+  Cut here
+</span></div>
+
+<Plate class="plate tear-off" headingId="title-vi" title="Try it with two commands.">
+  <figure class="setup-sheet">
+    <div class="plate-frame setup-plate paper-object">
+      <div class="setup-instruction">
+        <p class="install-intro">On macOS and glibc Linux:</p>
+        <ol class="install-steps">
+          <li class="copy-step install-command"><p><span aria-hidden="true">$ </span><code id="install-command"><span class="keep-token">curl -fsSL</span> <span class="keep-token install-url">https://mono-agent.dev/install.sh</span> <span class="keep-token install-pipe">| sh</span></code></p><button type="button" class="copy-command" aria-label="Copy install command" hidden>Copy</button></li>
+          <li>Then run the <code>export PATH</code> line it prints.</li>
+          <li class="copy-step"><p><span aria-hidden="true">$ </span><code>mono-agent init</code></p><button type="button" class="copy-command" aria-label="Copy init command" hidden>Copy</button></li>
+        </ol>
+        <p class="copy-status" role="status" hidden></p>
+        <details class="windows-note"><summary>On Windows</summary><p>Use <code>npm i -g create-mono-agent</code> with Node.js 24.15 or newer.</p></details>
+        <p class="install-note">You’ll also need a model: sign in to a provider, add an API key, or run one locally.</p>
+        <p><IndexTab class="index-tab primary-tab paper-object" href={TUTORIAL_URL}>Walk through the full tutorial</IndexTab></p>
+      </div>
+      <div class="setup-foot">
+        <span>GPL-3.0</span><span aria-hidden="true">·</span><a href={GITHUB_URL} aria-label="GitHub — Mono Agent repository">GitHub</a><span aria-hidden="true">·</span><a href={DOCS_URL}>Docs</a>
+      </div>
+      <div class="coupon-stamp"><PenArt class="pen-art pen-stamp" art="stamp" w={372} h={251} id="ink-stamp-1" /><span>Open source<br />{RELEASE.tag}</span></div>
+    </div>
+  </figure>
+</Plate>

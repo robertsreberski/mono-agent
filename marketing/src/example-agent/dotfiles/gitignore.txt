@@ -1,0 +1,4 @@
+.env
+.mono-agent/
+scratch/*
+!scratch/README.md

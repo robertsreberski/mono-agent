@@ -1,0 +1,66 @@
+---
+// Shared field-manual shell for every page: one stylesheet, the masthead, a
+// colophon footer, and optional consent-gated analytics (home and privacy only;
+// blog pages ship no client JavaScript).
+import Seo from "../components/Seo.astro";
+import Masthead from "../components/site/Masthead.astro";
+import Colophon from "../components/site/Colophon.astro";
+import ConsentNotice from "../components/site/ConsentNotice.astro";
+import AnalyticsConsent from "../components/AnalyticsConsent.astro";
+
+interface SeoExtras {
+  type?: "website" | "article";
+  image?: string;
+  imageAlt?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+  publishedTime?: string;
+  modifiedTime?: string;
+  tags?: string[];
+  author?: string;
+}
+
+interface Props {
+  title: string;
+  description: string;
+  path: string;
+  seo?: SeoExtras;
+  jsonLd?: Record<string, unknown>;
+  home?: boolean;
+  analytics?: boolean;
+  /** Footer analytics preferences; off where the page body owns the only control. */
+  settingsInFooter?: boolean;
+}
+
+const { title, description, path, seo = {}, jsonLd, home = false, analytics = false, settingsInFooter = true } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <Seo title={title} description={description} path={path} {...seo} />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e9ecdf" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#13231c" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preload" href="/fonts/source-serif-4.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/barlow-condensed-700.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="alternate" type="application/rss+xml" title="mono-agent blog" href="/blog/rss.xml" />
+    <slot name="head" />
+    {jsonLd && <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="manual">
+      <div class="binding" aria-hidden="true"></div>
+      <Masthead home={home} />
+      <main id="main">
+        <slot />
+      </main>
+      <Colophon settings={analytics && settingsInFooter} />
+    </div>
+    {analytics && <ConsentNotice />}
+    {analytics && <AnalyticsConsent />}
+  </body>
+</html>
