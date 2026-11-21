@@ -449,10 +449,8 @@ const E2_IMPORT_SHAPES = {
     "node:child_process": "{ execFileSync }", "node:crypto": "{ createHash }", "./memory-e2e-build.mjs": "{ sourceState }",
   },
   "scripts/lib/continuity-e2-capacity.mjs": {
-    "./continuity-e2-summary-plan.mjs": "{ e2ProtectedSummaryPolicies }",
-
+    "./continuity-e2-summary-plan.mjs": "{ e2CodexSummaryInput, e2ProtectedSummaryPolicies, E2_PROTECTED_WIRE_EFFORT }",
     "./continuity-e2-summary-receipts.mjs": "{ writeE2SummaryResult }",
-    "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js": "{ convertResponsesMessages }",
   },
   "scripts/lib/continuity-e2-progress.mjs": { "node:crypto": "{ randomUUID }", "node:os": "{ userInfo }" },
   "scripts/continuity-e2.mjs": {
@@ -493,6 +491,7 @@ const E2_IMPORT_SHAPES = {
     "./continuity-dataset.mjs": "{ digest }"
   },
   "scripts/lib/continuity-e2-execution-policy.mjs": {
+    "./continuity-codex-wire.mjs": "{ validCodexOutputLimit, validCodexReasoning }",
     "./continuity-dataset.mjs": "{ digest }",
     "./continuity-e2-summary-receipts.mjs": "{ writeE2SummaryResult, verifyE2SummaryResult }"
   },
@@ -614,6 +613,9 @@ const E2_DYNAMIC_SHAPES = {
     ],
     "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js": [
         "{convertResponsesMessages}"
+    ],
+    "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/index.js": [
+        "{clampThinkingLevel,normalizeContext}"
     ]
 },
 
@@ -941,6 +943,7 @@ it("pins controller shipping replay imports to their exact named authority", () 
     ['{ sumKnownSummaryUsage }', 'usage'], ['{ sumKnownSummaryUsage }', '{ sumKnownSummaryUsage, fictionalExtra }'],
     ['{ estimateTokens }', '{ estimateTokens: fictionalAlias }'],
     ['{ planSummaryBudget }', '{ planSummaryBudget, ...rest }'],
+    ['{ clampThinkingLevel, normalizeContext }', '{ clampThinkingLevel, normalizeContext, createModels }'],
     ['compaction-kit/usage.js', 'compaction-kit/fictional.js'],
   ]) expectRuleFailure(() => assertE2Capabilities(path, source.replace(from, to)));
 });
