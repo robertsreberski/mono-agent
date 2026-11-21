@@ -879,7 +879,7 @@ describe("parseCliArgs", () => {
     // The notes block carries the model-reference guidance.
     const notes = helpTopicText("notes");
     expect(notes).toContain("Guided Pi authentication");
-    expect(notes).toContain("Anthropic,\nGitHub Copilot, OpenAI Codex, and OpenCode-Go");
+    expect(notes).toContain("Anthropic,\nGitHub Copilot, Google AI Studio, OpenAI, OpenAI Codex, and OpenCode-Go");
     expect(notes).toContain("<provider>:<model>");
 
     // Removed commands print their replacement pointer as an informational topic.
