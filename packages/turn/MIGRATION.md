@@ -41,9 +41,9 @@ Contributors: run `pnpm run clean` once after updating a checkout built before t
   and registration call, and the gap tests; keep native integration coverage.
   GitHub Copilot availability and `ultra` effort are not added.
 
-## Unreleased Pi 1.5.2 compatibility
+## Unreleased Pi 1.6.0 compatibility
 
-- Pi AI and Pi Agent Core are exact-pinned to `1.5.2`, including development
+- Pi AI and Pi Agent Core are exact-pinned to `1.6.0`, including development
   fixtures and packed-consumer resolution. Catalog snapshots derive their data
   fields from the pinned Pi model type and remain defensive deep clones.
 - Apart from the temporary GPT-6.2 backfill above, built-in models come from
@@ -241,7 +241,7 @@ The canonical adapter API is `resolveEngineTurnAdapter`,
 the optional resolver shares the same malformed-reference validation. Config,
 wire identifiers and the `"pi"` adapter id are unchanged.
 
-The runtime exact-pins Pi AI and Pi Agent Core at `1.5.2` (the terminal TUI
+The runtime exact-pins Pi AI and Pi Agent Core at `1.6.0` (the terminal TUI
 renderer is retired, so no Pi TUI pin remains). Pi Core removed its high-level
 harness. The Pi provider glue uses the runtime-owned engine for model-run admission,
 steering, journal/storage and compaction over upstream `runAgentLoop`; provider
@@ -1124,7 +1124,7 @@ Worklab's runtime fork:
    `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
    of provider bridge code. Move tests off Pi's faux-provider helpers too; until
    that is complete, isolate the fixture or pin its development-only dependencies
-  to the exact Pi AI `1.5.2` and Pi Agent Core `1.5.2` compatibility pins
+  to the exact Pi AI `1.6.0` and Pi Agent Core `1.6.0` compatibility pins
    rather than floating ranges. Do not restore the
    removed `pi-sdk.js` subpath.
 3. **Use the public Pi surfaces.** Run models through
@@ -1132,7 +1132,7 @@ Worklab's runtime fork:
    `listPiBuiltinModels`, `getPiBuiltinModel`,
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the
-   exact Pi AI `1.5.2` and Pi Agent Core `1.5.2` compatibility pins inside the
+   exact Pi AI `1.6.0` and Pi Agent Core `1.6.0` compatibility pins inside the
    runtime and its engine dependency. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.
