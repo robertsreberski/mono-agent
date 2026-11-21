@@ -245,3 +245,19 @@ it("applies the baseline native-body boundary to source, summary and probe reque
     expect(() => check({ ...body, tools: [], input: [{ role: "user", content: [{ type: "input_text", text: heading }] }, current] }, metadata)).toThrow("e2_payload_forbidden");
   }
 });
+
+it("binds the optional Codex cap to the E2 role ceiling and keeps body validation closed", () => {
+  const update = { type: "configuration_update", reasoning: { effort: "high" } };
+  const body = { model: "gpt-6.1-sol", stream: true, store: false, max_output_tokens: 4096, reasoning: { effort: "medium" }, input: [
+    { role: "developer", content: "Fictional instructions." }, { role: "user", content: "Fictional input." }, update,
+  ] };
+  const hold = { model: SOL, paidRole: "summary", tools: [], outputMax: 4096 };
+  const check = (value, metadata = hold) => e2ExecutionPolicy.assertBody(Buffer.from(JSON.stringify(value)), metadata);
+  expect(() => check(body)).not.toThrow();
+  expect(() => check(body, { ...hold, outputMax: 4095 })).toThrow("e2_payload_forbidden");
+  for (const malformed of [
+    { ...body, unknown_key: 1 },
+    { ...body, input: [...body.input.slice(0, -1), { type: "unknown_item", role: "user", content: "Fictional." }, update] },
+    { ...body, input: [...body.input.slice(0, -1), { ...update, reasoning: { effort: "high", summary: "auto" } }] },
+  ]) expect(() => check(malformed)).toThrow("e2_payload_forbidden");
+});

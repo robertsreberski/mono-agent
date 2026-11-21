@@ -11,6 +11,7 @@ import { e2PhaseWork, E2_SUMMARY_PREFIX, E2_SUMMARY_SUFFIX, E2_BRANCH_PREFIX, e2
 import { retainContinuityText } from "../../../packages/conversation/dist/tool-history/continuity-payload.js";
 import { guardedState } from "../../lib/continuity-guarded-state.mjs";
 import { digest } from "../../lib/continuity-recorded-schema.mjs";
+import { E2_PROTECTED_WIRE_EFFORT } from "../../lib/continuity-e2-summary-plan.mjs";
 import { JsonlSessionRepo } from "../../../packages/turn/dist/engine/session-store.js";
 const profile = JSON.parse(await readFile(process.argv[2], "utf8"));
 const assignment = once(process, "message"); process.send({ type: "loaded" }); const [a] = await assignment;
@@ -114,7 +115,10 @@ try {
         if (!changed || original === active.text) throw Error("Fictional retained mutation missing");
       }
       if (summaryFacade) return summaryFacade.completeSimple(shippingModel, request, options);
-      return actor.stream(models, model, request, { ...opts, cacheRetention: "none" }, "summary").result();
+      // Default-policy rehearsals forward the options chosen by shipping
+      // compaction. The protected control explicitly decouples wire effort.
+      const wireOptions = productionDefaults ? options : { ...opts, reasoning: E2_PROTECTED_WIRE_EFFORT };
+      return actor.stream(models, model, request, { ...wireOptions, cacheRetention: "none" }, "summary").result();
     };
     await rehearseE2Protected({ work, model, carrier, sourceBackgroundRepeats: split ? 100 : undefined, productionDefaults,
       // Trusted synthetic response, independent of any frame quoted by a user.

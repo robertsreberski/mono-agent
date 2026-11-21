@@ -84,6 +84,8 @@ describe("shortModelName", () => {
     ["opencode-go:kimi-k3.1-pro", "Kimi K3.1 Pro", "Kimi K3.1 Pro"],
     ["opencode-go:hy4", "Hy4", "Hy4"],
     ["opencode-go:minimax-m3.1-flash", "MiniMax M3.1 Flash", "MiniMax M3.1 Flash"],
+    ["google:gemini-4-neon", "Gemini 4 Neon", "Gemini 4 Neon"],
+    ["github-copilot:gemini-4-neon", undefined, "Gemini 4 Neon"],
     ["opencode-go:gemini-4-argon", "Gemini 4 Argon", "Gemini 4 Argon"],
   ])("labels Pi 1.5 %s without confusing model families", (ref, name, expected) => {
     expect(shortModelName(ref, name)).toBe(expected);

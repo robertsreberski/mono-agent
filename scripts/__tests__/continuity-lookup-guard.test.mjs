@@ -54,6 +54,37 @@ it("counts H across input, reasoning, tools, nested schema properties and instru
   const { H } = lookupInputEnvelope(p);
   expect(H).toBe(4096 + 2 * 256 + 1024 + 1024 + 2 * 256 + 4096);
 });
+const pi160Body = () => ({ model: C.model, store: false, stream: true, max_output_tokens: A.outputMax,
+  reasoning: { effort: "medium", summary: "auto" }, input: [
+    { role: "developer", content: "Fictional instructions." },
+    { role: "user", content: [{ type: "input_text", text: "Fictional input." }] },
+    { type: "configuration_update", reasoning: { effort: "high" } },
+  ] });
+it("admits Pi 1.6 Codex without changing the worst-case lookup hold", async () => {
+  const body = pi160Body(), f = fixture({ body });
+  expect(lookupInputEnvelope(body).H).toBe(A.framing.base + 3 * A.framing.inputItem + A.framing.instructions);
+  await f.call();
+  expect(f.send).toHaveBeenCalledOnce();
+  expect(f.permit.events[0]).toMatchObject({ type: "admit", rmax: A.rmax });
+});
+it.each([
+  ["unknown body key", p => { p.fictional_key = true; }],
+  ["unknown item type", p => { p.input.splice(1, 0, { type: "fictional_item", role: "user", content: "Fictional text." }); }],
+  ["malformed update", p => { p.input.at(-1).reasoning.summary = "auto"; }],
+  ["missing update effort", p => { p.input.at(-1).reasoning = {}; }],
+  ["unknown update effort", p => { p.input.at(-1).reasoning.effort = "fictional"; }],
+  ["wrong effective effort", p => { p.input.at(-1).reasoning.effort = "low"; }],
+  ["wrong cache anchor", p => { p.reasoning.effort = "high"; }],
+  ["update in user position", p => { p.input.splice(1, 0, { type: "configuration_update", reasoning: { effort: "low" } }); }],
+  ["no terminal update", p => { p.input.push({ type: "function_call", name: "Read", arguments: "{}" }); }],
+  ["fractional cap", p => { p.max_output_tokens = 16.5; }],
+  ["string cap", p => { p.max_output_tokens = "16"; }],
+  ["over-budget cap", p => { p.max_output_tokens = A.outputMax + 1; }],
+])("refuses Pi 1.6 Codex with %s before a hold or send", async (_name, mutate) => {
+  const body = pi160Body(); mutate(body); const f = fixture({ body });
+  await expect(f.call()).rejects.toThrow("lookup_payload_forbidden");
+  expect(f.permit.events).toEqual([]); expect(f.send).not.toHaveBeenCalled();
+});
 it("refuses initial reasoning without a hold", async () => {
   const body = payload(); body.input.push({ type: "reasoning", encrypted_content: "FAKE" }); const f = fixture({ body });
   await expect(f.call()).rejects.toThrow("lookup_initial_reasoning_forbidden"); expect(f.permit.events).toEqual([]);

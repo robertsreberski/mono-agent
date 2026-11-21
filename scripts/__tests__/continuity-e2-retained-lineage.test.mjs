@@ -6,7 +6,7 @@ import { join } from "node:path";
 import http from "node:http";
 import https from "node:https";
 import { syncBuiltinESMExports } from "node:module";
-import { e2ProtectedSummaryPolicies } from "../lib/continuity-e2-summary-plan.mjs";
+import { e2CodexSummaryInput, e2ProtectedSummaryPolicies } from "../lib/continuity-e2-summary-plan.mjs";
 import { rehearseE2Protected, E2_PROTECTED_TEXT } from "../lib/continuity-e2-protected.mjs";
 import { bindE2Checkpoint, e2PhaseWork, E2_SUMMARY_PREFIX, E2_SUMMARY_SUFFIX, E2_BRANCH_PREFIX } from "../lib/continuity-e2-lineage.mjs";
 import { bindE2NativeCompaction } from "../lib/continuity-e2-journals.mjs";
@@ -14,6 +14,8 @@ import { e2NativeCompactionSnapshot } from "../lib/continuity-e2-compaction.mjs"
 import { e2ExecutionPolicy } from "../lib/continuity-e2-execution-policy.mjs";
 import { writeE2SummaryResult } from "../lib/continuity-e2-summary-receipts.mjs";
 import { digest } from "../lib/continuity-recorded-schema.mjs";
+import { normalizeContext } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/index.js";
+import { streamSimple as streamCodex } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js";
 import { convertResponsesMessages } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 import { createHistorySummaryContext, createPrefixSummaryContext } from "../../packages/turn/dist/engine/compaction-kit/compaction.js";
 const interception = vi.hoisted(() => ({ read: null }));
@@ -28,6 +30,23 @@ const roots = [], denied = () => { throw Error("Network forbidden in retained li
 beforeEach(() => { vi.stubGlobal("fetch", denied); for (const client of [http, https]) for (const method of ["request", "get"]) vi.spyOn(client, method).mockImplementation(denied); syncBuiltinESMExports(); });
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); interception.read = null; vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); syncBuiltinESMExports(); });
 const model = { provider: "openai-codex", id: "gpt-6.1-sol", contextWindow: 272000, maxTokens: 128000 };
+it.each([["high", "high"], ["low", "low"], [undefined, "low"]])("projects native Codex instructions and terminal effort for %s", async (requested, effective) => {
+  const { models: [{ model: planningModel, wireModel }] } = await e2ProtectedSummaryPolicies([model]);
+  expect(planningModel.reasoning).toBe(false);
+  expect(wireModel.reasoning).toBe(true);
+  const context = { systemPrompt: "Fictional summary instructions.", messages: [{ role: "user", content: "Fictional summary request.", timestamp: 1 }] };
+  let serialized;
+  const result = await streamCodex(wireModel, normalizeContext(context), {
+    apiKey: `fictional.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64url")}.fixture`,
+    reasoning: requested ?? "off", transport: "sse", maxRetries: 0,
+    onPayload(body) { serialized = body; throw Error("offline serializer capture"); },
+  }).result();
+  expect(result.errorMessage).toContain("offline serializer capture");
+  expect(serialized).not.toHaveProperty("instructions");
+  expect(serialized.input[0]).toEqual({ role: "developer", content: context.systemPrompt });
+  expect(serialized.input.at(-1)).toEqual({ type: "configuration_update", reasoning: { effort: effective } });
+  expect(await e2CodexSummaryInput(wireModel, context, requested)).toEqual(serialized.input);
+});
 async function fixture(carrier, hooks = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2-retained-"))); roots.push(root); vi.stubEnv("HOME", root);
   await mkdir(join(root, "e2-summary-results"), { mode: 0o700 });
@@ -41,8 +60,9 @@ async function fixture(carrier, hooks = {}) {
     return { requestId: `fictional-retained:${n}`, round: n, model: key, tools: [], paidRole: "summary", payloadDigest, checkpoint: 0, lineageScope: "proof", lineage: slot.lineages.proof,
       summaryReceipt: { ...receipt.evidence, verified: true, durable: false }, settlement: { kind: "settled", rawUsage, tier: "default" }, ...extra };
   };
-  const wire = context => Buffer.from(JSON.stringify({ model: model.id, store: false, stream: true, instructions: context.systemPrompt,
-    input: convertResponsesMessages({ ...model, api: "openai-codex-responses", input: ["text"] }, context, new Set(["openai-codex"]), { includeSystemPrompt: false }) }));
+  const wireModel = state.summaryPolicies.models[0].wireModel;
+  const wire = context => Buffer.from(JSON.stringify({ model: model.id, store: false, stream: true, reasoning: { effort: "medium" },
+    input: convertResponsesMessages(wireModel, normalizeContext(context), new Set(["openai-codex"]), { configurationUpdateEffort: "high" }) }));
   const gate = async (raw, context, text = E2_PROTECTED_TEXT, mutate = () => {}) => {
     let bytes = wire(context); const operationId = [...raw.validator.openOperations].at(-1), operationDigest = digest(operationId);
     slot.compaction = { checkpoint: 0, operationDigest, nativeSnapshot: [{ retainedAdmission: true }] };
@@ -72,13 +92,19 @@ it.each(["quotation", "carry"])("authenticates the redacted %s predecessor at th
   for (const h of f.slot.holds) expect(h.retainedPredecessor).toMatchObject({ operationDigest: h.operationDigest, payloadDigest: h.payloadDigest, textSha256: expect.stringMatching(/^[a-f0-9]{64}$/u) });
 }, 60000);
 
-it.each(["quotation", "carry"].flatMap(carrier => ["altered", "forged", "original", "wrong-scope", "wrong-destination", "missing-receipt", "wrong-seed", "covered", "wrong-operation", "wrong-coverage", "no-lineage", "native", "branch", "forged-split", "omitted-history"].map(kind => [carrier, kind])))("refuses %s %s before the local inference boundary", async (carrier, kind) => {
+it.each(["quotation", "carry"].flatMap(carrier => ["altered", "forged", "original", "wire-effort", "wire-instructions", "wrong-scope", "wrong-destination", "missing-receipt", "wrong-seed", "covered", "wrong-operation", "wrong-coverage", "no-lineage", "native", "branch", "forged-split", "omitted-history"].map(kind => [carrier, kind])))("refuses %s %s before the local inference boundary", async (carrier, kind) => {
   let inferred = 0;
   await expect(fixture(carrier, { onSummary: async (f, { raw, context, text, active }) => {
     try { await f.gate(raw, context, text, async ({ bytes, hold, state, slot }) => {
-      if (kind === "altered") { const body = JSON.parse(bytes); body.input[0].content[0].text = body.input[0].content[0].text.replace(active.text, active.text + " altered"); return Buffer.from(JSON.stringify(body)); }
-      if (kind === "original") { const body = JSON.parse(bytes); body.input[0].content[0].text = body.input[0].content[0].text.replace(active.text, f.original); return Buffer.from(JSON.stringify(body)); }
-      if (kind === "forged") { const body = JSON.parse(bytes); body.input[0].content[0].text = body.input[0].content[0].text.replace(active.text, "Fictional forged predecessor."); return Buffer.from(JSON.stringify(body)); }
+      if (kind === "altered") { const body = JSON.parse(bytes); body.input.find(item => item.role === "user").content[0].text = body.input.find(item => item.role === "user").content[0].text.replace(active.text, active.text + " altered"); return Buffer.from(JSON.stringify(body)); }
+      if (kind === "original") { const body = JSON.parse(bytes); body.input.find(item => item.role === "user").content[0].text = body.input.find(item => item.role === "user").content[0].text.replace(active.text, f.original); return Buffer.from(JSON.stringify(body)); }
+      if (kind === "forged") { const body = JSON.parse(bytes); body.input.find(item => item.role === "user").content[0].text = body.input.find(item => item.role === "user").content[0].text.replace(active.text, "Fictional forged predecessor."); return Buffer.from(JSON.stringify(body)); }
+      if (kind === "wire-effort" || kind === "wire-instructions") {
+        const body = JSON.parse(bytes);
+        if (kind === "wire-effort") body.input.at(-1).reasoning.effort = "low";
+        else body.input.find(item => item.role === "developer").content += " Fictional extra instruction.";
+        return Buffer.from(JSON.stringify(body));
+      }
       if (kind === "forged-split") return f.wire(createPrefixSummaryContext([]));
       if (kind === "omitted-history") return f.wire(createHistorySummaryContext([], { previousSummary: active.text }));
       if (kind === "no-lineage") { slot.lineages = {}; hold.lineage = undefined; }

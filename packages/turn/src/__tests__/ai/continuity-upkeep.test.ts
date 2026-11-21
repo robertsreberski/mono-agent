@@ -18,7 +18,7 @@ it.each(apis)("proves one real %s request builder, enforcement class and inclusi
   expect(calls).toBe(1); expect(network).not.toHaveBeenCalled();
   const cap = JSON.stringify(captured);
   expect(upkeepCapEnforcement(api)).toBe(api === "openai-codex-responses" ? "stream_abort" : "request");
-  if (api === "openai-codex-responses") expect(cap).not.toMatch(/max_output_tokens|maxTokens|max_tokens/);
+  if (api === "openai-codex-responses") expect(captured.max_output_tokens).toBe(4096);
   else expect(cap).toContain("4096");
 });
 

@@ -1,13 +1,12 @@
 // Provider-free controller scan/serialization capacity alongside the runtime lane.
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { e2ProtectedSummaryPolicies } from "./continuity-e2-summary-plan.mjs";
+import { e2CodexSummaryInput, e2ProtectedSummaryPolicies, E2_PROTECTED_WIRE_EFFORT } from "./continuity-e2-summary-plan.mjs";
 import { rehearseE2Protected } from "./continuity-e2-protected.mjs";
 import { bindE2Checkpoint, e2PhaseWork, verifyE2NativeLineage } from "./continuity-e2-lineage.mjs";
 import { bindE2NativeCompaction } from "./continuity-e2-journals.mjs";
 import { writeE2SummaryResult } from "./continuity-e2-summary-receipts.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
-import { convertResponsesMessages } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 export async function measureE2ControllerCapacity(root) {
   const measurements = [];
   // Carry fit/fallback plus a B quotation sized near the 16k pack ceiling:
@@ -32,8 +31,8 @@ export async function measureE2ControllerCapacity(root) {
         slot.compaction = { checkpoint: 0, operationDigest, nativeSnapshot: [{ retainedAdmission: true }] };
         const started = performance.now();
         for (let i = 0; i < 30; i++) {
-          const bytes = Buffer.from(JSON.stringify({ model: model.id, stream: true, store: false, instructions: context.systemPrompt,
-            input: convertResponsesMessages({ ...model, input: ["text"] }, context, new Set(["openai-codex"]), { includeSystemPrompt: false }) }));
+          const bytes = Buffer.from(JSON.stringify({ model: model.id, stream: true, store: false,
+            input: await e2CodexSummaryInput(state.summaryPolicies.models[0].wireModel, context, E2_PROTECTED_WIRE_EFFORT) }));
           maximumBytes = Math.max(maximumBytes, bytes.length);
           const hold = { model: `${model.provider}:${model.id}`, paidRole: "summary", checkpoint: 0, operationDigest, lineageScope: "proof", lineage: slot.lineages.proof, payloadDigest: digest(bytes) };
           hold.nativeCompaction = await bindE2NativeCompaction(e2PhaseWork(base, planned), operationDigest, hold.payloadDigest, readArtifact);

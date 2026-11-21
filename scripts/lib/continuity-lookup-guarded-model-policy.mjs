@@ -1,3 +1,5 @@
+import { validCodexOutputLimit, validCodexReasoning } from "./continuity-codex-wire.mjs";
+import { LOOKUP_ASSUMPTIONS } from "./continuity-lookup-guarded-policy.mjs";
 // Lookup-only route, options and payload policy; no authority or transport.
 export function lookupGuardedModelPolicy(codes, LookupGuardError) {
   const refuse = (code, classification) => { throw new LookupGuardError(code, "refused_pre_send", classification); };
@@ -52,9 +54,9 @@ export function lookupGuardedModelPolicy(codes, LookupGuardError) {
     }
   }
   function assertPayload(payload, round, contract) {
-    keysOnly(payload, ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "service_tier", "tools", "reasoning"]);
-    if (payload.model !== contract.model || payload.reasoning?.effort !== contract.effort || payload.store !== false || payload.stream !== true
-      || payload.service_tier !== undefined || !Array.isArray(payload.input)) refuse(codes.payload_forbidden);
+    keysOnly(payload, ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "service_tier", "tools", "reasoning", "max_output_tokens"]);
+    if (payload.model !== contract.model || !validCodexReasoning(payload, contract.effort) || payload.store !== false || payload.stream !== true
+      || payload.service_tier !== undefined || !validCodexOutputLimit(payload, LOOKUP_ASSUMPTIONS.outputMax)) refuse(codes.payload_forbidden);
     if ((contract.promptCacheKey !== undefined || Object.hasOwn(payload, "prompt_cache_key")) && payload.prompt_cache_key !== contract.promptCacheKey) refuse(codes.prompt_cache_key_forbidden);
     keysOnly(payload.reasoning, ["effort", "summary"]);
     if (payload.text !== undefined) keysOnly(payload.text, ["verbosity"]);
@@ -71,7 +73,7 @@ export function lookupGuardedModelPolicy(codes, LookupGuardError) {
       if (tool.type !== "function") refuse(codes.payload_forbidden);
     }
     for (const item of payload.input) {
-      if (item?.type === "additional_tools") continue; // Validated above, including every tool.
+      if (item?.type === "configuration_update" || item?.type === "additional_tools") continue; // Validated above.
       if (item?.type === "reasoning") {
         keysOnly(item, ["type", "id", "summary", "encrypted_content", "status", "content"]);
         if (round === 1) refuse(codes.initial_reasoning_forbidden);

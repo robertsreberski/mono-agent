@@ -520,8 +520,8 @@ configured dimension before readiness. Manual model/dimension entry can author
 the plan when discovery is inconclusive, but cannot fake readiness. Provider
 failures never fall through to the other local service. Searchable
 primary/fallback pickers combine every bundled model
-for the guided Pi providers (Anthropic, GitHub Copilot, OpenAI Codex, and
-OpenCode-Go), Codex's live account catalog, the Claude SDK catalog, and local
+for the guided Pi providers (Anthropic, GitHub Copilot, Google, OpenAI, OpenAI Codex,
+and OpenCode-Go), Codex's live account catalog, the Claude SDK catalog, and local
 discovery. The live Codex provider default leads when available; offline setup
 falls back to curated `openai-codex:gpt-5.6-terra` without guessing effort metadata, so
 only **Provider default** is offered until live `model/list` succeeds. GPT-6
@@ -529,8 +529,8 @@ Astra is selectable as `openai-codex:gpt-6-astra` for Codex subscriptions;
 `openai:gpt-6-astra` is available in guided setup with an explicit choice
 between ChatGPT sign-in and an OpenAI API key; credentials are stored under the
 same provider id, one at a time. Neither method changes default routes. GPT-5.6 Sol remains selectable as `openai-codex:gpt-5.6-sol`.
-OpenCode-Go Pi refs can save `OPENCODE_API_KEY` into
-the Pi auth store or remain environment-provided, and any number of fallback
+Google AI Studio and OpenCode-Go can use keys stored in the Pi auth store or
+provided through `GEMINI_API_KEY` and `OPENCODE_API_KEY`, respectively, and any number of fallback
 models are selected from the same discovered choices one at a time. Each route
 offers only its advertised effort values plus **Provider default**. Standalone
 `mono-agent auth login anthropic` keeps its localhost callback active while
@@ -540,7 +540,7 @@ headless callers select `--auth-method oauth|api-key` (or use `--api-key-stdin`
 for an explicitly redirected key). ChatGPT's fixed localhost:1455 callback
 can be replaced by pasting the full final redirect URL when the browser is
 remote or the port is busy. Its owner-only installation ID is scoped to the
-durable Pi auth directory, not the temporary login store. `mono-agent auth login opencode-go` uses a masked TTY prompt; headless callers
+durable Pi auth directory, not the temporary login store. `mono-agent auth login google` and `mono-agent auth login opencode-go` use a masked TTY prompt; headless callers
 must opt in to one-line redirected input with `--api-key-stdin`. Any flag (or a piped/non-TTY
 invocation) takes the silent default/preset scaffold path instead; add `--auth`
 to run supported provider setup in that non-interactive path. Required selected
@@ -1031,10 +1031,10 @@ a status read. Ordinary run evidence is generation-fenced before provider
 execution: a target-store mutation invalidates already-running summaries and
 their failover attempts, including when the surrounding persistence finishes
 after logical cancellation or reports a post-install cleanup failure. Guided Pi
-setup covers Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go; other
+setup covers Anthropic, GitHub Copilot, Google AI Studio, OpenAI, OpenAI Codex, and OpenCode-Go; other
 hand-authored Pi and local-provider configs remain compatible
 without being advertised as guided cloud integrations. Supported OAuth methods and
-the OpenCode-Go key flow come from the bundled upstream catalog;
+the Google and OpenCode-Go key flows come from the bundled upstream catalog;
 stale auth locks are repaired only when the recorded process is securely proven
 gone. The
 wizard keeps **Allow all tools** as its default, disclosing shell/file/web/channel

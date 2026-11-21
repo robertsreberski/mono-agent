@@ -26,7 +26,7 @@ function fixture() {
 describe("agent-scoped provider usage", () => {
   it.each(["snapshot", "refresh"] as const)("%s visits only active supported primary/fallback providers", async (method) => {
     const f = fixture();
-    const usage = createAgentProviderUsage({ config: config("anthropic:model", ["openai:model", "opencode-go:model", "anthropic:other"]), drivers: [], input, service: f.service });
+    const usage = createAgentProviderUsage({ config: config("anthropic:model", ["openai:model", "google:gemini-4-neon", "opencode-go:model", "anthropic:other"]), drivers: [], input, service: f.service });
     try {
       expect((await usage[method]()).providers.map((p) => p.providerId)).toEqual(["anthropic", "opencode-go"]);
       expect(f.fetch).toHaveBeenCalledTimes(2);

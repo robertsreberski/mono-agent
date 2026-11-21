@@ -102,7 +102,7 @@ describe("Pi dependency update automation", () => {
       "packages/turn/package.json:dependencies:@earendil-works/pi-agent-core",
       "packages/turn/package.json:dependencies:@earendil-works/pi-ai",
     ]);
-    expect([...new Set(directPiDependencies.map(({ version }) => version))]).toEqual(["1.5.2"]);
+    expect([...new Set(directPiDependencies.map(({ version }) => version))]).toEqual(["1.6.0"]);
     for (const dependency of directPiDependencies) {
       expect(dependency.version, `${dependency.path} ${dependency.name}`).toMatch(
         /^\d+\.\d+\.\d+$/,

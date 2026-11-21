@@ -47,6 +47,30 @@ describe("doctor Pi provider catalog", () => {
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false, allowFilesystemWrites: false });
     expect(sectionById(report, "runtime").status).toBe("ok");
   });
+  it("validates Neon and reports Google credentials without exposing them", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Fictional identity\n");
+    const authPath = join(dir, "auth.json");
+    const configPath = await writeConfig({
+      runtime: { model: "google:gemini-4-neon" }, context: { identityPath: "IDENTITY.md" },
+      providers: { piAuthPath: authPath },
+    });
+    const validate = (env: Record<string, string>) => validateMonoAgentFolder({ env, cwd: dir, configPath, liveness: false, allowFilesystemWrites: false });
+    const missing = await validate({});
+    expect(sectionById(missing, "runtime").status).toBe("ok");
+    expect(sectionById(missing, "credentials")).toMatchObject({ status: "waiting", details: expect.arrayContaining([expect.stringContaining("GEMINI_API_KEY")]) });
+    const fixture = "fictional-gemini-fixture";
+    const environment = sectionById(await validate({ GEMINI_API_KEY: fixture }), "credentials");
+    expect(environment).toMatchObject({ status: "ok", details: expect.arrayContaining([expect.stringContaining("resolved environment (GEMINI_API_KEY)")]) });
+    expect(JSON.stringify(environment)).not.toContain(fixture);
+    await writeFile(authPath, JSON.stringify({ google: { type: "api_key", key: fixture } }), { mode: 0o600 });
+    const stored = sectionById(await validate({}), "credentials");
+    expect(stored).toMatchObject({ status: "ok", details: expect.arrayContaining([expect.stringContaining("API key credentials for `google` present")]) });
+    expect(JSON.stringify(stored)).not.toContain(fixture);
+    const copilot = resolveJsonMonoAgentConfig({ cwd: dir, json: {
+      runtime: { model: "github-copilot:gemini-4-neon" }, context: { identityPath: "IDENTITY.md" },
+    } });
+    expect(piModelResolutionIssue(copilot, copilot.runtime.model)).toBeUndefined();
+  });
   it("accepts exact models from every runtime-owned built-in provider", () => {
     const config = resolveJsonMonoAgentConfig({
       cwd: dir,

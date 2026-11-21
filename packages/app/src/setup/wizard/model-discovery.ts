@@ -7,7 +7,7 @@ import {
   inspectPiAuthStore as inspectDefaultPiAuthStore,
   type PiAuthStoreInspection,
 } from "../../providers/pi-auth-store-inspection.js";
-import { hasUsablePiOAuthClientId } from "../../providers/credential-values.js";
+import { hasUsablePiOAuthClientId, PI_API_KEY_PROVIDERS } from "../../providers/credential-values.js";
 import { runBoundedProviderCommand } from "../../providers/command.js";
 
 export type WizardModelSource = "pi" | "ollama" | "lmstudio" | "custom";
@@ -18,6 +18,7 @@ export type WizardModelAuthState = "auth_required" | "credential_detected" | "ve
 const GUIDED_PI_PROVIDER_IDS = [
   "anthropic",
   "github-copilot",
+  "google",
   "openai-codex",
   "openai",
   "opencode-go",
@@ -25,10 +26,6 @@ const GUIDED_PI_PROVIDER_IDS = [
 
 const GUIDED_PI_PROVIDERS = new Set<string>(GUIDED_PI_PROVIDER_IDS);
 const GUIDED_LOCAL_PI_PROVIDERS = new Set(["ollama", "lmstudio"]);
-const PI_API_KEY_ENV_BY_PROVIDER: Readonly<Record<string, string>> = {
-  "opencode-go": "OPENCODE_API_KEY",
-  openai: "OPENAI_API_KEY",
-};
 
 /** Whether a selected Pi route has an API key in the destination agent environment. */
 export function hasDurablePiEnvironmentCredential(
@@ -38,7 +35,7 @@ export function hasDurablePiEnvironmentCredential(
   const separator = rawModelRef.indexOf(":");
   if (separator <= 0) return false;
   const provider = rawModelRef.slice(0, separator);
-  const apiKeyEnv = PI_API_KEY_ENV_BY_PROVIDER[provider];
+  const apiKeyEnv = PI_API_KEY_PROVIDERS[provider];
   return apiKeyEnv !== undefined && (persistedEnv[apiKeyEnv]?.trim().length ?? 0) > 0;
 }
 
@@ -49,7 +46,7 @@ export function guidedPiProviderProblem(provider: string): string | undefined {
   }
   return describePiProviderAuth(provider) === undefined
     ? "Custom Pi providers require a hand-authored providers.local[] entry. Guided init supports discovered Ollama and LM Studio routes."
-    : "Guided init supports Pi Anthropic, GitHub Copilot, OpenAI, OpenAI Codex, OpenCode-Go, Ollama, and LM Studio. Configure other Pi providers manually.";
+    : "Guided init supports Pi Anthropic, GitHub Copilot, Google, OpenAI, OpenAI Codex, OpenCode-Go, Ollama, and LM Studio. Configure other Pi providers manually.";
 }
 
 export interface WizardModelCandidate {
@@ -304,7 +301,7 @@ function readPiAuthProviderMap(auth: Readonly<Record<string, unknown>>): Record<
 function hasUsablePiCredential(value: unknown, provider: string): boolean {
   if (!isRecord(value)) return false;
   if (value.type === "oauth") {
-    return (isCredentialString(value.access) || isCredentialString(value.refresh))
+    return provider !== "google" && (isCredentialString(value.access) || isCredentialString(value.refresh))
       && hasUsablePiOAuthClientId(provider, value);
   }
   return value.type === "api_key" && isCredentialString(value.key);

@@ -35,7 +35,6 @@ import { createToolContext } from "../../tools/shared/tool-context.js";
 
 import { createModels, createProvider, envApiKeyAuth } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { registerPiSupplementModels } from "../../providers/pi/supplement.js";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { randomUUID } from "node:crypto";
 import { estimateTokens } from "../../engine/compaction-kit/compaction.js";
@@ -51,6 +50,7 @@ import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../../telemetry/capabilities-used.js";
 import { withContext1M, withContext1MModels } from "../../providers/pi/context-1m.js";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "../../providers/pi/models.js";
+import { withGoogleAdapterThinkingLevels } from "../../providers/pi/builtin-models.js";
 import {
   thinkingFromContent,
   toAgentMessages,
@@ -235,7 +235,13 @@ export function buildRunModels(runtime: PiRuntime, options: PiOptions, runtimeWa
           ? {}
           : { authContext: options.providerCheckAuthContext }),
       });
-      registerPiSupplementModels(models);
+      const google = models.getProvider("google");
+      if (google !== undefined) {
+        models.setProvider({
+          ...google,
+          getModels: () => google.getModels().map(withGoogleAdapterThinkingLevels),
+        });
+      }
     }
   }
   // Decorate only after ordinary credential construction; OAuth stays Models-owned.

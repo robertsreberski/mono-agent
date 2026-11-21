@@ -9,10 +9,10 @@ and is not evidence of import support. Import performs no cron or model turn and
 accepts at most 32 KiB of decoded UTF-8 text with a source-qualified 512-byte
 idempotency key and a 4096-byte conversation id.
 
-GPT-6.2 Sol and Astra are available as `openai:gpt-6.2-sol` /
-`openai:gpt-6.2-astra` and the same IDs on `openai-codex` via a temporary
-Pi 1.5.2 catalog backfill. They use sibling effort maps (no `none` or `ultra`),
-authentication and `context1M` eligibility; no default route changes.
+Pi 1.6.0 lists GPT-6.2 Sol and Astra natively on OpenAI, OpenAI Codex and
+GitHub Copilot. Gemini 4 Neon is available as `google:gemini-4-neon` (Google
+AI Studio key via `GEMINI_API_KEY` or the Pi auth store) and
+`github-copilot:gemini-4-neon` (Copilot account access).
 
 ## Runtime
 

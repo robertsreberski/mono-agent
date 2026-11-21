@@ -33,6 +33,24 @@ describe("supported wizard model catalog", () => {
       expect(row?.supportedEfforts).toEqual(sibling?.supportedEfforts);
     }
   });
+  it("lists Gemini 4 Neon from Google and Copilot with route-specific effort and auth", async () => {
+    const result = await discoverWizardModelCandidates({
+      inspectPiAuthStore: missingAuthStore,
+      execFile: async () => { throw new Error("fictional unavailable CLI"); },
+      fetch: unavailableFetch as never,
+      persistedEnv: { GEMINI_API_KEY: "fictional-test-key" },
+    });
+    expect(result.candidates.find((row) => row.value === "google:gemini-4-neon")).toMatchObject({
+      label: "Pi Google · Gemini 4 Neon", source: "pi", authState: "credential_detected",
+      supportedEfforts: ["low", "medium", "high"],
+    });
+    expect(result.candidates.find((row) => row.value === "github-copilot:gemini-4-neon")).toMatchObject({
+      label: "Pi GitHub Copilot · Gemini 4 Neon", source: "pi", authState: "auth_required",
+      supportedEfforts: ["low", "medium", "high", "xhigh"],
+    });
+    expect(guidedPiProviderProblem("google")).toBeUndefined();
+    expect(guidedPiProviderProblem("google-vertex")).toBeDefined();
+  });
   it("rejects unsupported remote and undeclared custom providers in manual guided entry", () => {
     expect(guidedPiProviderProblem("cloudflare-workers-ai")).toMatch(/Configure other Pi providers manually/u);
     expect(guidedPiProviderProblem("amazon-bedrock")).toMatch(/Configure other Pi providers manually/u);
@@ -121,7 +139,7 @@ describe("supported wizard model catalog", () => {
     });
 
     const pi = result.candidates.filter((candidate) => candidate.source === "pi");
-    const guidedProviders = new Set(["anthropic", "github-copilot", "openai-codex", "openai", "opencode-go"]);
+    const guidedProviders = new Set(["anthropic", "github-copilot", "google", "openai-codex", "openai", "opencode-go"]);
     const expectedModels = listPiBuiltinProviders()
       .filter((provider) => guidedProviders.has(provider.id))
       .flatMap((provider) => listPiBuiltinModels(provider.id).map((model) => ({ provider, model })));

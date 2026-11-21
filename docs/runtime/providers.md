@@ -78,7 +78,7 @@ A route that names a provider in none of `providers`, Pi's built-in catalog, nor
 
 ## Credential resolution
 
-- **Pi-level auth** (OAuth/account providers such as Anthropic, GitHub Copilot, OpenAI Codex, and ChatGPT on `openai`; API-key providers such as OpenCode-Go and `openai`) resolves through `providers.piAuthPath`. Set it up with `mono-agent auth login <provider> [--pi-auth-path ...]`; for `openai` choose `--auth-method oauth|api-key` when headless.
+- **Pi-level auth** (OAuth/account providers such as Anthropic, GitHub Copilot, OpenAI Codex, and ChatGPT on `openai`; API-key providers such as Google AI Studio, OpenCode-Go and `openai`) resolves through `providers.piAuthPath`. Set it up with `mono-agent auth login <provider> [--pi-auth-path ...]`; for `openai` choose `--auth-method oauth|api-key` when headless. Google AI Studio uses `GEMINI_API_KEY` or a stored key from `mono-agent auth login google`; it does not use OAuth or expose a subscription quota meter.
 - **Provider-level keys** resolve through the definition's `apiKeyEnv`: keep the value in `.env` and reference only its variable name in config, so the committed file carries no secret.
 
 ### Provider authentication in Agent Settings
