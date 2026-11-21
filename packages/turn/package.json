@@ -92,7 +92,7 @@
     "node": ">=24.15.0"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-ai": "1.6.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@mozilla/readability": "0.6.0",
     "@vscode/ripgrep": "1.18.0",
@@ -106,7 +106,7 @@
     "unpdf": "1.8.1",
     "zod": "^4.6.6",
     "@mono-agent/contracts": "workspace:0.27.1",
-    "@earendil-works/pi-agent-core": "1.5.2"
+    "@earendil-works/pi-agent-core": "1.6.0"
   },
   "devDependencies": {
     "@types/turndown": "5.0.6"
