@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Serve the config JSON Schema from `https://mono-agent.dev/schema.json`.
+  `mono-agent init`, setup presets, the schema `$id` and the generated config
+  reference now use that URL, so editors fetch it from the project website.
+  Existing `mono-agent.config.json` files that still point `$schema` at the
+  former raw GitHub URL keep validating and loading unchanged.
+
 - Stop reply-presentation tools from steering how the model writes its answer.
   `SuggestReplies`, `ProposeRestart` and `PublishReplyFile` now return plain
   receipts, and their descriptions share one rule: the user sees only normal

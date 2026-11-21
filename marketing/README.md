@@ -247,6 +247,24 @@ with zero posts. The authoring contract an automated daily process follows is
 [`BLOG.md`](./BLOG.md): front-matter limits, image and honesty rules, and the
 exact local validation commands.
 
+## Hosted config schema
+
+`public/schema.json` is the canonical `mono-agent.config.json` JSON Schema,
+served at `https://mono-agent.dev/schema.json` (its `$id`, and the `$schema`
+value `mono-agent init` writes). It is a committed generated asset: run
+`pnpm run generate:config-reference` from the repository root, which writes it
+byte-identically alongside `packages/app/schema/mono-agent.config.schema.json`.
+Root `pnpm test` (app config-reference tests) and `tests/schema.test.mjs` fail
+if the copies drift. The repository file stays in place, so configs that still
+reference the former raw GitHub URL keep resolving.
+
+`vercel.json` gives the route `application/json; charset=utf-8`, `nosniff`,
+`Access-Control-Allow-Origin: *` (browser-based editors and validators fetch it
+cross-origin) and mandatory revalidation. Like the installer, the
+extension-bearing file is not subject to trailing-slash page routing. Local
+`astro preview` does not apply `vercel.json` headers; after the authorized
+merge/deployment, verify the custom-domain bytes and headers separately.
+
 ## Public shell installer
 
 `public/install.sh` and `public/install.sh.sha256` are committed generated assets,

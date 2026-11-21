@@ -267,6 +267,31 @@ describe("golden consumer config contracts", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("keeps validating a consumer config that references the former raw GitHub schema URL", async () => {
+    const legacySchemaUrl =
+      "https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/app/schema/mono-agent.config.schema.json";
+    const root = await mkdtemp(join(tmpdir(), "agent-app-consumer-legacy-schema-"));
+    const fixtureDir = join(root, "fixture");
+    try {
+      await cp(join(consumersRoot, "local-agent-alpha"), fixtureDir, { recursive: true });
+      const configPath = join(fixtureDir, "mono-agent.config.json");
+      const config = JSON.parse(await readFile(configPath, "utf8")) as { $schema?: string };
+      expect(config.$schema).toBe("https://mono-agent.dev/schema.json");
+      config.$schema = legacySchemaUrl;
+      await writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+
+      const legacy = await validateFixture("local-agent-alpha", fixtureDir);
+      const canonical = await validateFixture("local-agent-alpha");
+
+      expect(legacy.ok).toBe(true);
+      expect(legacy.issues).toEqual([]);
+      expect(legacy.networkCallCount).toBe(0);
+      expect(legacy.sections).toEqual(canonical.sections);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 async function pathExists(path: string): Promise<boolean> {
@@ -278,7 +303,7 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function validateFixture(name: ConsumerContractName) {
+async function validateFixture(name: ConsumerContractName, fixtureDir = join(consumersRoot, name)) {
   const sandboxEngine: SandboxEngine = {
     id: "synthetic-unavailable-srt",
     isAvailable: vi.fn(async () => false),
@@ -288,7 +313,7 @@ async function validateFixture(name: ConsumerContractName) {
   };
   const result = await validateConsumerContractFixture({
     name,
-    fixtureDir: join(consumersRoot, name),
+    fixtureDir,
     sandboxEngine,
   });
   expect(sandboxEngine.isAvailable).toHaveBeenCalledOnce();

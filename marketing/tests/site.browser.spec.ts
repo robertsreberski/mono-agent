@@ -166,6 +166,17 @@ test("installer extension routes serve static shell bytes without a trailing-sla
   expect(await checksum.text()).toMatch(/^[a-f0-9]{64}  install\.sh\n$/);
 });
 
+test("config schema route serves static JSON without a trailing-slash redirect", async ({ request }) => {
+  // astro preview does not apply vercel.json headers; tests/schema.test.mjs pins those.
+  const response = await request.get('/schema.json', { maxRedirects: 0 });
+  expect(response.status()).toBe(200);
+  expect(response.headers().location).toBeUndefined();
+  expect(response.headers()['content-type']).toMatch(/^application\/json/);
+  const schema = await response.json();
+  expect(schema.$id).toBe('https://mono-agent.dev/schema.json');
+  expect(schema.title).toBe('mono-agent.config.json');
+});
+
 test("copy command reports success only after clipboard resolves", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", {
     value: { writeText: async (text: string) => { (window as any).copied = text; } },

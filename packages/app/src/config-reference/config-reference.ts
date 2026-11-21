@@ -22,8 +22,14 @@ import { SLACK_CONFIG_FIELDS } from "@mono-agent/channel-slack";
 import { TELEGRAM_CONFIG_FIELDS } from "@mono-agent/channel-telegram";
 import { WEBHOOK_CONFIG_FIELDS } from "@mono-agent/trigger-webhook";
 
-export const MONO_AGENT_CONFIG_SCHEMA_URL =
-  "https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/app/schema/mono-agent.config.schema.json";
+/**
+ * Canonical config schema URL, served as a static asset by the project website.
+ * The generator mirrors `packages/app/schema/mono-agent.config.schema.json` to
+ * `marketing/public/schema.json`. Configs that still reference the former raw
+ * GitHub URL keep working: `$schema` accepts any string and the repository file
+ * stays in place.
+ */
+export const MONO_AGENT_CONFIG_SCHEMA_URL = "https://mono-agent.dev/schema.json";
 
 const CORE_FIELDS: readonly ConfigReferenceField[] = Object.keys(CORE_CONFIG_FIELD_IDS).map((jsonPath) =>
   referenceField({

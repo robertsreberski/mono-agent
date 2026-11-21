@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/app/schema/mono-agent.config.schema.json",
+  "$id": "https://mono-agent.dev/schema.json",
   "title": "mono-agent.config.json",
   "type": "object",
   "required": [
