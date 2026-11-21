@@ -10,7 +10,7 @@
     "dev": "astro dev",
     "build": "astro build && node scripts/check-links.mjs",
     "preview": "astro preview --host 127.0.0.1 --port 4330",
-    "assets": "node scripts/generate-assets.mjs",
+    "assets": "node scripts/generate-og.mjs",
     "test:unit": "node --test tests/*.test.mjs",
     "test:browser": "playwright test",
     "test:webkit": "MARKETING_WEBKIT=1 playwright test --project=webkit",
