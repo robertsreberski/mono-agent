@@ -3,3 +3,5 @@
 output/
 assets-source/
 tests/
+# The homepage imports the example agent's key-name template at build time.
+!src/example-agent/payments-maintainer/.env.example

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://mono-agent.dev/schema.json",
+  "agent": { "name": "Payments Maintainer" },
+  "runtime": {
+    "model": "anthropic:claude-opus-5-5",
+    "fallbacks": [{ "model": "ollama:gemma4:31b" }]
+  },
+  "providers": {
+    "anthropic": {},
+    "openai-codex": {},
+    "opencode-go": {},
+    "ollama": {}
+  },
+  "subagents": {
+    "enabled": true,
+    "instances": { "enabled": false },
+    "inline": { "enabled": false },
+    "definitions": [
+      {
+        "name": "reviewer",
+        "model": "openai-codex:gpt-6.1-sol",
+        "description": "Double-checks a diagnosis before anyone edits code.",
+        "prompt": "Find the weakest step and one check that could disprove it.",
+        "allowedTools": ["Read", "Grep", "ReadSkill"]
+      }
+    ]
+  },
+  "context": {
+    "identityPath": "./IDENTITY.md",
+    "skillsRoot": "./skills",
+    "skillDisclosure": "index"
+  },
+  "memory": {
+    "mode": "lite",
+    "writeMode": "append-host-summary",
+    "path": "./.mono-agent/memory"
+  },
+  "tools": {
+    "allowedTools": ["Agent", "AskUser", "Bash", "Read", "Grep", "Glob", "ReadSkill"],
+    "mcpConfigPath": "./mcp.json"
+  },
+  "sandbox": {
+    "mode": "native",
+    "fallback": "fail-closed",
+    "network": { "mode": "allowlist", "allowlist": ["127.0.0.1"] },
+    "readableRoots": [".", "../payments-service"],
+    "writableRoots": ["./scratch"]
+  },
+  "processJobs": { "enabled": true },
+  "cron": { "dir": "cron" },
+  "webhook": { "enabled": true, "host": "127.0.0.1", "dir": "webhook" }
+}

@@ -5,3 +5,6 @@ output/
 assets-source/
 .vercel
 .env*
+# The public example agent is real, validated config: keep its config and key-name template tracked.
+!src/example-agent/payments-maintainer/.env.example
+!src/example-agent/payments-maintainer/mono-agent.config.json

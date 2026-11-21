@@ -123,6 +123,19 @@ describe("documentation quality", () => {
     })).toContain("README.md:3 documentation links must use `docs.mono-agent.dev`, not obsolete host `mono-agent-docs.vercel.app`.");
   });
 
+  test("leaves the marketing example agent's own Markdown out of the public corpus", async () => {
+    const root = await fixtureRoot();
+    const example = join(root, "marketing/src/example-agent/payments-maintainer/scratch");
+    await mkdir(example, { recursive: true });
+    await writeFile(join(example, "README.md"), "Scratch space for test runs.\n");
+    await mkdir(join(root, "marketing"), { recursive: true });
+    await writeFile(join(root, "marketing/README.md"), "# Marketing\n");
+
+    const files = collectPublicMarkdownFiles(root);
+    expect(files).toContain("marketing/README.md");
+    expect(files).not.toContain("marketing/src/example-agent/payments-maintainer/scratch/README.md");
+  });
+
   test("checks local targets and heading fragments across the public corpus", async () => {
     const root = await fixtureRoot();
     await mkdir(join(root, ".worklab-tmp/snapshot"), { recursive: true });
