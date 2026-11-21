@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { TOOL_IMAGE } from "../test/tool-image-fixture";
 import { ToolImageOutput } from "./ToolImageOutput";
@@ -15,6 +15,38 @@ it.each(["array", "content"])("eagerly previews kind-only %s parts when Intersec
   render(<ToolImageOutput result={result} args={{ path: "synthetic.png" }} truncated={false} />);
   expect(await screen.findByRole("img", { name: "synthetic.png" }))
     .toHaveAttribute("src", `data:image/png;base64,${TOOL_IMAGE.data}`);
+});
+
+it("previews when a later entry in an observer batch is intersecting", async () => {
+  let callback!: IntersectionObserverCallback;
+  let observer!: IntersectionObserver;
+  const disconnect = vi.fn();
+  class StubIntersectionObserver implements IntersectionObserver {
+    readonly root = null;
+    readonly rootMargin = "";
+    readonly thresholds = [];
+    constructor(onIntersect: IntersectionObserverCallback) {
+      callback = onIntersect;
+      observer = this;
+    }
+    observe(): void {}
+    unobserve(): void {}
+    disconnect = disconnect;
+    takeRecords(): IntersectionObserverEntry[] { return []; }
+  }
+  vi.stubGlobal("IntersectionObserver", StubIntersectionObserver);
+  const view = render(<ToolImageOutput result={JSON.stringify(TOOL_IMAGE)} args={{ path: "synthetic.png" }} truncated={false} />);
+  const target = view.container.firstElementChild!;
+  const entry = (isIntersecting: boolean) => ({ target, isIntersecting }) as IntersectionObserverEntry;
+  act(() => callback([entry(false)], observer));
+  expect(screen.queryByRole("img")).toBeNull();
+  expect(disconnect).not.toHaveBeenCalled();
+
+  // A delayed delivery can batch the initial offscreen state with a later intersection.
+  act(() => callback([entry(false), entry(true)], observer));
+  expect(await screen.findByRole("img", { name: "synthetic.png" }))
+    .toHaveAttribute("src", `data:image/png;base64,${TOOL_IMAGE.data}`);
+  expect(disconnect).toHaveBeenCalled();
 });
 
 it("validates only when member results change, not when their array or fallback text changes", async () => {
