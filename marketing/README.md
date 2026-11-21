@@ -29,9 +29,13 @@ GitHub sits beside it.
   them byte-for-byte, so the page cannot drift from the folder.
   `manifest.json` beside it holds the display order and labels.
   Its `.env.example` carries key names only, and its own `.gitignore` keeps keys,
-  history and scratch output out of git. `marketing/.gitignore` and
-  `.vercelignore` re-include the config and `.env.example` that broader ignore
-  rules would otherwise drop. To re-validate, copy the folder to a temporary
+  history and scratch output out of git. `marketing/.gitignore` re-includes the
+  config and `.env.example` that broader ignore rules would otherwise drop from
+  git. The build never imports a dotfile: the page reads those two files from
+  non-dot mirrors in `src/example-agent/dotfiles/`, because hosting uploads may
+  drop `.env*` and ignore files (`.vercelignore` still excludes `.env*`).
+  `tests/example-agent.test.mjs` keeps each mirror byte-identical to the real
+  file. Edit both together. To re-validate, copy the folder to a temporary
   directory outside the repository and run `mono-agent validate` there with an
   empty `HOME`.
 - **Artwork is ink on paper.** The drawings in `public/art/folder-art-*.webp` are

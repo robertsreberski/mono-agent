@@ -91,11 +91,24 @@ describe("example agent folder", () => {
     }
   });
 
+  it("keeps the build's non-dot mirrors byte-identical to the real dotfiles", () => {
+    // The page imports these mirrors so hosting uploads that drop `.env*` or
+    // ignore files cannot break the build; the real files stay the source.
+    for (const [dotfile, mirror] of [[".env.example", "env-example.txt"], [".gitignore", "gitignore.txt"]]) {
+      assert.deepEqual(
+        readFileSync(join(MARKETING, "src/example-agent/dotfiles", mirror)),
+        readFileSync(join(ROOT, dotfile)),
+        `dotfiles/${mirror} mirrors ${dotfile}`,
+      );
+    }
+  });
+
   it("is fully tracked despite repository ignore rules", () => {
+    const mirrors = ["env-example.txt", "gitignore.txt"].map((name) => join(MARKETING, "src/example-agent/dotfiles", name));
     // `git check-ignore` exits 1 when no path is ignored.
     let ignored = "";
     try {
-      ignored = execFileSync("git", ["check-ignore", ...files], { cwd: ROOT, encoding: "utf8" });
+      ignored = execFileSync("git", ["check-ignore", ...files, ...mirrors], { cwd: ROOT, encoding: "utf8" });
     } catch (error) {
       assert.equal(error.status, 1, String(error.stderr));
     }

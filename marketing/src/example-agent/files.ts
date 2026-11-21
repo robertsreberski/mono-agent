@@ -1,8 +1,13 @@
 // The public example agent, imported byte-for-byte at build time so the page
 // can never drift from the validated folder. Display order and labels live in
 // manifest.json; the folder itself holds exactly these ten files.
-import envExample from "./payments-maintainer/.env.example?raw";
-import gitignore from "./payments-maintainer/.gitignore?raw";
+//
+// The two dotfiles are imported from non-dot mirrors in ./dotfiles/: hosting
+// uploads may drop `.env*` and ignore files, and the build must not depend on
+// that. tests/example-agent.test.mjs keeps each mirror byte-identical to the
+// real file in payments-maintainer/.
+import envExample from "./dotfiles/env-example.txt?raw";
+import gitignore from "./dotfiles/gitignore.txt?raw";
 import identity from "./payments-maintainer/IDENTITY.md?raw";
 import mcp from "./payments-maintainer/mcp.json?raw";
 import config from "./payments-maintainer/mono-agent.config.json?raw";
