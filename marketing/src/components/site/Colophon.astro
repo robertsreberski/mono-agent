@@ -1,0 +1,21 @@
+---
+import { DOCS_URL, GITHUB_URL, RELEASE, RELEASE_URL } from "../../site-links.mjs";
+interface Props {
+  settings?: boolean;
+}
+const { settings = false } = Astro.props;
+---
+<footer class="colophon">
+  <p class="colophon-mark">Mono Agent <span aria-hidden="true">·</span> GPL-3.0</p>
+  <nav class="colophon-links" aria-label="Site links">
+    <ul>
+      <li><a href={GITHUB_URL}>GitHub</a></li>
+      <li><a href={DOCS_URL}>Docs</a></li>
+      <li><a href={RELEASE_URL}>Release notes ({RELEASE.tag})</a></li>
+      <li><a href="/blog/">Blog</a></li>
+      <li><a href="/privacy/">Privacy</a></li>
+      {settings && <li><button class="analytics-settings" type="button" hidden>Analytics preferences</button></li>}
+    </ul>
+  </nav>
+  {settings && <p class="analytics-status" role="status" aria-live="polite"></p>}
+</footer>

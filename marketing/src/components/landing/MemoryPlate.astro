@@ -1,0 +1,34 @@
+---
+import Plate from "./Plate.astro";
+import PenArt from "../site/PenArt.astro";
+---
+<Plate id="plate-iv" numeral="IV" headingId="title-iv" title="It remembers how you like things done.">
+  <figure class="memory-plate">
+    <div class="figure-head"><b>Fig. 4 — Two kinds of memory</b></div>
+    <div class="memory-grid">
+      <div class="memory-log paper-object">
+        <p class="drawing-note">Across conversations</p>
+        <p class="diagram-intro">with memory turned on</p>
+        <table class="revisions">
+          <caption class="sr-only">Preferences learned over three conversations</caption>
+          <tbody>
+            <tr><th scope="row">Mon</th><td>You: “Report flaky tests separately.”</td></tr>
+            <tr><th scope="row">Wed</th><td>You: “And always name an owner.”</td></tr>
+            <tr><th scope="row">Next week</th><td>In a new conversation, it does both without being reminded.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="thread-foldout">
+        <p class="drawing-note">Within one long conversation</p>
+        <div class="concertina">
+          <PenArt class="pen-art pen-concertina" art="concertina" w={616} h={634} id="ink-concertina-1" />
+          <div class="fold-summary paper-object">
+            <ul><li>What you asked</li><li>What was decided</li><li>What’s still open</li><li>What happens next</li></ul>
+            <p class="fold-next">Then it carries on: rerun the failing test.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <figcaption class="figure-caption memory-caption">In a long conversation, Mono Agent summarises older messages so it can keep going.</figcaption>
+  </figure>
+</Plate>

@@ -1,0 +1,15 @@
+---
+import Plate from "./Plate.astro";
+---
+<Plate id="plate-ii" numeral="II" headingId="title-ii" title="Mix models from different providers.">
+  <figure class="schematic">
+    <div class="figure-head"><b>Fig. 2 — Which model does which job</b></div>
+    <dl class="model-rows">
+      <div><dt>Main agent</dt><dd><code>anthropic:<wbr /><span class="keep-token">claude-opus-5-5</span></code><em>via sign-in</em></dd></div>
+      <div><dt>Reviewer</dt><dd><code>openai-codex:<wbr /><span class="keep-token">gpt-6.1-sol</span></code><em>via sign-in</em></dd></div>
+      <div><dt>Morning check</dt><dd><code>opencode-go:<wbr /><span class="keep-token">deepseek-v4.1-flash</span></code><em>via API key</em></dd></div>
+      <div><dt>Fallback</dt><dd><code>ollama:<wbr /><span class="keep-token">gemma4:31b</span></code><em class="model-margin">runs on your machine</em></dd></div>
+    </dl>
+    <figcaption class="figure-caption model-caption">You can sign in with Anthropic, OpenAI Codex, GitHub Copilot or ChatGPT, use an API key for a provider like OpenCode Go, or run models locally with Ollama or LM Studio.</figcaption>
+  </figure>
+</Plate>

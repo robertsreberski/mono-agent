@@ -1,0 +1,12 @@
+---
+// A paper index tab: the site's call-to-action shape. The hand-drawn arrow is
+// decorative SVG, never a Unicode arrow glyph.
+interface Props {
+  href: string;
+  class: string;
+  arrow?: boolean;
+  label?: string;
+}
+const { href, class: className, arrow = true, label } = Astro.props;
+---
+<a class={className} href={href} aria-label={label}><slot />{arrow && <svg class="tab-arrow" viewBox="0 0 100 38" aria-hidden="true" focusable="false"><path fill="currentColor" d="M2 19.1q16-.3 33-1.7 29-.7 56-.3L75.1 3.6q-.9-.8-.3-1.5.7-.7 1.7.1L97.8 17q1 .8-.1 2L74.6 35.7q-1 .6-1.5-.1-.5-.7.4-1.5l17.6-14.5q-47.1.6-86 .9-2.9 0-3.1-1.4Z"/></svg>}</a>

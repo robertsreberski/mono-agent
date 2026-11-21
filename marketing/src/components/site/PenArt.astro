@@ -1,0 +1,19 @@
+---
+// One ink drawing: a transparent raster used as an alpha mask over currentColor,
+// so the same art prints in the page ink in both light and dark schemes.
+interface Props {
+  art: string;
+  w: number;
+  h: number;
+  id: string;
+  class: string;
+  stretch?: boolean;
+  /** Hero layers keep the design's attribute order and may stretch to their box. */
+  layer?: boolean;
+}
+const { art, w, h, id, class: className, stretch = false, layer = false } = Astro.props;
+const href = `/art/folder-art-${art}.webp`;
+---
+{layer
+  ? <svg class={className} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio={stretch ? "none" : undefined} aria-hidden="true"><defs><mask id={id} style="mask-type:alpha"><image href={href} width={w} height={h}/></mask></defs><rect width={w} height={h} fill="currentColor" mask={`url(#${id})`}/></svg>
+  : <svg class={className} viewBox={`0 0 ${w} ${h}`} aria-hidden="true"><defs><mask id={id} style="mask-type:alpha"><image href={href} width={w} height={h}/></mask></defs><rect fill="currentColor" width={w} height={h} mask={`url(#${id})`}/></svg>}

@@ -1,0 +1,12 @@
+---
+import { DOCS_URL, GITHUB_URL } from "../../site-links.mjs";
+interface Props {
+  home?: boolean;
+}
+const { home = false } = Astro.props;
+---
+<header class="masthead">
+  {home ? <p class="wordmark">Mono Agent</p> : <a class="wordmark" href="/">Mono Agent</a>}
+  <p class="folio">Open-source agent framework for TypeScript</p>
+  <nav class="folio publication" aria-label="Project links"><a href={GITHUB_URL}>GitHub</a><a href={DOCS_URL}>Docs</a></nav>
+</header>

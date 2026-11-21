@@ -26,8 +26,10 @@ test('extension routes keep exact plain-text security/cache headers without redi
   assert.deepEqual(config.rewrites ?? [], []);
 });
 
-test('landing install command has explicit inspect-first guidance', () => {
+test('landing install command is the hosted installer, copied exactly', () => {
   const html = read('../dist/index.html').toString();
-  assert.match(html, /Download, read, then run\./);
-  assert.match(html, /id="install-command">curl -fsSL https:\/\/mono-agent\.dev\/install\.sh \| sh/);
+  const code = html.match(/<code id="install-command">([\s\S]*?)<\/code>/);
+  assert.ok(code, 'install command is rendered');
+  assert.equal(code[1].replace(/<[^>]+>/g, ''), 'curl -fsSL https://mono-agent.dev/install.sh | sh');
+  assert.match(html, /aria-label="Copy install command"/);
 });
