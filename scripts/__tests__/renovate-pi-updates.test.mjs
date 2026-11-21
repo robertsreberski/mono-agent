@@ -3,6 +3,8 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { PINNED_RUNTIME_DEPENDENCIES } from "../release/dependency-policy.mjs";
+
 const renovateConfigPath = ".github/renovate.json";
 const expectedPiPackages = [
   "@earendil-works/pi-agent-core",
@@ -102,7 +104,9 @@ describe("Pi dependency update automation", () => {
       "packages/turn/package.json:dependencies:@earendil-works/pi-agent-core",
       "packages/turn/package.json:dependencies:@earendil-works/pi-ai",
     ]);
-    expect([...new Set(directPiDependencies.map(({ version }) => version))]).toEqual(["1.5.2"]);
+    expect([...new Set(directPiDependencies.map(({ version }) => version))]).toEqual([
+      PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"],
+    ]);
     for (const dependency of directPiDependencies) {
       expect(dependency.version, `${dependency.path} ${dependency.name}`).toMatch(
         /^\d+\.\d+\.\d+$/,

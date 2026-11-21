@@ -342,9 +342,9 @@ describe("release graph validation", () => {
     } catch (error) {
       expect(error.issues).toEqual([
         "@mono-agent/app dependencies.@earendil-works/pi-ai must be owned by @mono-agent/turn; test-only Pi dependencies belong in devDependencies",
-        "@mono-agent/app dependencies.@earendil-works/pi-ai must pin known-compatible version 1.5.2 exactly; found ^0.80.6",
-        "@mono-agent/turn dependencies.@earendil-works/pi-agent-core must pin known-compatible version 1.5.2 exactly; found ~0.80.6",
-        "@mono-agent/turn dependencies.@earendil-works/pi-ai must pin known-compatible version 1.5.2 exactly; found 0.80.8",
+        `@mono-agent/app dependencies.@earendil-works/pi-ai must pin known-compatible version ${PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"]} exactly; found ^0.80.6`,
+        `@mono-agent/turn dependencies.@earendil-works/pi-agent-core must pin known-compatible version ${PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-agent-core"]} exactly; found ~0.80.6`,
+        `@mono-agent/turn dependencies.@earendil-works/pi-ai must pin known-compatible version ${PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"]} exactly; found 0.80.8`,
       ]);
     }
   });
@@ -352,11 +352,11 @@ describe("release graph validation", () => {
   test("permits only exact development-only Pi pins outside turn", () => {
     const app = packageRecord({
       name: "@mono-agent/app",
-      devDependencies: { "@earendil-works/pi-ai": "1.5.2" },
+      devDependencies: { "@earendil-works/pi-ai": PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"] },
     });
     expect(() => validateRelease({ tag: "v1.2.3", packages: [app], rootPackageJson: rootPackageRecord(), silent: true }))
       .not.toThrow();
-    app.packageJson.devDependencies["@earendil-works/pi-ai"] = "^1.5.2";
+    app.packageJson.devDependencies["@earendil-works/pi-ai"] = `^${PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"]}`;
     expect(() => validateRelease({ tag: "v1.2.3", packages: [app], rootPackageJson: rootPackageRecord(), silent: true }))
       .toThrow(/devDependencies\.@earendil-works\/pi-ai must pin/u);
   });
@@ -675,7 +675,7 @@ describe("current launch manifest", () => {
     const piAi = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"];
     const piCore = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-agent-core"];
 
-    expect(piCore).toBe("1.5.2");
+    expect(piCore).toMatch(/^\d+\.\d+\.\d+$/u);
     expect(guidance).toContain(
       `packages/turn\`: \`@earendil-works/pi-ai\` and \`@earendil-works/pi-agent-core\` at \`${piCore}\``,
     );

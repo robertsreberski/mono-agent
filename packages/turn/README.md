@@ -1249,8 +1249,9 @@ defensively cloned built-in chat model snapshots; `getPiBuiltinModel(providerId,
 snapshot or `undefined`; and
 `reasoningLevelsForPiModel(model)` translates a Pi model into mono-agent's
 reasoning vocabulary, including `none` rather than Pi's `off`.
-A temporary Pi 1.5.2 supplement also supplies `gpt-6.2-sol` and `gpt-6.2-astra`
-on `openai` and `openai-codex` for listings, resolution, dispatch and pricing.
+A temporary supplement also supplies `gpt-6.2-sol` and `gpt-6.2-astra`
+on `openai` and `openai-codex` for listings, resolution, dispatch and pricing
+while Pi 1.6.0 ships them natively; native Pi rows always win by provider + id.
 Sol costs $2/$10 and Astra $8/$40 per million input/output tokens; above 272K
 prompt tokens, input/cache rates double and output rates multiply by 1.5 for the
 whole request. Default windows stay conservative like their siblings: 272K,

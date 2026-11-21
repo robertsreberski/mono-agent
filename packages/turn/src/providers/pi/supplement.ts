@@ -1,5 +1,6 @@
-// Temporary backfill for Pi AI 1.5.2. Remove this module and its hooks once Pi
-// ships all four GPT-6.2 rows. Upstream provider+id always wins, including pricing.
+// Conservative fallback while Pi 1.6.0's native GPT-6.2 rows are verified in
+// production. Remove this module and its hooks once the supplement is confirmed
+// redundant. Upstream provider+id always wins, including pricing.
 // Snapshots copy the pinned GPT-6.1 Sol / GPT-6 Astra siblings verbatim except
 // id, name and published GPT-6.2 pricing; keep their conservative context windows.
 import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
