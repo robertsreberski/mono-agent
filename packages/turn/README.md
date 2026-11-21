@@ -1249,15 +1249,13 @@ defensively cloned built-in chat model snapshots; `getPiBuiltinModel(providerId,
 snapshot or `undefined`; and
 `reasoningLevelsForPiModel(model)` translates a Pi model into mono-agent's
 reasoning vocabulary, including `none` rather than Pi's `off`.
-A temporary Pi 1.5.2 supplement also supplies `gpt-6.2-sol` and `gpt-6.2-astra`
-on `openai` and `openai-codex` for listings, resolution, dispatch and pricing.
-Sol costs $2/$10 and Astra $8/$40 per million input/output tokens; above 272K
-prompt tokens, input/cache rates double and output rates multiply by 1.5 for the
-whole request. Default windows stay conservative like their siblings: 272K,
-except Codex Sol at 500K; all four support the explicit `context1M` opt-in.
-Efforts match GPT-6.1 Sol/GPT-6 Astra (no `none` or `ultra`). Native Pi rows
-always win by provider + id. Remove `src/providers/pi/supplement.ts` and its
-catalog, context, pricing and dispatch hooks/tests once Pi ships all four rows.
+Pi 1.6.0 supplies native `gpt-6.2-sol` and `gpt-6.2-astra` rows on `openai`,
+`openai-codex` and `github-copilot`. The existing OpenAI and Codex references
+retain their pricing, effort ladders and `context1M` eligibility.
+`google:gemini-4-neon` uses Google AI Studio's Gemini API (`GEMINI_API_KEY` or a
+stored key); `github-copilot:gemini-4-neon` uses Copilot's account or token access.
+The native Google adapter accepts `low`, `medium`, and `high`; Copilot also
+accepts `xhigh`. Both use Pi's 1,048,576-token context and 65,536-token output cap.
 
 Pi 0.87.0 exposes GPT-6 Astra on `openai` and `openai-codex`, and
 Pi 0.87.1 adds Opus 5.5 and GPT-6 Sol/Luna. Pi 0.99.1 also ships Sonnet 5.5

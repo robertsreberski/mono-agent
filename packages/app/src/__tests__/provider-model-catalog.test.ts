@@ -12,18 +12,21 @@ describe("provider-model-catalog", () => {
     ["openai", "gpt-6.2-astra", ["low", "medium", "high", "xhigh", "max"], 272_000],
     ["openai-codex", "gpt-6.2-sol", ["minimal", "low", "medium", "high", "xhigh", "max"], 500_000],
     ["openai-codex", "gpt-6.2-astra", ["minimal", "low", "medium", "high", "xhigh", "max"], 272_000],
+    ["google", "gemini-4-neon", ["low", "medium", "high"], 1_048_576],
+    ["github-copilot", "gemini-4-neon", ["low", "medium", "high", "xhigh"], 1_048_576],
     ["anthropic", "claude-fable-5-2", ["minimal", "low", "medium", "high", "xhigh", "max"], 1_000_000],
     ["anthropic", "claude-haiku-5-5", ["none", "low", "medium", "high", "xhigh", "max"], 1_000_000],
     ["openai-codex", "gpt-6.1-terra", ["none", "minimal", "low", "medium", "high", "xhigh", "max"], 500_000],
     ["opencode-go", "kimi-k3.1-pro", ["low", "high", "max"], 1_048_576],
     ["opencode", "muse-wonder-1.0", ["minimal", "low", "medium", "high", "xhigh", "max"], 1_048_576],
-  ] as const)("projects Pi 1.5 %s:%s into the web picker catalog", (provider, id, effortLevels, contextWindow) => {
+  ] as const)("projects Pi %s:%s into the web picker catalog", (provider, id, effortLevels, contextWindow) => {
     const catalog = buildProviderModelCatalog({ providers: [{ id: provider }] });
     const reference = `${provider}:${id}`;
     const row = catalog.listModels(provider, { limit: 200 }).models.find((model) => model.id === id);
     expect(row).toMatchObject({ id, effortLevels, contextWindow, reasoning: true });
     const route = parseMonoRuntimeModelReference(reference);
     expect(catalog.describe([route])[reference]).toMatchObject({ effortLevels, contextWindow });
+    if (id === "gemini-4-neon") expect(row?.name).toBe("Gemini 4 Neon");
     if (id.startsWith("gpt-6.2-")) expect(row?.supportsContext1M).toBe(true);
     if (provider === "anthropic") expect(row?.supportsContext1M).not.toBe(true); // Already native 1M, not GPT opt-in.
   });
@@ -173,7 +176,7 @@ describe("provider-model-catalog", () => {
     const effort = resolveAdvertisedModelEffortForBuiltin(snapshot);
     expect(advertised).toMatchObject({
       id: "deepseek-v4.1-flash",
-      name: "DeepSeek V4.1 Flash",
+      name: "DeepSeek V4.1 Flash 1017",
       provider: "opencode-go",
       contextWindow: 1000000,
       reasoning: effort.reasoning,

@@ -455,7 +455,7 @@ async function promptManualPiModelRef(): Promise<string> {
       validate: (v) => {
         const value = (v ?? "").trim();
         if (value.length === 0) {
-          return "Enter a supported Pi provider id (anthropic, github-copilot, openai, openai-codex, opencode-go, ollama, or lmstudio)";
+          return "Enter a supported Pi provider id (anthropic, github-copilot, google, openai, openai-codex, opencode-go, ollama, or lmstudio)";
         }
         if (value.includes(":")) return "Provider id cannot contain ':'.";
         return guidedPiProviderProblem(value);

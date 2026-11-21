@@ -144,7 +144,7 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "runtime",
-          "status": "waiting",
+          "status": "ok",
         },
         {
           "id": "credentials",

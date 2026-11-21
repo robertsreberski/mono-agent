@@ -89,7 +89,8 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "API-key providers prompt securely on a TTY; --api-key-stdin explicitly reads a redirected secret.",
       "Path precedence: --pi-auth-path, providers.piAuthPath, then Pi's default.",
       "OpenAI offers Sign in with ChatGPT or an API key; choose --auth-method when headless (--api-key-stdin implies api-key).",
-      "Supported Pi targets: anthropic, github-copilot, openai, openai-codex, and opencode-go.",
+      "Google AI Studio uses a Gemini API key (stored or GEMINI_API_KEY); no Google OAuth is available.",
+      "Supported Pi targets: anthropic, github-copilot, google, openai, openai-codex, and opencode-go.",
     ],
   },
   {
@@ -388,7 +389,7 @@ Init model references use <provider>:<model>, for example
 openai-codex:gpt-5.6-terra or anthropic:claude-sonnet-4-6. The init wizard
 selects the live provider-declared default when available and falls back offline to
 openai-codex:gpt-5.6-terra. Guided Pi authentication covers Anthropic,
-GitHub Copilot, OpenAI Codex, and OpenCode-Go.
+GitHub Copilot, Google AI Studio, OpenAI, OpenAI Codex, and OpenCode-Go.
 
 Managed SRT and mono-agent tool policy apply consistently to every configured route.
 

@@ -16,7 +16,7 @@ import { estimateCost } from "../../telemetry/cost.js";
 
 // Exercise the real pinned chat catalog, not a mock or a copied row:
 // pricing, dispatch, advertised effort and listing must agree.
-describe("Pi 1.5.2 native model integration", () => {
+describe("Pi 1.6.0 native model integration", () => {
   const rows = [
     ["anthropic", "claude-haiku-5-5", 1_000_000, ["none", "low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
     ["anthropic", "claude-opus-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 4, 20],
@@ -230,7 +230,7 @@ describe("resolvePiRuntimeModel — OpenCode Go DeepSeek V4.1 Flash upstream bui
 
     expect(resolved.model).toMatchObject({
       id: "deepseek-v4.1-flash",
-      name: "DeepSeek V4.1 Flash",
+      name: "DeepSeek V4.1 Flash 1017",
       api: "openai-completions",
       provider: "opencode-go",
       baseUrl: "https://opencode.ai/inference/go/openai/v1",
@@ -238,7 +238,6 @@ describe("resolvePiRuntimeModel — OpenCode Go DeepSeek V4.1 Flash upstream bui
       input: ["text", "image"],
       compat: {
         supportsStore: false,
-        supportsDeveloperRole: false,
         maxTokensField: "max_tokens",
         requiresReasoningContentOnAssistantMessages: true,
         thinkingFormat: "deepseek",
@@ -255,7 +254,7 @@ describe("resolvePiRuntimeModel — OpenCode Go DeepSeek V4.1 Flash upstream bui
       reasoning: true,
       reasoning_mode: "effort",
       reasoning_levels: ["low", "high", "max"],
-      reasoning_disable_supported: true,
+      reasoning_disable_supported: false,
       vision: true,
       json_mode: true,
     });

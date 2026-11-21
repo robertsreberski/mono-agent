@@ -236,7 +236,7 @@ export function piModelSelectOptions(
     {
       value: CUSTOM_PI_MODEL_OPTION,
       label: "Supported Pi provider/model id…",
-      hint: "Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, Ollama, or LM Studio",
+      hint: "Anthropic, GitHub Copilot, Google, OpenAI, OpenAI Codex, OpenCode-Go, Ollama, or LM Studio",
     },
   ];
 }

@@ -1,7 +1,7 @@
 import { parseMonoRuntimeModelReference } from "@mono-agent/turn/host/config";
 import type { RuntimeModelReference } from "@mono-agent/turn/host/types";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { hasUsablePiOAuthClientId } from "../providers/credential-values.js";
+import { hasUsablePiOAuthClientId, PI_API_KEY_PROVIDERS } from "../providers/credential-values.js";
 import { piAuthRecoveryCommand } from "../providers/oauth-command.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "../providers/pi-auth-store-inspection.js";
 import type { ValidationSection, ValidationStatus } from "./doctor-types.js";
@@ -16,11 +16,6 @@ interface PiAuthEntry {
   readonly refresh?: string;
   readonly clientId?: string;
 }
-
-const PI_API_KEY_ENV_BY_PROVIDER: Readonly<Record<string, string>> = {
-  "opencode-go": "OPENCODE_API_KEY",
-  openai: "OPENAI_API_KEY",
-};
 
 /** Inspects Pi credentials without following aliases or reading unbounded input. */
 async function readPiAuthProviders(path: string): Promise<
@@ -120,8 +115,8 @@ async function appendPiCredentialDetails(
   const authPath = config.providers?.piAuthPath;
   const needsStoredCredential = piRefs.some(({ ref }) => {
     const provider = ref.provider as string;
-    const key = PI_API_KEY_ENV_BY_PROVIDER[provider];
-    return provider === "openai" || key === undefined || !hasNonEmptyCredentialValue(env[key]);
+    const key = PI_API_KEY_PROVIDERS[provider];
+    return provider === "openai" || provider === "google" || key === undefined || !hasNonEmptyCredentialValue(env[key]);
   });
   const authInspection = authPath === undefined || !needsStoredCredential ? undefined : await readPiAuthProviders(authPath);
   const authProviders = authInspection?.status === "ok" ? authInspection.providers : undefined;
@@ -175,9 +170,9 @@ async function appendPiCredentialDetails(
       }
       continue;
     }
-    const apiKeyEnv = PI_API_KEY_ENV_BY_PROVIDER[provider];
+    const apiKeyEnv = PI_API_KEY_PROVIDERS[provider];
     if (apiKeyEnv !== undefined && hasNonEmptyCredentialValue(env[apiKeyEnv])
-      && (provider !== "openai" || authProviders?.[provider] === undefined)) {
+      && ((provider !== "openai" && provider !== "google") || authProviders?.[provider] === undefined)) {
       details.push(
         `${label} ${refStr}: Pi API-key credential for \`${providerLabel}\` present in the resolved environment (${apiKeyEnv}); credential detected, live model verification is still pending.`,
       );
@@ -208,6 +203,11 @@ async function appendPiCredentialDetails(
       details.push(
         `[WARN] ${label} ${refStr}: stored API-key credential for \`${providerLabel}\` has no usable key. Run \`${loginCommand}\`; no secret value was displayed.`,
       );
+      continue;
+    }
+    if (isOAuth && provider === "google") {
+      status = "waiting";
+      details.push(`[WARN] ${label} ${refStr}: Google requires a Gemini API key, not OAuth. Run \`${loginCommand}\`; no credential value was displayed.`);
       continue;
     }
     if (isOAuth && !hasNonEmptyCredentialValue(entry.access) && !hasNonEmptyCredentialValue(entry.refresh)) {

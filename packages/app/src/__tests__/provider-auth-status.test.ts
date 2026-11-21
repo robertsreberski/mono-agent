@@ -75,6 +75,20 @@ describe("provider auth status", () => {
       .toContain("oauth");
   });
 
+  it("detects a Google key from GEMINI_API_KEY without disclosing or verifying it", async () => {
+    const fixture = "fictional-gemini-environment-key";
+    const config = { ...configWith("/fictional/missing-auth.json"), runtime: {
+      model: parseMonoRuntimeModelReference("google:gemini-4-neon"),
+    } } as MonoAgentConfig;
+    const snap = await providerAuthStatusSnapshot({ config, env: { GEMINI_API_KEY: fixture }, drivers: [],
+      input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} }, observations: createProviderAuthObservationTracker(),
+    });
+    expect(snap.providers.find((row) => row.providerId === "google")).toMatchObject({
+      state: "present", source: "environment", credentialType: "api_key", verification: "not_verified",
+    });
+    expect(JSON.stringify(snap)).not.toContain(fixture);
+  });
+
   it("marks a stored OpenAI OAuth credential without clientId unusable", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mono-agent-openai-status-"));
     tempDirs.push(dir);

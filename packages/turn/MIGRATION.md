@@ -28,25 +28,38 @@ their original context.
 
 Contributors: run `pnpm run clean` once after updating a checkout built before this change.
 
-## Unreleased GPT-6.2 catalog backfill
+## Unreleased Pi 1.6.0 compatibility
 
-- `openai:gpt-6.2-sol`, `openai:gpt-6.2-astra` and the same model IDs on
-  `openai-codex` now behave as built-ins without changing the pinned Pi version
-  or default route. Existing config needs no migration. They retain sibling
-  effort maps and conservative 272K windows (500K for Codex Sol), including
-  `context1M` eligibility; pricing includes the >272K whole-request tier.
-- This is a temporary gap supplement, not a catalog override: a native Pi row
-  with the same provider + id takes precedence. After upgrading Pi to a version
-  containing all four rows, remove `src/providers/pi/supplement.ts`, its imports
-  and registration call, and the gap tests; keep native integration coverage.
-  GitHub Copilot availability and `ultra` effort are not added.
+- Pi AI and Pi Agent Core are exact-pinned to `1.6.0`. Existing GPT-6.2 Sol
+  and Astra refs on `openai` and `openai-codex` now use native Pi entries;
+  their pricing, effort options and explicit `context1M` eligibility are
+  unchanged. Pi also lists GPT-6.2 on GitHub Copilot where the account has access.
+- To use Gemini 4 Neon, set `runtime.model` to `google:gemini-4-neon` or
+  `github-copilot:gemini-4-neon`. `mono-agent auth login google` uses a masked
+  Gemini API-key prompt; a key already supplied via `GEMINI_API_KEY` need not be
+  copied. This adds no Google OAuth, subscription, or `ProviderUsage` quota
+  source. Copilot keeps its existing account sign-in. Both routes have a
+  1,048,576-token context, 65,536-token output cap, and catalog rates of
+  $3 input / $15 output / $0.15 cache reads per million tokens. Use `low`,
+  `medium`, or `high` on either route; `xhigh` works through Copilot only, as
+  the direct Pi Gemini adapter cannot encode it. Neither offers `none`.
+- Pi now sends Codex effort changes as transcript configuration updates and
+  honors the request's output cap where model compatibility allows. Effective
+  effort reporting follows the active update rather than the fixed cache anchor.
+  Guarded Codex upkeep and lookup do not treat serialization as proof of
+  backend enforcement; their existing admission rules remain unchanged.
+  The Google adapter treats `CONTINUATION` as a length stop. Pi Agent Core
+  records an abort result for each skipped tool rather than omitting its result.
+- Pi removes `opencode-go:glm-5.2`. Select a current model explicitly; for
+  example, `opencode-go:glm-5.3` offers `low`, `high`, and `max` effort. No
+  references are automatically rewritten.
 
-## Unreleased Pi 1.5.2 compatibility
+## Pi 1.5.2 compatibility (previous release)
 
 - Pi AI and Pi Agent Core are exact-pinned to `1.5.2`, including development
   fixtures and packed-consumer resolution. Catalog snapshots derive their data
   fields from the pinned Pi model type and remain defensive deep clones.
-- Apart from the temporary GPT-6.2 backfill above, built-in models come from
+- Built-in models in that release came from
   Pi's chat catalog: Claude Fable 5.2, Haiku 5.5,
   GPT-6.1 Terra, Kimi K3.1 Pro, Hy4, MiniMax M3.1 Flash, Muse Ember/Wonder and
   Gemini 4 Argon need no local supplements. Availability still depends on the
@@ -241,7 +254,7 @@ The canonical adapter API is `resolveEngineTurnAdapter`,
 the optional resolver shares the same malformed-reference validation. Config,
 wire identifiers and the `"pi"` adapter id are unchanged.
 
-The runtime exact-pins Pi AI and Pi Agent Core at `1.5.2` (the terminal TUI
+The runtime exact-pins Pi AI and Pi Agent Core at `1.6.0` (the terminal TUI
 renderer is retired, so no Pi TUI pin remains). Pi Core removed its high-level
 harness. The Pi provider glue uses the runtime-owned engine for model-run admission,
 steering, journal/storage and compaction over upstream `runAgentLoop`; provider
@@ -1124,7 +1137,7 @@ Worklab's runtime fork:
    `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
    of provider bridge code. Move tests off Pi's faux-provider helpers too; until
    that is complete, isolate the fixture or pin its development-only dependencies
-  to the exact Pi AI `1.5.2` and Pi Agent Core `1.5.2` compatibility pins
+  to the exact Pi AI `1.6.0` and Pi Agent Core `1.6.0` compatibility pins
    rather than floating ranges. Do not restore the
    removed `pi-sdk.js` subpath.
 3. **Use the public Pi surfaces.** Run models through
@@ -1132,7 +1145,7 @@ Worklab's runtime fork:
    `listPiBuiltinModels`, `getPiBuiltinModel`,
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the
-   exact Pi AI `1.5.2` and Pi Agent Core `1.5.2` compatibility pins inside the
+   exact Pi AI `1.6.0` and Pi Agent Core `1.6.0` compatibility pins inside the
    runtime and its engine dependency. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.
