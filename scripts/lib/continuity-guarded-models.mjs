@@ -27,8 +27,12 @@ function bind(protocol, protocolId) {
     // Pi 1.4+ anchors Codex declarations in input; retain the same conservative
     // per-tool/schema framing charge as top-level declarations.
     const tools = [...(payload.tools ?? []), ...input.filter(item => item?.type === "additional_tools").flatMap(item => item.tools ?? [])];
+    // Pi 1.6 moves instructions to a leading developer (or system) item.
+    // Preserve the separate instructions allowance, in addition to item framing.
+    const head = input.find(item => item?.type !== "additional_tools");
+    const leadingInstruction = ["developer", "system"].includes(head?.role) && typeof head.content === "string";
     const H = h.base + input.length * h.inputItem + input.filter(x => x.type === "reasoning").length * h.reasoningItem
-      + tools.length * h.tool + properties(tools) * h.schemaProperty + (Object.hasOwn(payload, "instructions") ? h.instructions : 0);
+      + tools.length * h.tool + properties(tools) * h.schemaProperty + (Object.hasOwn(payload, "instructions") || leadingInstruction ? h.instructions : 0);
     const bytes = Buffer.byteLength(JSON.stringify(payload));
     return { bytes, H, U: bytes + settledOutputTokens.reduce((a, b) => a + b, 0) + H };
   }

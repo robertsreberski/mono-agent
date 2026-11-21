@@ -7,6 +7,7 @@ import { bindE2Checkpoint, e2PhaseWork, verifyE2NativeLineage } from "./continui
 import { bindE2NativeCompaction } from "./continuity-e2-journals.mjs";
 import { writeE2SummaryResult } from "./continuity-e2-summary-receipts.mjs";
 import { digest } from "./continuity-recorded-schema.mjs";
+import { normalizeContext } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/index.js";
 import { convertResponsesMessages } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 export async function measureE2ControllerCapacity(root) {
   const measurements = [];
@@ -32,8 +33,8 @@ export async function measureE2ControllerCapacity(root) {
         slot.compaction = { checkpoint: 0, operationDigest, nativeSnapshot: [{ retainedAdmission: true }] };
         const started = performance.now();
         for (let i = 0; i < 30; i++) {
-          const bytes = Buffer.from(JSON.stringify({ model: model.id, stream: true, store: false, instructions: context.systemPrompt,
-            input: convertResponsesMessages({ ...model, input: ["text"] }, context, new Set(["openai-codex"]), { includeSystemPrompt: false }) }));
+          const bytes = Buffer.from(JSON.stringify({ model: model.id, stream: true, store: false,
+            input: convertResponsesMessages({ ...model, input: ["text"] }, normalizeContext(context), new Set(["openai-codex"])) }));
           maximumBytes = Math.max(maximumBytes, bytes.length);
           const hold = { model: `${model.provider}:${model.id}`, paidRole: "summary", checkpoint: 0, operationDigest, lineageScope: "proof", lineage: slot.lineages.proof, payloadDigest: digest(bytes) };
           hold.nativeCompaction = await bindE2NativeCompaction(e2PhaseWork(base, planned), operationDigest, hold.payloadDigest, readArtifact);

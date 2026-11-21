@@ -45,12 +45,13 @@ export async function deriveE2SummaryRequest({ root, state, index, hold, native,
   const key = digest([hold.nativeCompaction.prefixSha256, hold.nativeCompaction.nativeOperationDigest, policyBinding, predecessor.textSha256,
     previous.map(h => h.summaryReceipt.sha256)]);
   if (plans.has(key)) return plans.get(key);
-  const [{ SessionStore }, { projectContext }, { createCompactionAccounting, createGuardedCompactionHook, piSummaryReserveTokens }, { estimateTokens }, { planSummaryBudget }, { prepareSummaryInput }, { sumKnownSummaryUsage }, { convertResponsesMessages }] = await Promise.all([
+  const [{ SessionStore }, { projectContext }, { createCompactionAccounting, createGuardedCompactionHook, piSummaryReserveTokens }, { estimateTokens }, { planSummaryBudget }, { prepareSummaryInput }, { sumKnownSummaryUsage }, { convertResponsesMessages }, { clampThinkingLevel, normalizeContext }] = await Promise.all([
     import("../../packages/turn/dist/engine/session-store.js"), import("../../packages/turn/dist/engine/request-projection.js"),
     import("../../packages/turn/dist/execution/pi/compaction/compaction-driver.js"), import("../../packages/turn/dist/engine/compaction-kit/compaction.js"),
     import("../../packages/turn/dist/engine/compaction-kit/historical-preservation.js"), import("../../packages/turn/dist/execution/pi/compaction/compaction-summary.js"),
     import("../../packages/turn/dist/engine/compaction-kit/usage.js"),
     import("../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js"),
+    import("../../packages/turn/node_modules/@earendil-works/pi-ai/dist/index.js"),
   ]);
   const store = new SessionStore(native.header, native.records, undefined, () => {});
   const branchEntries = projectContext(await store.getEntries(), { mode: "compaction", repairs: await store.getRepairEntries() }).entries;
@@ -61,8 +62,8 @@ export async function deriveE2SummaryRequest({ root, state, index, hold, native,
     replies.push((await readPrivate(e2SummaryResultPath(root, slot.slotId, prior.round))).message);
   }
   let budgetPlan;
-  const harness = { getModel: () => model, models: { completeSimple: async (_model, context) => {
-    requests.push(context);
+  const harness = { getModel: () => model, models: { completeSimple: async (_model, context, options) => {
+    requests.push({ context, options });
     if (replies[requests.length - 1]) return replies[requests.length - 1];
     // Use the structured shipping plan, never a frame quoted in conversation.
     // Only a generated history needs to copy tuples; a prefix follows generated
@@ -83,9 +84,22 @@ export async function deriveE2SummaryRequest({ root, state, index, hold, native,
   need(result.compaction && hook.getDecision()?.kind === "accepted" && requests.length > previous.length);
   const fallback = warnings.some(w => w.warning_kind === "retained_summary_legacy_fallback");
   need(fallback === (result.retainedAuthorityUsed === false));
-  const context = requests[previous.length];
+  const { context, options } = requests[previous.length];
+  // Derive the same Codex transcript from the independently replayed request
+  // options. Never choose wire format, source text, or effort from the child.
+  const level = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : "off";
+  let configurationUpdateEffort;
+  if (model.compat?.supportsMidConvoEffort) {
+    if (level !== "off") configurationUpdateEffort = model.thinkingLevelMap?.[level] ?? level;
+    else if (model.reasoning && model.thinkingLevelMap?.off !== null) configurationUpdateEffort = model.thinkingLevelMap?.off ?? "none";
+  }
   const plan = { assembly: fallback ? "legacy-fallback" : accounting.splitTurn && (!budgetPlan.generateHistory || previous.length > 0) ? "split-prefix" : "summary",
-    instructions: context.systemPrompt, input: convertResponsesMessages({ ...model, input: ["text"] }, context, new Set(["openai-codex"]), { includeSystemPrompt: false }) };
+    input: convertResponsesMessages({ ...model, input: ["text"] }, normalizeContext(context), new Set(["openai-codex"]), {
+      supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages,
+      supportsAdditionalTools: model.compat?.supportsAdditionalTools,
+      supportsToolSearch: model.compat?.supportsToolSearch,
+      configurationUpdateEffort,
+    }) };
   plans.set(key, plan); while (plans.size > 4) plans.delete(plans.keys().next().value);
   return plan;
 }

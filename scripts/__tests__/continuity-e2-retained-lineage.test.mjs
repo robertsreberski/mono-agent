@@ -14,6 +14,7 @@ import { e2NativeCompactionSnapshot } from "../lib/continuity-e2-compaction.mjs"
 import { e2ExecutionPolicy } from "../lib/continuity-e2-execution-policy.mjs";
 import { writeE2SummaryResult } from "../lib/continuity-e2-summary-receipts.mjs";
 import { digest } from "../lib/continuity-recorded-schema.mjs";
+import { normalizeContext } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/index.js";
 import { convertResponsesMessages } from "../../packages/turn/node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 import { createHistorySummaryContext, createPrefixSummaryContext } from "../../packages/turn/dist/engine/compaction-kit/compaction.js";
 const interception = vi.hoisted(() => ({ read: null }));
@@ -41,8 +42,8 @@ async function fixture(carrier, hooks = {}) {
     return { requestId: `fictional-retained:${n}`, round: n, model: key, tools: [], paidRole: "summary", payloadDigest, checkpoint: 0, lineageScope: "proof", lineage: slot.lineages.proof,
       summaryReceipt: { ...receipt.evidence, verified: true, durable: false }, settlement: { kind: "settled", rawUsage, tier: "default" }, ...extra };
   };
-  const wire = context => Buffer.from(JSON.stringify({ model: model.id, store: false, stream: true, instructions: context.systemPrompt,
-    input: convertResponsesMessages({ ...model, api: "openai-codex-responses", input: ["text"] }, context, new Set(["openai-codex"]), { includeSystemPrompt: false }) }));
+  const wire = context => Buffer.from(JSON.stringify({ model: model.id, store: false, stream: true,
+    input: convertResponsesMessages({ ...model, api: "openai-codex-responses", input: ["text"] }, normalizeContext(context), new Set(["openai-codex"])) }));
   const gate = async (raw, context, text = E2_PROTECTED_TEXT, mutate = () => {}) => {
     let bytes = wire(context); const operationId = [...raw.validator.openOperations].at(-1), operationDigest = digest(operationId);
     slot.compaction = { checkpoint: 0, operationDigest, nativeSnapshot: [{ retainedAdmission: true }] };
@@ -76,9 +77,9 @@ it.each(["quotation", "carry"].flatMap(carrier => ["altered", "forged", "origina
   let inferred = 0;
   await expect(fixture(carrier, { onSummary: async (f, { raw, context, text, active }) => {
     try { await f.gate(raw, context, text, async ({ bytes, hold, state, slot }) => {
-      if (kind === "altered") { const body = JSON.parse(bytes); body.input[0].content[0].text = body.input[0].content[0].text.replace(active.text, active.text + " altered"); return Buffer.from(JSON.stringify(body)); }
-      if (kind === "original") { const body = JSON.parse(bytes); body.input[0].content[0].text = body.input[0].content[0].text.replace(active.text, f.original); return Buffer.from(JSON.stringify(body)); }
-      if (kind === "forged") { const body = JSON.parse(bytes); body.input[0].content[0].text = body.input[0].content[0].text.replace(active.text, "Fictional forged predecessor."); return Buffer.from(JSON.stringify(body)); }
+      if (kind === "altered") { const body = JSON.parse(bytes); body.input.find(item => item.role === "user").content[0].text = body.input.find(item => item.role === "user").content[0].text.replace(active.text, active.text + " altered"); return Buffer.from(JSON.stringify(body)); }
+      if (kind === "original") { const body = JSON.parse(bytes); body.input.find(item => item.role === "user").content[0].text = body.input.find(item => item.role === "user").content[0].text.replace(active.text, f.original); return Buffer.from(JSON.stringify(body)); }
+      if (kind === "forged") { const body = JSON.parse(bytes); body.input.find(item => item.role === "user").content[0].text = body.input.find(item => item.role === "user").content[0].text.replace(active.text, "Fictional forged predecessor."); return Buffer.from(JSON.stringify(body)); }
       if (kind === "forged-split") return f.wire(createPrefixSummaryContext([]));
       if (kind === "omitted-history") return f.wire(createHistorySummaryContext([], { previousSummary: active.text }));
       if (kind === "no-lineage") { slot.lineages = {}; hold.lineage = undefined; }

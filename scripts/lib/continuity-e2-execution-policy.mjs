@@ -1,3 +1,4 @@
+import { validCodexOutputLimit, validCodexReasoning } from "./continuity-codex-wire.mjs";
 import { historySurfaceBinding, E2_AB_REPLAY_ARM, e2AbArmOfSlot } from "./continuity-e2-history.mjs";
 // Closed E2 accounting policy. Durable admission/consume/settle remain in the shared core.
 import { join } from "node:path";
@@ -26,13 +27,15 @@ function textParts(parts, reasoning = false) {
     && (reasoning ? ["summary_text"] : ["input_text", "output_text"]).includes(p.type) && typeof p.text === "string"
     && (p.annotations === undefined || Array.isArray(p.annotations) && !p.annotations.length), "e2_payload_forbidden");
 }
-function validateBody(body) {
-  need(fieldsOnly(body, ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "tools", "reasoning"])
+function validateBody(body, outputMax) {
+  need(fieldsOnly(body, ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "tools", "reasoning", "max_output_tokens"])
+    && validCodexOutputLimit(body, outputMax) && validCodexReasoning(body)
     && Array.isArray(body.input) && Array.isArray(body.tools ?? []) && (body.instructions === undefined || typeof body.instructions === "string")
     && (body.reasoning === undefined || fieldsOnly(body.reasoning, ["effort", "summary"])) && (body.text === undefined || fieldsOnly(body.text, ["verbosity"]))
     && (body.include === undefined || Array.isArray(body.include) && body.include.every(v => v === "reasoning.encrypted_content")), "e2_payload_forbidden");
   for (const t of [...(body.tools ?? []), ...body.input.filter(item => item?.type === "additional_tools").flatMap(item => item.tools ?? [])]) need(fieldsOnly(t, ["type", "name", "description", "parameters", "strict"]), "e2_payload_forbidden");
   for (const item of body.input) {
+    if (item?.type === "configuration_update") continue; // Validated by validCodexReasoning.
     if (item?.type === "additional_tools") {
       need(fieldsOnly(item, ["type", "role", "tools"]) && item.role === "developer" && Array.isArray(item.tools), "e2_payload_forbidden");
     } else if (item?.type === "reasoning") {
@@ -171,9 +174,9 @@ export const e2ExecutionPolicy = Object.freeze({
     const role = contract.e2.pilot.registration.roles.find(r => r.role === contract.e2.paidRole && r.model === contract.e2.model);
     const allowed = requestTools(contract.e2.pilot, contract.e2.planned, contract.e2, contract.e2.probeRequest);
     const ab = contract.e2.planned?.kind === "replay" ? e2AbArmOfSlot(contract.e2.planned.arm) : undefined;
-    this.assertBody(Buffer.from(JSON.stringify(body)), { model: contract.e2.model, tools: allowed, ...(contract.e2.probeRequest === undefined ? {} : { probeRequest: contract.e2.probeRequest }), ...(ab === undefined ? {} : { abArm: ab, abDescriptionSha256: abDescriptionSha256(contract.e2.pilot, ab) }) });
-    need(role && (contract.effort === "off" ? [undefined, "none"].includes(body.reasoning?.effort) : body.reasoning?.effort === contract.effort) && Array.isArray(body.input)
-      && Object.keys(body).every(k => ["model", "store", "stream", "instructions", "input", "text", "include", "prompt_cache_key", "tool_choice", "parallel_tool_calls", "temperature", "tools", "reasoning"].includes(k)), "e2_payload_forbidden");
+    need(role, "e2_payload_forbidden");
+    this.assertBody(Buffer.from(JSON.stringify(body)), { model: contract.e2.model, tools: allowed, outputMax: role.maxOutputTokens, ...(contract.e2.probeRequest === undefined ? {} : { probeRequest: contract.e2.probeRequest }), ...(ab === undefined ? {} : { abArm: ab, abDescriptionSha256: abDescriptionSha256(contract.e2.pilot, ab) }) });
+    need(validCodexReasoning(body, contract.effort), "e2_payload_forbidden");
     // Shipping compaction deliberately disables body caching. Its authenticated
     // summary role still uses the controller phase identity in native headers.
     need((contract.e2.paidRole === "summary" && body.prompt_cache_key === undefined)
@@ -382,7 +385,7 @@ export const e2ExecutionPolicy = Object.freeze({
     const tools = [...(body.tools ?? []), ...additional.flatMap(item => item.tools)];
     need(tools.every(t => t.type === "function" && hold.tools.includes(t.name)), "e2_tools_forbidden");
     if (hold.probeRequest !== undefined) need(tools.length === hold.tools.length, "e2_tools_forbidden");
-    validateBody(body);
+    validateBody(body, hold.outputMax);
     // The controller's own pack-withheld boundary, independent of the child filter.
     if (hold.abArm !== undefined) {
       assertE2NoContinuityPack(body);
