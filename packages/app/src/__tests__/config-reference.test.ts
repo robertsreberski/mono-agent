@@ -19,6 +19,9 @@ import {
 import type { ConfigReferenceType } from "../config-reference/config-reference.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
+/** Former canonical schema URL; existing configs may still reference it. */
+const LEGACY_RAW_GITHUB_SCHEMA_URL =
+  "https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/app/schema/mono-agent.config.schema.json";
 
 const EXPECTED_CORE_FIELD_TYPES: Record<keyof typeof CORE_CONFIG_FIELD_IDS, ConfigReferenceType> = {
   "agent.name": "string",
@@ -347,6 +350,36 @@ describe("config reference", () => {
     const root = repoRoot();
     const schema = readFileSync(join(root, "packages/app/schema/mono-agent.config.schema.json"), "utf8");
     expect(schema).toBe(`${JSON.stringify(buildMonoAgentConfigSchema(), null, 2)}\n`);
+  });
+
+  it("keeps the website-hosted schema byte-identical to the committed schema", () => {
+    const root = repoRoot();
+    const committed = readFileSync(join(root, "packages/app/schema/mono-agent.config.schema.json"));
+    const hosted = readFileSync(join(root, "marketing/public/schema.json"));
+    expect(
+      hosted.equals(committed),
+      "marketing/public/schema.json drifted from packages/app/schema/mono-agent.config.schema.json; run `pnpm run generate:config-reference`",
+    ).toBe(true);
+  });
+
+  it("publishes the schema under its canonical mono-agent.dev URL", () => {
+    expect(MONO_AGENT_CONFIG_SCHEMA_URL).toBe("https://mono-agent.dev/schema.json");
+    const schema = buildMonoAgentConfigSchema() as { $id?: unknown };
+    expect(schema.$id).toBe(MONO_AGENT_CONFIG_SCHEMA_URL);
+    expect(buildGeneratedConfigReferenceMarkdown()).toContain(`Schema: \`${MONO_AGENT_CONFIG_SCHEMA_URL}\``);
+  });
+
+  it("keeps configs that reference the former raw GitHub schema URL valid", () => {
+    const json = {
+      $schema: LEGACY_RAW_GITHUB_SCHEMA_URL,
+      runtime: { model: "openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+    };
+    const schema = buildMonoAgentConfigSchema() as SchemaNode;
+    expect(schema.properties?.$schema).toEqual({ type: "string" });
+    expect(findUnknownAppConfigPaths(json)).toEqual([]);
+    expect(() => assertKnownAppConfigKeys(json)).not.toThrow();
+    expect(() => resolveJsonMonoAgentConfig({ cwd: process.cwd(), json })).not.toThrow();
   });
 
   it("keeps every core field's inferred type aligned with the hand-written fidelity table", () => {

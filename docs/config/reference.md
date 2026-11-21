@@ -7,7 +7,7 @@ sidebar:
 
 This page is generated from the same config field registries that power `mono-agent config`, recipe output, and the JSON Schema. Do not edit this table by hand; run `pnpm run generate:config-reference`.
 
-Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/app/schema/mono-agent.config.schema.json`
+Schema: `https://mono-agent.dev/schema.json`
 
 | JSON key | Type | Env override | Default | Example | Notes |
 | --- | --- | --- | --- | --- | --- |
