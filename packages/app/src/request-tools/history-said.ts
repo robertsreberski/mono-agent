@@ -20,16 +20,22 @@ const validDigest = (digest: unknown): digest is string => typeof digest === "st
 const scope = (binding: Binding): ContinuityScope => ({ logicalConversationId: binding.logicalConversationId, currentConversationId: binding.conversationId, currentRunId: binding.runId });
 
 export function handleSaidHistoryRequest(binding: Binding, raw: Input) {
-  const result = handleRequest(binding, raw);
+  let result;
+  try { result = readSaidHistoryRequest(binding, raw); }
+  catch { result = saidHistoryUnavailable(); }
   return binding.presentation === undefined ? result : presentHistoryResult(result, binding.presentation);
 }
 
-function handleRequest(binding: Binding, raw: Input) {
+/** One synchronous attempt, with reader errors left to the caller. */
+export function readSaidHistoryRequest(binding: Binding, raw: Input) {
   const parsed = INPUT.safeParse(raw);
   if (!parsed.success) return failure("invalid_request", "Expected only supported search/get arguments.");
   const input = parsed.data, action = input.action ?? (input.recordId === undefined ? "search" : "get");
-  try { return action === "get" ? get(binding, input) : search(binding, input); }
-  catch { return failure("history_unavailable", "Retained conversation evidence is unavailable."); }
+  return action === "get" ? get(binding, input) : search(binding, input);
+}
+
+export function saidHistoryUnavailable() {
+  return failure("history_unavailable", "Retained conversation evidence is unavailable.");
 }
 
 function search(binding: Binding, input: Input) {

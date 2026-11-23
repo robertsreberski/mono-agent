@@ -67,12 +67,21 @@ interface SessionHistoryBinding {
 
 /** @internal Exported for focused authorization and cursor tests. */
 export function handleToolsHistoryRequest(binding: SessionHistoryBinding, input: SessionHistoryInput) {
-  const action = input.action ?? (input.recordId !== undefined || input.toolCallId !== undefined ? "get" : "search");
-  try {
-    return action === "get" ? getRecord(binding, input) : searchRecords(binding, input);
-  } catch {
-    return toolError(action, "history_unavailable", "The requested session history is unavailable.");
-  }
+  try { return readToolsHistoryRequest(binding, input); }
+  catch { return toolsHistoryUnavailable(input); }
+}
+
+/** One synchronous attempt, with reader errors left to the caller. */
+export function readToolsHistoryRequest(binding: SessionHistoryBinding, input: SessionHistoryInput) {
+  return toolsHistoryAction(input) === "get" ? getRecord(binding, input) : searchRecords(binding, input);
+}
+
+export function toolsHistoryUnavailable(input: SessionHistoryInput) {
+  return toolError(toolsHistoryAction(input), "history_unavailable", "The requested session history is unavailable.");
+}
+
+function toolsHistoryAction(input: SessionHistoryInput) {
+  return input.action ?? (input.recordId !== undefined || input.toolCallId !== undefined ? "get" : "search");
 }
 
 function searchRecords(binding: SessionHistoryBinding, input: SessionHistoryInput) {
