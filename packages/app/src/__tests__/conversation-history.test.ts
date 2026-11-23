@@ -279,7 +279,9 @@ describe("History said scope evidence", () => {
     padding = "x".repeat(65_536 - bytes(raw()) - 1024); padding += "x".repeat(65_536 - bytes(raw()) - 8);
     expect(bytes(raw())).toBeGreaterThan(65_536 - 16);
     const presented = await handleHistoryRequest({ ...f.binding, reader: reader as never, artifactDir: join(f.root, "artifacts"), scopes: ["said"] }, { scope: "said", query: "cobalt", limit: 1 });
-    expect(body(presented).scope).toBe("said");
+    expect(presented.isError).toBeUndefined();
+    expect(body(presented)).toMatchObject({ scope: "said", status: "available", count: 1 });
+    expect(body(presented).error).toBeUndefined();
     expect(bytes(presented)).toBeLessThanOrEqual(65_536);
   });
 

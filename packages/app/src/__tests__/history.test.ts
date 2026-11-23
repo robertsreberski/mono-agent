@@ -302,6 +302,16 @@ describe.each(sqliteScopes)("$scope SQLite reads", ({ scope, search, anchor, una
     expect(read).toHaveBeenCalledTimes(2);
   });
 
+  it("still runs the first read when the signal is already aborted, as before retries existed", async () => {
+    const f = await sqliteFixture();
+    const expected = await handleHistoryRequest(f.binding, { scope });
+    const read = vi.spyOn(f.reader, search);
+    cleanup.push(() => read.mockRestore());
+    const actual = await handleHistoryRequest(f.binding, { scope }, AbortSignal.abort());
+    expect(actual).toEqual(expected);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
   it("does not retry a non-SQLite error even if its message mentions a lock", async () => {
     const f = await fixture();
     const read = vi.spyOn(f.reader, search).mockImplementationOnce(() => { throw new Error("Fictional file is locked."); });

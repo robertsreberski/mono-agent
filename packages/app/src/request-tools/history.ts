@@ -111,16 +111,18 @@ const HISTORY_READ_RETRY_MS = 5_000;
 
 async function retryHistoryRead<T, F>(read: () => T, unavailable: () => F, signal?: AbortSignal): Promise<T | F> {
   const deadline = performance.now() + HISTORY_READ_RETRY_MS;
-  while (!signal?.aborted && performance.now() < deadline) {
+  // The first attempt always runs, as it did before retries existed; only
+  // further attempts are gated by cancellation and the deadline.
+  for (;;) {
     try { return read(); }
     catch (error) {
-      if (!isHistorySqliteBusy(error) || signal?.aborted || performance.now() >= deadline) break;
-      // Retry the whole action, including any on-disk cursor validation. Each
-      // reader call opens its own connection, with no partial page reused.
-      await yieldToEventLoop();
+      if (!isHistorySqliteBusy(error) || signal?.aborted || performance.now() >= deadline) return unavailable();
     }
+    // Retry the whole action, including any on-disk cursor validation. Each
+    // reader call opens its own connection, with no partial page reused.
+    await yieldToEventLoop();
+    if (signal?.aborted || performance.now() >= deadline) return unavailable();
   }
-  return unavailable();
 }
 
 // Match conversation's internal isToolHistorySqliteBusy without adding a
