@@ -86,7 +86,9 @@ export async function handleHistoryRequest(binding: Binding, raw: unknown, signa
   if (scope === "said") {
     const valid = SAID_INPUT.safeParse(input);
     if (!valid.success) return failure("invalid_request", "Unsupported said arguments.");
-    const result = await retryHistoryRead(() => readSaidHistoryRequest(binding, valid.data), saidHistoryUnavailable, signal);
+    // Said search sizes its page against the presented response, so the
+    // attempt needs the presentation even though it is applied afterwards.
+    const result = await retryHistoryRead(() => readSaidHistoryRequest({ ...binding, presentation }, valid.data), saidHistoryUnavailable, signal);
     return presentHistoryResult(result, presentation);
   }
   if (scope === "tools") {
