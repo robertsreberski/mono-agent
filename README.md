@@ -42,7 +42,7 @@ New to mono-agent? The [step-by-step tutorial](./docs/getting-started/tutorial.m
 curl -fsSL https://mono-agent.dev/install.sh | sh
 ```
 
-On macOS and glibc Linux, the script installs private Node and the latest published `create-mono-agent` under `~/.mono-agent/cli`; activate the printed PATH before using `mono-agent`. It edits no shell files by default. Published versions before 0.27.0 predate host preflight, so with those the installer warns that preflight is unavailable and finishes normally. For inspect-first use, download the script, read it, then run it. Prefer managing your own Node with `npm i -g create-mono-agent`, Windows, or a pinned install? [Install & prerequisites](./docs/getting-started/install.md) covers `npm create`, `npm exec`, the scoped package, and building from source.
+On macOS and glibc Linux, the script installs private Node and the latest published `create-mono-agent` under `~/.mono-agent/cli`; activate the printed PATH before using `mono-agent`. It edits no shell files by default. Published versions before 0.27.0 predate host preflight, so with those the installer warns that preflight is unavailable and finishes normally. For inspect-first use, download the script, read it, then run it. On Windows, run it inside WSL2 (native Windows is not supported yet). Prefer managing your own Node with `npm i -g create-mono-agent`, or a pinned install? [Install & prerequisites](./docs/getting-started/install.md) covers `npm create`, `npm exec`, the scoped package, and building from source.
 
 ### 2. Create the agent folder
 

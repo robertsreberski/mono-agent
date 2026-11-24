@@ -15,7 +15,8 @@ Follow [Tutorial: your first agent](/getting-started/tutorial/): five steps from
 
 ```bash
 curl -fsSL https://mono-agent.dev/install.sh | sh   # macOS/glibc Linux; private Node, no sudo
-# or, with your own Node.js >= 24.15.0 (including Windows): npm i -g create-mono-agent
+# Windows: run the same command inside WSL2
+# or, with your own Node.js >= 24.15.0: npm i -g create-mono-agent
 mkdir my-agent && cd my-agent
 mono-agent init                # guided wizard on a TTY; scaffold-only with flags
 mono-agent start               # background service on macOS and Linux

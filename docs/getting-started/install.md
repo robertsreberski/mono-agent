@@ -170,7 +170,24 @@ file bytes and modes are preserved, but atomic replacement does not retain
 hard-link identity, ACLs or extended attributes. Unsafe CLI paths or unrecognized
 ownership markers are refused.
 
-### Manage Node yourself (including Windows)
+### Windows: use WSL2
+
+Native Windows is not supported yet. It is not tested in CI, and some features
+assume a POSIX host: the Bash tool runs `/bin/bash`, background process jobs
+need POSIX process groups, managed sandbox setup is macOS-only, and
+owner-private files rely on Unix file modes rather than Windows ACLs.
+
+Run mono-agent inside [WSL2](https://learn.microsoft.com/windows/wsl/install)
+instead. From PowerShell, run `wsl --install` (Ubuntu by default) and open the
+Ubuntu terminal, then follow the Linux steps on this page, starting with the
+private Node installer above. WSL2 is a glibc Linux environment, so the
+installer and the Linux instructions apply. Without a systemd user manager in WSL,
+use `mono-agent start --foreground`. Open the console from your Windows browser
+at the loopback URL it prints. Keep the agent folder inside the Linux
+filesystem (for example `~/my-agent`) rather than under `/mnt/c`, which is
+slower and does not carry Unix file modes.
+
+### Manage Node yourself
 
 With Node.js >=24.15.0 already installed, install the `create-mono-agent` package
 globally to get the `mono-agent` command on your `PATH`:
