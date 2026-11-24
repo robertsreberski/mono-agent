@@ -19,6 +19,7 @@ const validId = (id: unknown): id is string => typeof id === "string" && /^chr1_
 const validDigest = (digest: unknown): digest is string => typeof digest === "string" && /^[a-f0-9]{64}$/u.test(digest);
 const scope = (binding: Binding): ContinuityScope => ({ logicalConversationId: binding.logicalConversationId, currentConversationId: binding.conversationId, currentRunId: binding.runId });
 
+/** @internal Exported for focused history tests and the lookup budget script; the runtime retries readSaidHistoryRequest. */
 export function handleSaidHistoryRequest(binding: Binding, raw: Input) {
   let result;
   try { result = readSaidHistoryRequest(binding, raw); }
