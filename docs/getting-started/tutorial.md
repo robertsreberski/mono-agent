@@ -9,7 +9,7 @@ This tutorial takes a computer with nothing installed to a working agent you tal
 
 You need:
 
-- macOS or glibc Linux (x64 or arm64) for the one-line installer. On Windows, or if you prefer to manage Node yourself, use npm with Node.js `>=24.15.0` (step 1 shows how).
+- macOS or glibc Linux (x64 or arm64) for the one-line installer. On Windows, use [WSL2](/getting-started/install/#windows-use-wsl2) and follow the Linux steps. If you prefer to manage Node yourself, use npm with Node.js `>=24.15.0` (step 1 shows how).
 - A model provider account you can sign in to (for example OpenAI Codex, Anthropic, or GitHub Copilot), or a local [Ollama or LM Studio](/runtime/local-providers/) server.
 - Two terminal windows and a browser on the same computer.
 
@@ -44,7 +44,9 @@ mono-agent --version
 
 Prefer to read the script first? [Install & prerequisites](/getting-started/install/#private-node-installer-macos-and-linux) shows the download-inspect-run sequence with the published checksum.
 
-**On Windows, or with your own Node:** install Node.js `>=24.15.0`, then install the CLI globally with npm:
+**On Windows:** open a WSL2 Ubuntu terminal and run the one-line installer above; see [Windows: use WSL2](/getting-started/install/#windows-use-wsl2). Native Windows is not supported yet.
+
+**With your own Node:** install Node.js `>=24.15.0`, then install the CLI globally with npm:
 
 ```bash
 node --version              # must print v24.15.0 or newer

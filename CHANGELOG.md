@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Recommend WSL2 for Windows in the install docs, tutorial, README and
+  homepage. Native Windows is untested and lacks POSIX-only features such as
+  the Bash tool and background process jobs, so the docs no longer present
+  `npm i -g create-mono-agent` as the Windows route.
+
 - Redesign the mono-agent.dev homepage as "The coworker in a folder": a real,
   validated example agent folder shown file by file, mixed model routes, the
   phone console, memory, and a two-command setup, in light and dark. The blog
