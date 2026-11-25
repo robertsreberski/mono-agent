@@ -45,7 +45,7 @@ interface SuggestRepliesService {
   wrapResponder(responder: AgentResponder): AgentResponder;
 }
 
-/** Non-blocking, request-scoped suggestions; selection is a later ordinary user turn. */
+/** Non-blocking, request-scoped suggestions for the web composer. */
 export function createSuggestRepliesService(input: {
   readonly budget: ReplyPartBudget;
 }): SuggestRepliesService {
@@ -103,7 +103,7 @@ function createSuggestionServer(suggest: (options: readonly string[]) => { reado
   const server = new McpServer({ name: SUGGEST_REPLIES_SERVER_NAME, version: "1.0.0" });
   server.registerTool(SUGGEST_REPLIES_TOOL_NAME, {
     title: "Suggest quick replies",
-    description: "Attach 2–8 non-blocking quick reply buttons beneath your final answer in the web console. Clicking a button sends its label later as a new user turn in this conversation. Use AskUser when this run must wait for a selection. A later call replaces this reply's earlier choices. Labels must be distinct, single-line, trimmed, and 1–75 characters. " + REPLY_PRESENTATION_CONTRACT,
+    description: "Attach 2–8 non-blocking quick reply buttons beneath your final answer in the web console. Clicking a button appends its label to the composer so the operator can combine or edit suggestions and send the message themselves. This run never waits for a selection; use AskUser when it must wait. A later call replaces this reply's earlier choices. Labels must be distinct, single-line, trimmed, and 1–75 characters. " + REPLY_PRESENTATION_CONTRACT,
     inputSchema: INPUT,
   }, async ({ options }) => {
     const result = suggest(options);

@@ -1282,24 +1282,35 @@ function ReplyOptionsPart({ data }: DataMessagePartProps) {
   const aui = useAui();
   const messageId = useAuiState((state) => state.message.id);
   const threadId = useAuiState((state) => state.message.metadata.custom?.threadId);
-  const { selectedThreadId } = useConsoleStore();
+  const { selectedThreadId, selectedThread, selectionLoading, selectionError } = useConsoleStore();
   const selectionChanged = selectedThreadId !== undefined && selectedThreadId !== threadId;
+  const composerUnavailable = selectionLoading || selectionError != null
+    || Boolean(selectedThread?.archivedAt) || selectedThread?.trigger?.kind === "cron";
+  const inputDisabled = useAuiState((state) => state.thread.isDisabled || Boolean(state.thread.composer.dictation?.inputDisabled));
   const settled = useAuiState((state) => state.message.status?.type === "complete");
-  const running = useAuiState((state) => state.thread.isRunning);
   const laterUser = useAuiState((state) => {
     const index = state.thread.messages.findIndex((message) => message.id === messageId);
     return index < 0 || state.thread.messages.slice(index + 1).some((message) => message.role === "user");
   });
-  const clicked = useRef(false);
-  const [sent, setSent] = useState(false);
   const options = Array.isArray(payload.options) ? payload.options.filter((option): option is string => typeof option === "string") : [];
-  const disabled = !settled || running || laterUser || sent || selectionChanged;
+  const disabled = !settled || laterUser || selectionChanged || composerUnavailable || inputDisabled;
   return <div className="reply-options" role="group" aria-label="Suggested replies">
-    {options.map((label) => <button key={label} type="button" disabled={disabled} onClick={() => {
-      if (disabled || clicked.current) return;
-      clicked.current = true;
-      setSent(true);
-      aui.thread().append({ role: "user", content: [{ type: "text", text: label }] });
+    {options.map((label) => <button key={label} type="button" disabled={disabled} onClick={(event) => {
+      if (disabled) return;
+      const input = event.currentTarget.closest(".thread-root")?.querySelector<HTMLTextAreaElement>("#composer-input");
+      if (!input || input.disabled || input.readOnly) return;
+      const composer = aui.thread().composer();
+      const current = composer.getState().text.trimEnd();
+      const text = current ? `${current}\n${label}` : label;
+      composer.setText(text);
+      // Focus in the click/tap handler so WebKit can open the software keyboard.
+      input.focus({ preventScroll: true });
+      // Place the caret after the controlled textarea receives the new text.
+      window.requestAnimationFrame(() => {
+        if (document.activeElement === input && input.value === text) {
+          input.setSelectionRange(text.length, text.length);
+        }
+      });
     }}>{label}</button>)}
   </div>;
 }

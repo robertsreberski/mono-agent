@@ -88,9 +88,9 @@ not displayed as a user message in channel transcripts or web Activity.
 
 `SuggestReplies` is an app-owned, request-scoped MCP tool on web-console
 conversation turns, including existing web-bound background/job wakes. It is
-non-blocking: the agent finishes its reply, and a click arrives later as a new
-user turn in the same conversation. Use `AskUser` when the current run must
-wait for a selection. Ordinary `tools.allowedTools` / `tools.disallowedTools`
+non-blocking: the agent finishes its reply without waiting for a selection.
+Use `AskUser` when the current run must wait for a selection. Ordinary
+`tools.allowedTools` / `tools.disallowedTools`
 policy applies; a restrictive allow-list must include `SuggestReplies`.
 
 ```json
@@ -103,11 +103,11 @@ one `reply_options` part containing only `type`, an opaque `id`, and `options`.
 A later call in the same run replaces the choices without claiming another
 slot in the shared 20-part reply budget. The choices persist with the assistant
 message and appear as keyboard-accessible, wrapping buttons directly below the
-final answer. A click sends the label verbatim through the normal chat path and
-shows it as a user message. Buttons become disabled after a click, while a turn
-is running, or once any later user message exists. There is no separate click
-store or cross-device lock: the later user message makes old choices inert on
-reload and other devices.
+final answer. A click appends the label to the composer, on a new line if the
+draft already has text. The operator can combine choices, edit the draft, and
+send it themselves. Buttons are disabled until the answer settles, after any
+later user message, or if the conversation is no longer selected. The later
+user message also makes old choices inert on reload and other devices.
 
 Telegram, Slack, webhook, terminal, ACP, cron, A2A and OpenAI-compatible turns
 never receive this tool. Unexpected delivery to a non-web human destination

@@ -104,8 +104,9 @@ sandboxed Apps, and machine/verbatim adapters preserve answer text when they
 cannot represent a part. `SuggestReplies` is a web-only app-owned request-scoped tool for non-blocking
 quick reply choices, including web-bound job wakes: 2–8 distinct trimmed
 single-line labels, each 1–75 characters. A later call replaces the reply's
-choices; one set counts against the shared 20-part budget. A click sends the
-label as a new user turn; use `AskUser` when the current run must wait.
+choices; one set counts against the shared 20-part budget. Clicking appends
+the label to the web composer for the operator to combine or edit before
+sending. Use `AskUser` when the current run must wait.
 Restrictive `tools.allowedTools` must name `SuggestReplies`; deny wins.
 
 `ProposeRestart` is another app-owned request-scoped
