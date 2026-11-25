@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Let web console quick reply buttons append to the composer instead of sending
+  immediately, so you can combine, edit, and send suggestions yourself.
+
 - Recommend WSL2 for Windows in the install docs, tutorial, README and
   homepage. Native Windows is untested and lacks POSIX-only features such as
   the Bash tool and background process jobs, so the docs no longer present

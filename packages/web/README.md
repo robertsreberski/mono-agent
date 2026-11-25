@@ -1172,11 +1172,12 @@ checks still apply.
 
 Assistant `reply_options` parts persist in existing message JSON without a new
 table or migration. The webapp renders a compact wrapping chip row directly
-below the final answer. Clicking a label uses the normal user-message send
-path in that conversation; transcript state disables old choices after any
-later user message or while a turn runs, with a local double-click guard.
-Web-bound background/job wakes retain the part. Choices survive reload and
-other devices; no separate durable click state or cross-device lock is added.
+below the final answer. Clicking a choice appends its label to the composer
+on a new line if there is already text. The operator can combine or edit
+choices before sending a message. Choices are disabled until the answer is
+settled, after any later user message, or when the conversation is no longer
+selected. Web-bound background/job wakes retain the part. Choices survive
+reload and other devices; drafts stay local to the browser.
 The app-owned `SuggestReplies` tool validates 2–8 distinct trimmed single-line
 labels (1–75 characters), obeys tool policy, and never blocks the current run.
 

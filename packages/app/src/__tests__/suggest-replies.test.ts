@@ -51,6 +51,9 @@ describe("SuggestReplies", () => {
           const description = (await client.listTools()).tools.find((tool) => tool.name === SUGGEST_REPLIES_TOOL_NAME)?.description;
           // One fixed contract in the description; the result is a factual receipt only.
           expect(description).toContain(REPLY_PRESENTATION_CONTRACT);
+          expect(description).toContain("appends its label to the composer");
+          expect(description).toContain("send the message themselves");
+          expect(description).toContain("use AskUser when it must wait");
           expect(description).toContain("never your reasoning");
           for (const phrase of REPLY_PRESENTATION_RESULT_FORBIDDEN_PHRASES) expect(JSON.stringify(suggested.content).toLowerCase()).not.toContain(phrase);
           expect(JSON.stringify(suggested.content)).not.toContain("this final reply");

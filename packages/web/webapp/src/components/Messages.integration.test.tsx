@@ -8,6 +8,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { useCallback, useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
+import { COMPOSER_DRAFTS_STORAGE_KEY, flushComposerDrafts, readComposerDraft, resetComposerDraft } from "../composer-draft";
 import { resetDataUsage } from "../data-usage";
 import { writeDataModeSetting } from "../data-mode";
 import {
@@ -18,6 +19,7 @@ import { compactionMarkerIdsForMessages, convertWebMessage, visibleCompactionMes
 import type { WebMessage } from "../types";
 import { processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage, copyableMessageText } from "./Messages";
+import { Composer } from "./Composer";
 import { ProcessJobStack } from "./ProcessJobStack";
 import { ToolCallRepairProvider } from "./tool-call-repair";
 
@@ -27,7 +29,13 @@ const consoleStoreMock = vi.hoisted(() => ({
     effectiveModel: "provider:primary",
     loadCronRunActivity: vi.fn(),
     selectedAgent: null,
+    selectedAgentId: "fixture-agent",
     selectedThread: null,
+    selectedThreadId: undefined as string | undefined,
+    selectionError: null,
+    skillRegistry: { status: "idle", items: [] },
+    modelOptions: [],
+    effortOptions: [],
     transcriptMovedAt: 0,
   },
 }));
@@ -47,6 +55,8 @@ afterEach(() => {
   // test in this file rendering into a tab the console believes is hidden.
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
   consoleStoreMock.current.effectiveModel = "provider:primary";
+  consoleStoreMock.current.selectedThreadId = undefined;
+  resetComposerDraft();
 });
 
 function MessagesHarness({
@@ -54,11 +64,13 @@ function MessagesHarness({
   onRuntime,
   onNew = async () => undefined,
   isRunning = false,
+  withComposer = false,
 }: {
   readonly messages: readonly WebMessage[];
   readonly onRuntime?: (runtime: AssistantRuntime) => void;
   readonly onNew?: (message: unknown) => Promise<void>;
   readonly isRunning?: boolean;
+  readonly withComposer?: boolean;
 }) {
   const presentation = projectProcessJobPresentation(
     visibleCompactionMessages(messages),
@@ -100,9 +112,10 @@ function MessagesHarness({
       historyIsBounded={false}
     >
       <AssistantRuntimeProvider runtime={runtime}>
-        <ThreadPrimitive.Root>
+        <ThreadPrimitive.Root className="thread-root">
           <ThreadPrimitive.Messages components={{ AssistantMessage, SystemMessage, UserMessage }} />
           <ProcessJobStack />
+          {withComposer && <Composer />}
         </ThreadPrimitive.Root>
       </AssistantRuntimeProvider>
     </ProcessJobPresentationProvider>
@@ -1974,23 +1987,74 @@ const quickReplyMessage: WebMessage = {
     { type: "reply_options", id: "choices", options: ["Review draft", "Keep going", "Try another approach"] }],
 };
 describe("non-blocking quick replies", () => {
-  it("sends the exact choice through the normal runtime path and guards double clicks", async () => {
+  it.each(["", " \t\n"])("inserts into an empty-looking draft (%j), focuses it and saves it without sending", async (draft) => {
+    consoleStoreMock.current.selectedThreadId = "thread";
     const onNew = vi.fn(async (_message: unknown) => undefined);
-    render(<MessagesHarness messages={[quickReplyMessage]} onNew={onNew} />);
+    const { unmount } = render(<MessagesHarness messages={[quickReplyMessage]} onNew={onNew} withComposer />);
+    const input = screen.getByRole("combobox", { name: "Message" });
+    fireEvent.change(input, { target: { value: draft } });
     const button = screen.getByRole("button", { name: "Review draft" });
-    fireEvent.click(button); fireEvent.click(button);
-    await waitFor(() => expect(onNew).toHaveBeenCalledTimes(1));
-    expect(onNew.mock.calls[0]?.[0]).toMatchObject({ role: "user", content: [{ type: "text", text: "Review draft" }] });
-    expect(button).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Keep going" })).toBeDisabled();
+    fireEvent.click(button);
+    await waitFor(() => expect(input).toHaveValue("Review draft"));
+    expect(input).toHaveFocus();
+    expect(button).toBeEnabled();
+    expect(onNew).not.toHaveBeenCalled();
+    await waitFor(() => expect(readComposerDraft("fixture-agent", "thread")).toBe("Review draft"));
+    flushComposerDrafts();
+    expect(localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toContain("Review draft");
+    unmount();
+    render(<MessagesHarness messages={[quickReplyMessage]} onNew={onNew} withComposer />);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("Review draft"));
   });
-  it("is inert during a running turn and after any later user message", () => {
+
+  it("appends reusable choices to typed text and sends only the edited draft on Send", async () => {
+    consoleStoreMock.current.selectedThreadId = "thread";
     const onNew = vi.fn(async (_message: unknown) => undefined);
-    const { rerender } = render(<MessagesHarness messages={[quickReplyMessage]} onNew={onNew} isRunning />);
-    expect(screen.getByRole("button", { name: "Review draft" })).toBeDisabled();
-    rerender(<MessagesHarness messages={[quickReplyMessage, { ...quickReplyMessage, id: "later", role: "user", parts: [{ type: "text", text: "Another question" }] }]} onNew={onNew} />);
+    render(<MessagesHarness messages={[quickReplyMessage]} onNew={onNew} withComposer />);
+    const input = screen.getByRole("combobox", { name: "Message" });
+    fireEvent.change(input, { target: { value: "  My notes  \n " } });
+    const review = screen.getByRole("button", { name: "Review draft" });
+    fireEvent.click(review);
+    await waitFor(() => expect(input).toHaveValue("  My notes\nReview draft"));
+    fireEvent.click(screen.getByRole("button", { name: "Keep going" }));
+    await waitFor(() => expect(input).toHaveValue("  My notes\nReview draft\nKeep going"));
+    fireEvent.click(review);
+    await waitFor(() => expect(input).toHaveValue("  My notes\nReview draft\nKeep going\nReview draft"));
+    expect(onNew).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: "My notes\nReview the draft today" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(onNew).toHaveBeenCalledTimes(1));
+    expect(onNew.mock.calls[0]?.[0]).toMatchObject({ role: "user", content: [{ type: "text", text: "My notes\nReview the draft today" }] });
+  });
+
+  it("keeps settled choices usable while an assistant-only turn runs", async () => {
+    consoleStoreMock.current.selectedThreadId = "thread";
+    const wake = { ...assistantMessage("running"), id: "job-wake" };
+    const onNew = vi.fn(async (_message: unknown) => undefined);
+    render(<MessagesHarness messages={[quickReplyMessage, wake]} onNew={onNew} isRunning withComposer />);
     const button = screen.getByRole("button", { name: "Review draft" });
-    expect(button).toBeDisabled(); fireEvent.click(button);
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("Review draft"));
+    expect(onNew).not.toHaveBeenCalled();
+  });
+
+  it("disables choices before settlement, after a later user message, and on thread switch", async () => {
+    consoleStoreMock.current.selectedThreadId = "thread";
+    const onNew = vi.fn(async (_message: unknown) => undefined);
+    const { rerender } = render(<MessagesHarness messages={[{ ...quickReplyMessage, status: "running" }]} onNew={onNew} isRunning withComposer />);
+    const choice = () => screen.getByRole("button", { name: "Review draft" });
+    expect(choice()).toBeDisabled();
+    rerender(<MessagesHarness messages={[quickReplyMessage]} onNew={onNew} withComposer />);
+    await waitFor(() => expect(choice()).toBeEnabled());
+    rerender(<MessagesHarness messages={[quickReplyMessage, userMessage]} onNew={onNew} withComposer />);
+    await waitFor(() => expect(choice()).toBeDisabled());
+    fireEvent.click(choice());
+    consoleStoreMock.current.selectedThreadId = "another-thread";
+    rerender(<MessagesHarness messages={[quickReplyMessage]} onNew={onNew} withComposer />);
+    await waitFor(() => expect(choice()).toBeDisabled());
+    fireEvent.click(choice());
+    expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("");
     expect(onNew).not.toHaveBeenCalled();
   });
 });

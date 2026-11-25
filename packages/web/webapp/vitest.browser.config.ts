@@ -33,6 +33,11 @@ const dragVoiceNote: BrowserCommand<[]> = async (context) => {
   await context.page.mouse.up();
 };
 
+const tapReplyOption: BrowserCommand<[string]> = async (context, label) => {
+  if (context.provider.name !== "playwright") throw new Error("Playwright required");
+  await context.iframe.getByRole("button", { name: label, exact: true }).tap();
+};
+
 const emulateReducedMotion: BrowserCommand<["reduce" | "no-preference" | null]> = async (context, reducedMotion) => {
   if (context.provider.name !== "playwright") throw new Error("emulateReducedMotion requires Playwright");
   await context.page.emulateMedia({ reducedMotion });
@@ -183,22 +188,22 @@ export default defineConfig({
         ...(process.env.WEBAPP_TEST_WEBKIT === "1" ? [{
           browser: "webkit" as const,
           name: "webkit-chat",
-          include: ["src/components/Chat.browser.test.tsx", "src/VoiceConversation.browser.test.tsx"],
-          exclude: ["src/**/!(Chat|VoiceConversation).browser.test.tsx"],
+          include: ["src/components/Chat.browser.test.tsx", "src/VoiceConversation.browser.test.tsx", "src/components/QuickReplies.browser.test.tsx"],
+          exclude: ["src/**/!(Chat|VoiceConversation|QuickReplies).browser.test.tsx"],
           context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
         }] : []),
         // Instance include patterns merge with the suite's include; explicitly
-        // exclude other files so only this regression gets a second context.
+        // exclude other files so only the touch regressions get a second context.
         {
           browser: "chromium",
           name: "chromium-touch",
-          include: ["src/components/ProviderUsage.browser.test.tsx", "src/components/agent-settings/ProvidersSection.browser.test.tsx"],
-          exclude: ["src/**/!(ProviderUsage|ProvidersSection).browser.test.tsx"],
+          include: ["src/components/ProviderUsage.browser.test.tsx", "src/components/agent-settings/ProvidersSection.browser.test.tsx", "src/components/QuickReplies.browser.test.tsx"],
+          exclude: ["src/**/!(ProviderUsage|ProvidersSection|QuickReplies).browser.test.tsx"],
           provide: { providerUsageTouch: true },
           context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
         },
       ],
-      commands: { prepareCapabilityScreenshots, prepareUsageAnalyticsScreenshots, checkServerVoicePlayback, dragVoiceNote, emulateColorScheme, emulateReducedMotion, saveVoiceFixture },
+      commands: { prepareCapabilityScreenshots, prepareUsageAnalyticsScreenshots, checkServerVoicePlayback, dragVoiceNote, emulateColorScheme, emulateReducedMotion, saveVoiceFixture, tapReplyOption },
     },
   },
 });

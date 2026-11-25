@@ -1358,10 +1358,13 @@ Type `/` in an empty composer to open the keyboard-friendly command popover for 
 An agent can call `SuggestReplies` to attach 2–8 non-blocking choices directly
 beneath its final answer, including web-bound background/job wake replies.
 The compact buttons wrap on mobile and support keyboard navigation. Clicking
-one sends its label verbatim as an ordinary user message in the same
-conversation; the current agent run never waits for a choice. The choices are
-stored with the answer and survive reload. They remain readable but disabled
-after a click, while a turn is running, or after any later user message.
+one appends its label to the composer on a new line if there's already text.
+You can combine choices and edit the draft before sending it yourself. The
+current agent run never waits for a choice. The choices are stored with the
+answer and survive reload. They remain readable but disabled until the answer
+settles, after any later user message, or when the conversation is no longer
+selected. Settled choices still work during another run if the composer is
+available.
 Use `AskUser` instead when a run must wait for the operator's response.
 See [web-only quick replies](/tools/rich-replies/#web-only-quick-replies) for
 validation, tool policy, and unsupported-destination behavior.
