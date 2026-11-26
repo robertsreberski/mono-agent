@@ -237,9 +237,14 @@ messages call only `SuggestReplies`, `PublishReplyFile`, or `ProposeRestart`
 is not promoted. If that chain has no text, the existing whole-run streamed-text
 fallback still applies. This reply selection is shared by all channels.
 
-If a normally settled session turn has no reply text, the runtime requests the
-user-facing reply once more in the same session with all tools disabled. Thinking
-is never used as reply text. Cancelled, failed, max-turn-limited, silent,
+A successful batch of only app-owned reply-presentation tools ends Pi's model
+loop after all results settle. Mixed and failed batches, structured-output turns,
+and queued steering still follow their usual continuation rules.
+
+If a normally settled session turn has no reply text, including after a
+successful presentation batch, the runtime requests the user-facing reply once
+more in the same session with all tools disabled. Existing reply parts are
+preserved. Thinking is never used as reply text. Cancelled, failed, max-turn-limited, silent,
 AskParent-pending, and structured-output turns are excluded. A second empty reply
 still follows the host's existing `empty_response` path. Runtime warnings named
 `empty_reply_retry` report attempt 1 and its outcome (`started`, then `text`,

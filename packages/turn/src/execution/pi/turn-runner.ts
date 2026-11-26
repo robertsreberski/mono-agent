@@ -18,6 +18,7 @@ import { initPiMcpTools, closePiMcpClients } from "../../tools/mcp/tools.js";
 import { createNodeReplController } from "../../tools/commands/node-repl.js";
 import { createWebToolController } from "../../tools/web/web-controller.js";
 import { formatLiveInputGuidance } from "../../runtime/live-input-prompt.js";
+import { isTrustedReplyPresentationTool } from "./reply-text.js";
 import { createHarnessAdapter } from "./driver-adapter.js";
 import { requestRetryPolicy } from "./request-retry.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
@@ -399,7 +400,15 @@ export async function buildTurnHarness(runState: PiRunState, {
   // failed delegation keeps its log — but pi hardcodes `isError: false` for
   // every resolved execute(), so without this the model would be told a failed,
   // timed-out, or empty delegation succeeded.
-  harness.on("tool_result", (event: any) => toolResultErrorOverride(event?.details));
+  const terminalPresentationNames = new Set((options.outputSchema ? [] : tools)
+    .filter(isTrustedReplyPresentationTool).map((tool) => tool.name));
+  harness.on("tool_result", (event: { details?: unknown; isError: boolean; toolName: string }) => {
+    const error = toolResultErrorOverride(event.details);
+    if (error) return error;
+    // Pi finishes the batch only if every call votes to terminate. It still
+    // places every result and polls for steering before ending the loop.
+    if (!event.isError && terminalPresentationNames.has(event.toolName)) return { terminate: true };
+  });
   // Optional retention diagnostics are visible even during repair/admission,
   // before ordinary message subscription, and on the manual compaction path.
   harness.subscribe((event: any) => {

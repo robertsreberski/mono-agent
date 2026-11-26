@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- End Pi turns after successful `SuggestReplies`, `ProposeRestart`, or
+  `PublishReplyFile` batches that contain only those app-owned tools. Deliver
+  the written answer without another model request, or ask for missing reply
+  text once with tools disabled while keeping the attached parts.
+
 - Let web console quick reply buttons append to the composer instead of sending
   immediately, so you can combine, edit, and send suggestions yourself.
 

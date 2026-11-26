@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { appOwnedMcpServerSpec } from "./app-owned-tool-policy.js";
 import { createLoopbackMcpEndpoint } from "./loopback-transport.js";
+import { markReplyPresentationServer } from "./reply-presentation.js";
 import { HISTORY_MCP_TOOL_NAME, HISTORY_TOOL_NAME } from "../request-tools/history-policy.js";
 import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 
@@ -17,6 +18,7 @@ export const REQUEST_SCOPED_MCP_NESTED_RESULT_OMISSION =
 interface RequestScopedMcpEndpointOptions {
   readonly serverName: string;
   readonly startingMessage: string;
+  readonly replyPresentation?: true;
   /** A fresh server is required for every SDK-dispatched stateless HTTP request. */
   readonly createServer: (input: Parameters<RuntimeOptionsExtension>[0]) => McpServer;
   readonly onUnavailable?: (error: unknown) => void;
@@ -42,8 +44,10 @@ export function createRequestScopedMcpRuntimeExtension(options: RequestScopedMcp
         ...(options.toolCallError === undefined ? {} : { toolCallError: options.toolCallError }),
         ...(options.listen === undefined ? {} : { listen: options.listen }),
       });
+      const spec = appOwnedMcpServerSpec(options.serverName, { type: "http", url: endpoint.url }, options.historyScopes);
+      if (options.replyPresentation) markReplyPresentationServer(spec);
       return {
-        runtimeOptions: { mcpServers: { [options.serverName]: appOwnedMcpServerSpec(options.serverName, { type: "http", url: endpoint.url }, options.historyScopes) } },
+        runtimeOptions: { mcpServers: { [options.serverName]: spec } },
         cleanup: endpoint.close,
       };
     } catch (error) {

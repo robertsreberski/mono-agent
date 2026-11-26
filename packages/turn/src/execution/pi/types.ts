@@ -7,6 +7,7 @@ import type { createRunDriver } from "../../engine/run-driver.js";
 import type { resolveAgentCompactionPolicy } from "../../agent/compaction.js";
 import type { createApprovalManager } from "../../agent/approval.js";
 import type { initPiMcpTools } from "../../tools/mcp/tools.js";
+import type { APP_REPLY_PRESENTATION } from "../../tools/mcp/reply-presentation.js";
 
 // Internal contracts only. Public overloads retain the pre-conversion open bags.
 export type PiModel = Model<Api>;
@@ -23,7 +24,7 @@ export type PiHarness = Pick<PiDriver, "prompt" | "steer" | "cancelQueued" | "ab
   appendMessage: PiSession["appendMessage"];
   on: PiDriver["hooks"]["on"];
 };
-export type PiTool = { name: string; description: string; parameters: any; executionMode?: string; execute: (toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: (update: any) => void) => Promise<any> };
+export type PiTool = { [APP_REPLY_PRESENTATION]?: true; name: string; description: string; parameters: any; executionMode?: string; execute: (toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: (update: any) => void) => Promise<any> };
 export type PiWarning = { warning_kind: string; message?: string; [key: string]: any };
 export type PiEventSink = (event: any) => void;
 export type PiCapabilities = { tool_use?: boolean; reasoning?: boolean; reasoning_mode?: string; reasoning_levels?: readonly string[] | undefined; json_mode?: boolean };

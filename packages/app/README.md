@@ -1255,11 +1255,12 @@ title remains the fallback.
 Presentation tools (`SuggestReplies`, `PublishReplyFile`, `ProposeRestart`) attach
 parts beneath the answer. Their descriptions share one fixed contract
 (`REPLY_PRESENTATION_CONTRACT` in `src/mcp/reply-presentation.ts`): the user sees
-only normal assistant text, never reasoning, so write the complete answer as
-normal text before the call. Successful results are factual receipts with no
-composing instructions; a turn that still ends without text gets the runtime's
-empty-reply finalization. This guidance does not guarantee model compliance or
-repair existing history.
+only normal assistant text, never reasoning. Write the complete answer as
+normal text, then call the tools last, putting all parts and files for the reply
+in one final batch. On Pi, a successful app-owned presentation-only batch ends
+the model loop without a request after the receipts. If the reply has no text,
+Pi asks for it once with tools disabled and keeps the attached parts. Successful
+results are factual receipts with no composing instructions.
 
 `SuggestReplies` attaches non-blocking quick-action buttons to a final reply
 on web-console turns, including web-bound background/job wakes. It accepts

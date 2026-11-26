@@ -53,6 +53,7 @@ export function createSuggestRepliesService(input: {
   const responseContext = new AsyncLocalStorage<{ readonly runIds: Set<string> }>();
   const scoped = createRequestScopedMcpRuntimeExtension({
     serverName: SUGGEST_REPLIES_SERVER_NAME,
+    replyPresentation: true,
     startingMessage: "Quick reply tool is starting",
     createServer: ({ runId }) => createSuggestionServer((options) => {
       if (!choices.has(runId) && input.budget.claim(runId, "reply_options") !== "accepted") {

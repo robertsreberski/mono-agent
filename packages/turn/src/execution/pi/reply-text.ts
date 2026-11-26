@@ -1,4 +1,6 @@
 import { textFromContent } from "../../providers/pi/messages.js";
+import { APP_REPLY_PRESENTATION } from "../../tools/mcp/reply-presentation.js";
+import type { PiTool } from "./types.js";
 
 /** Tools that present the reply rather than gather more evidence for it. */
 export function isReplyPresentationTool(name: any): boolean {
@@ -7,6 +9,31 @@ export function isReplyPresentationTool(name: any): boolean {
 
 function toolCalls(message: any) {
   return Array.isArray(message?.content) ? message.content.filter((block: any) => block?.type === "toolCall") : [];
+}
+
+export function isTrustedReplyPresentationTool(tool: PiTool): boolean {
+  return tool[APP_REPLY_PRESENTATION] === true && isReplyPresentationTool(tool.name);
+}
+
+/**
+ * In Pi, every call must vote to terminate. A settled tail containing exactly
+ * the successful results of a trusted presentation batch proves that it did;
+ * a newer assistant message or a placed steer is not part of that batch.
+ */
+export function hasTerminalReplyPresentationBatch(transcript: readonly any[], tools: readonly PiTool[]): boolean {
+  const results = new Map<string, string>();
+  let index = transcript.length - 1;
+  for (; index >= 0 && transcript[index]?.role === "toolResult"; index--) {
+    const result = transcript[index];
+    if (result.isError !== false || results.has(result.toolCallId)) return false;
+    results.set(result.toolCallId, result.toolName);
+  }
+  const assistant = transcript[index];
+  if (!results.size || assistant?.role !== "assistant" || assistant.stopReason !== "toolUse") return false;
+  const calls = toolCalls(assistant);
+  const trustedNames = new Set(tools.filter(isTrustedReplyPresentationTool).map((tool) => tool.name));
+  return calls.length === results.size && calls.every((call: any) =>
+    results.get(call.id) === call.name && trustedNames.has(call.name));
 }
 
 /**

@@ -49,6 +49,7 @@ export function createRestartProposalService(input: {
   const responseContext = new AsyncLocalStorage<{ readonly runIds: Set<string> }>();
   const scoped = createRequestScopedMcpRuntimeExtension({
     serverName: PROPOSE_RESTART_SERVER_NAME,
+    replyPresentation: true,
     startingMessage: "Restart proposal tool is starting",
     createServer: ({ runId }) => createProposalServer((reason) => {
       if (proposals.has(runId)) return { status: "already_proposed" } as const;

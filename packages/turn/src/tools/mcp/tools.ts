@@ -6,6 +6,7 @@ import { objectSchema } from "../shared/tool-schema.js";
 import { MCP_TEXT_RESULT_LIMIT, MCP_IMAGE_INLINE_MAX_BYTES, normalizeMcpToolParams, coerceMcpContent, mcpContentWasTruncated, compactRawMcpResult } from "./content.js";
 import { DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS } from "./timeouts.js";
 import { registerMcpAppForToolResult } from "./apps.js";
+import { APP_REPLY_PRESENTATION } from "./reply-presentation.js";
 
 function mcpToolName(serverName: any, toolName: any, reservedNames: any) {
   if (!reservedNames.has(toolName)) return toolName;
@@ -52,6 +53,9 @@ export async function initPiMcpTools(mcpConfig: any, reservedNames: Set<any> = n
   const clients = [];
   const tools = [];
   const entries = Object.entries(mcpConfig || {}).sort(([a]: [string, any], [b]: [string, any]) => a < b ? -1 : a > b ? 1 : 0);
+  const replyPresentationServers = new Set(entries.filter(([, spec]) =>
+    typeof spec === "object" && spec !== null && Object.hasOwn(spec, APP_REPLY_PRESENTATION) && (spec as Record<symbol, unknown>)[APP_REPLY_PRESENTATION] === true,
+  ).map(([name]) => name));
   const guards = new Map(entries.map(([name, spec]) => [name, createMcpToolPolicyGuard(spec, name, allowedTools, disallowedTools)]));
   const settled = await Promise.allSettled(entries.map(([name, cfg]: [string, any]) => connectMcpClient(name, cfg, {
     cwd,
@@ -106,6 +110,7 @@ export async function initPiMcpTools(mcpConfig: any, reservedNames: Set<any> = n
       continue;
     }
 
+    const appReplyPresentation = replyPresentationServers.has(serverName);
     for (const sourceTool of [...(listed!.tools || [])].sort((a: { inputSchema: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; }; name: string; description?: string | undefined; outputSchema?: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; } | undefined; annotations?: { title?: string | undefined; readOnlyHint?: boolean | undefined; destructiveHint?: boolean | undefined; idempotentHint?: boolean | undefined; openWorldHint?: boolean | undefined; } | undefined; execution?: { taskSupport?: "optional" | "required" | "forbidden" | undefined; } | undefined; _meta?: Record<string, unknown> | undefined; icons?: { src: string; mimeType?: string | undefined; sizes?: string[] | undefined; theme?: "light" | "dark" | undefined; }[] | undefined; title?: string | undefined; }, b: { inputSchema: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; }; name: string; description?: string | undefined; outputSchema?: { [x: string]: unknown; type: "object"; properties?: Record<string, object> | undefined; required?: string[] | undefined; } | undefined; annotations?: { title?: string | undefined; readOnlyHint?: boolean | undefined; destructiveHint?: boolean | undefined; idempotentHint?: boolean | undefined; openWorldHint?: boolean | undefined; } | undefined; execution?: { taskSupport?: "optional" | "required" | "forbidden" | undefined; } | undefined; _meta?: Record<string, unknown> | undefined; icons?: { src: string; mimeType?: string | undefined; sizes?: string[] | undefined; theme?: "light" | "dark" | undefined; }[] | undefined; title?: string | undefined; }) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
       const isAllowed = guards.get(serverName)!;
       if (!isAllowed(sourceTool.name)) continue;
@@ -114,6 +119,7 @@ export async function initPiMcpTools(mcpConfig: any, reservedNames: Set<any> = n
       seen.add(name);
       tools.push({
         name,
+        ...(appReplyPresentation ? { [APP_REPLY_PRESENTATION]: true as const } : {}),
         label: sourceTool.title || sourceTool.name,
         description: sourceTool.description || `${serverName}:${sourceTool.name}`,
         parameters: sourceTool.inputSchema || ((sourceTool) as any).input_schema || objectSchema({}),
