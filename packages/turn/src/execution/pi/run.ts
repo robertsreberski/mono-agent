@@ -94,7 +94,7 @@ import {
   thinkingLevelForEffort,
 } from "./turn-runner.js";
 import { runEmptyReplyRetry, shouldRetryEmptyReply } from "./empty-reply.js";
-import { finalReplyText } from "./reply-text.js";
+import { finalReplyText, hasTerminalReplyPresentationBatch } from "./reply-text.js";
 import { resolvePiTransport } from "./transport.js";
 import { withOpenCodeSessionHeaders } from "./provider-attribution.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
@@ -1173,8 +1173,8 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
     }));
 
     // Plain-text finalization is separate from structured-output and continuity
-    // recovery. Never turn an error/abort, terminal tool, or pending question
-    // into another model request. This block executes at most once per run.
+    // recovery. Only reply presentation and invalidated silence need text
+    // after a terminal tool batch. This block executes at most once per run.
     if (!initialRunFailed && shouldRetryEmptyReply({
       finalText: state.finalText, stopReason: state.stopReason,
       outputSchema: options.outputSchema, runError,
@@ -1185,6 +1185,7 @@ async function executeTrackedPiNativeResponse(systemPrompt: string, options: PiO
         aborted: runState.externalAbort || !!options.abortSignal?.aborted,
       }),
       invalidatedSilentCompletion: runState.silentTurn.completed,
+      terminalReplyPresentation: hasTerminalReplyPresentationBatch(state.runTranscript, harness.getActiveTools()),
       pendingQuestion: runState.silentTurn.pendingQuestion,
     })) {
       const retry = await runEmptyReplyRetry({ harness, runtimeWarnings, abortSignal: options.abortSignal, prompts: options.prompts } as Parameters<typeof runEmptyReplyRetry>[0]);

@@ -17,6 +17,14 @@ describe("empty reply finalization", () => {
     { stopReason: "error" }, { stopReason: "aborted" }, { stopReason: null },
   ])("excludes %j", (override) => expect(shouldRetryEmptyReply({ ...eligible, ...override })).toBe(false));
 
+  it("allows tool-use finalization only for presentation or invalidated silence", () => {
+    const toolUse = { ...eligible, stopReason: "toolUse" };
+    expect(shouldRetryEmptyReply(toolUse)).toBe(false);
+    expect(shouldRetryEmptyReply({ ...toolUse, terminalReplyPresentation: true })).toBe(true);
+    expect(shouldRetryEmptyReply({ ...toolUse, invalidatedSilentCompletion: true })).toBe(true);
+    expect(shouldRetryEmptyReply({ ...toolUse, terminalReplyPresentation: true, pendingQuestion: true })).toBe(false);
+  });
+
   function harness() {
     return { getActiveTools: () => [{ name: "Read" }, { name: "SuggestReplies" }],
       setActiveTools: vi.fn(async () => {}), prompt: vi.fn(async () => {}), waitForIdle: vi.fn(async () => {}) };

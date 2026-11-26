@@ -117,10 +117,11 @@ only a proposal and requires the operator to confirm in the web console.
 
 These three presentation tools share one description contract in
 `src/mcp/reply-presentation.ts`: they attach to the visible reply, the user sees
-only normal assistant text (never reasoning), and the complete answer is written
-as normal text before the call. Their successful results are factual receipts
-with no composing instructions. This is model guidance, not guaranteed
-compliance or a repair of existing history.
+only normal assistant text (never reasoning). Write the complete answer first,
+then call all presentation tools for the reply in one final batch, once per
+file for `PublishReplyFile`. On Pi, a successful app-owned presentation-only
+batch ends the model loop after the receipts. If no reply text exists, Pi asks
+for it once with tools disabled and preserves the parts. Receipts remain factual.
 
 ```ts
 import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/conversation";

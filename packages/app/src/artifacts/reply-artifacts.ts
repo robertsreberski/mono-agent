@@ -38,7 +38,7 @@ import {
 } from "@mono-agent/contracts";
 import { appOwnedMcpServerSpec } from "../mcp/app-owned-tool-policy.js";
 import { createLoopbackMcpEndpoint } from "../mcp/loopback-transport.js";
-import { REPLY_PRESENTATION_CONTRACT } from "../mcp/reply-presentation.js";
+import { markReplyPresentationServer, REPLY_PRESENTATION_CONTRACT } from "../mcp/reply-presentation.js";
 import type { ToolPolicyInput } from "@mono-agent/conversation";
 import * as z from "zod/v4";
 
@@ -622,6 +622,7 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
       unavailableTransportMessage: "Reply artifact MCP transport is unavailable.",
     });
     const serverSpec = appOwnedMcpServerSpec(REPLY_ARTIFACT_MCP_SERVER_NAME, privateLoopbackHttpServerSpec(endpoint.url));
+    markReplyPresentationServer(serverSpec);
     return {
       runtimeOptions: {
         mcpServers: {

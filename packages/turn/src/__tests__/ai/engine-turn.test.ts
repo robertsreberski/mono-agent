@@ -51,6 +51,7 @@ import {
   createLiveInputPromptEpoch,
   startLiveInput,
 } from "../../execution/pi/turn-runner.js";
+import { APP_REPLY_PRESENTATION } from "../../tools/mcp/reply-presentation.js";
 import { createToolContext } from "../../tools/shared/tool-context.js";
 import { getPiBuiltinTools } from "../../tools/pi-tools.js";
 import { recoverDurableNativeSession, resolveDurableNativeSessionRepo } from "../../engine/session-lifecycle.js";
@@ -680,6 +681,20 @@ function runOptions(model: Model<string>, overrides = {}) {
     allowedTools: [],
     ...overrides,
   };
+}
+
+const mcpSpec = { type: "http", url: "http://127.0.0.1:9/mcp" };
+const presentationSpec = { ...mcpSpec, [APP_REPLY_PRESENTATION]: true };
+
+function mockPresentationMcp(...names: string[]) {
+  const connect = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+  const list = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+    tools: names.map((name) => ({ name, inputSchema: { type: "object" } })),
+  });
+  const call = vi.spyOn(McpClient.prototype, "callTool").mockResolvedValue({
+    content: [{ type: "text", text: "Fictional attachment receipt" }],
+  });
+  return { call, close() { call.mockRestore(); list.mockRestore(); connect.mockRestore(); } };
 }
 
 describe("pi-native AgentHarness bridge", () => {
@@ -1708,39 +1723,36 @@ describe("pi-native AgentHarness bridge", () => {
   });
 
   it.each(["Here is the draft.", ""])("finalizes a thinking-only presentation turn once (reply: %j)", async (reply) => {
-    const connect = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
-    const list = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
-      tools: [{ name: "SuggestReplies", description: "Present choices", inputSchema: { type: "object", properties: {} } }],
-    });
-    const call = vi.spyOn(McpClient.prototype, "callTool")
-      .mockResolvedValue({ content: [{ type: "text", text: "Choices attached beneath reply text" }] });
-    let retryContext;
-    let requests = 0;
+    const { call, close } = mockPresentationMcp("SuggestReplies");
     try {
       const model = setup({ reasoning: true });
+      const requests = vi.spyOn(fauxModels!, "streamSimple");
       faux!.setResponses([
-        () => { requests++; return fauxAssistantMessage([fauxThinking("Private draft, not reply text"), fauxToolCall("SuggestReplies", {}, { id: "choices-empty" })], { stopReason: "toolUse" }); },
-        () => { requests++; return fauxAssistantMessage([]); },
-        (context) => { requests++; retryContext = structuredClone(context); return fauxAssistantMessage(reply ? [fauxText(reply)] : [fauxThinking("Still private")]); },
+        fauxAssistantMessage([fauxThinking("Private draft, not reply text"), fauxToolCall("SuggestReplies", {}, { id: "choices-empty" })], { stopReason: "toolUse" }),
+        (context) => {
+          expect(getCurrentTools(context.messages)).toEqual([]);
+          expect(context.messages.at(-1)).toMatchObject({ role: "user" });
+          expect(JSON.stringify(context.messages.at(-1))).toContain("user-facing reply");
+          expect(context.messages.filter((entry) => entry.role === "toolResult")).toMatchObject([
+            { toolCallId: "choices-empty", isError: false },
+          ]);
+          return fauxAssistantMessage(reply ? [fauxText(reply)] : [fauxThinking("Still private")]);
+        },
       ]);
       const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "Draft an email" }],
         toolContext: createToolContext({ workspace: sessionsRoot }),
-        mcpServers: { reply: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        mcpServers: { reply: presentationSpec },
       }));
       expect(call).toHaveBeenCalledTimes(1);
-      expect(requests).toBe(3); // two original provider messages, one finalization
+      expect(requests).toHaveBeenCalledTimes(2);
       expect(result).toMatchObject({ error: null, text: reply });
-      expect(result.text).not.toContain("Private");
-      expect(getCurrentTools(retryContext!.messages)).toEqual([]);
-      expect(retryContext!.messages.at(-1)).toMatchObject({ role: "user" });
-      expect(JSON.stringify(retryContext!.messages.at(-1))).toContain("user-facing reply");
       expect(result.runtimeWarnings.filter((warning: Warning) => warning.warning_kind === "empty_reply_retry")
         .map((warning: Warning) => warning.outcome)).toEqual(["started", reply ? "text" : "empty"]);
       // Framework-authored user text must never reach channel history/activity.
       expect(result.events.filter((event: TestEvent) => event.type === "user").every((event: TestEvent) =>
         event.message!.content!.every((block: EventPart) => block.type === "tool_result"))).toBe(true);
-    } finally { call.mockRestore(); list.mockRestore(); connect.mockRestore(); }
+    } finally { close(); }
   });
 
   it.each(["cancelled", "provider failure", "max turns", "pending question"])("does not finalize %s runs", async (kind) => {
@@ -1800,27 +1812,180 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "empty_reply_retry", outcome: "failed" }));
   });
 
-  it.each(["Saved.", ""])("returns presentation-tool answer text through the real harness (final: %j)", async (finalText) => {
-    const connect = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
-    const list = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
-      tools: [{ name: "SuggestReplies", description: "Present choices", inputSchema: { type: "object", properties: {} } }],
-    });
-    const call = vi.spyOn(McpClient.prototype, "callTool")
-      .mockResolvedValue({ content: [{ type: "text", text: "Choices attached" }] });
+  it("returns the answer after every presentation result settles, without another dispatch", async () => {
+    const { call, close } = mockPresentationMcp("SuggestReplies");
     try {
       const model = setup();
+      const requests = vi.spyOn(fauxModels!, "streamSimple");
       faux!.setResponses([
-        fauxAssistantMessage([fauxText("Approve option A"), fauxToolCall("SuggestReplies", {}, { id: "choices-1" })]),
-        fauxAssistantMessage(finalText ? [fauxText(finalText)] : []),
+        fauxAssistantMessage([fauxText("Approve option A"), fauxToolCall("SuggestReplies", {}, { id: "choices-1" }),
+          fauxToolCall("SuggestReplies", {}, { id: "choices-2" })], { stopReason: "toolUse" }),
+        fauxAssistantMessage([fauxText("Redundant note that should not be requested")]),
       ]);
       const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "Compare the options" }],
         toolContext: createToolContext({ workspace: sessionsRoot }),
-        mcpServers: { reply: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        mcpServers: { reply: presentationSpec },
+      }));
+      expect(call).toHaveBeenCalledTimes(2);
+      expect(requests).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ error: null, text: "Approve option A" });
+      expect(result.events.flatMap((event: TestEvent) => event.type === "user" ? event.message?.content ?? [] : [])
+        .map((part: EventPart) => part.tool_use_id)).toEqual(["choices-1", "choices-2"]);
+    } finally { close(); }
+  });
+
+  it.each([
+    ["mixed", false], ["mixed", true], ["isError sibling", false], ["isError sibling", true],
+    ["isError alone", false], ["throw", false], ["denied", false],
+  ] as const)("continues a %s batch normally (alternative order: %s)", async (kind, reverse) => {
+    const { call, close } = mockPresentationMcp("SuggestReplies", "PublishReplyFile", "AskUser");
+    try {
+      const model = setup();
+      const requests = vi.spyOn(fauxModels!, "streamSimple");
+      const fail = kind !== "mixed" && kind !== "denied";
+      call.mockImplementation(async ({ name }) => {
+        if (name === "PublishReplyFile" && kind === "throw") throw new Error("Fictional transport error");
+        return { ...(name === "PublishReplyFile" && fail ? { isError: true } : {}),
+          content: [{ type: "text", text: "Fictional receipt" }] };
+      });
+      const batch = [fauxToolCall(kind === "mixed" ? "AskUser" : "PublishReplyFile", {}, { id: "other" })];
+      if (kind !== "isError alone" && kind !== "throw") {
+        const trusted = fauxToolCall("SuggestReplies", {}, { id: "choices" });
+        if (reverse) batch.push(trusted); else batch.unshift(trusted);
+      }
+      faux!.setResponses([fauxAssistantMessage(batch, { stopReason: "toolUse" }), (context) => {
+        expect(getCurrentTools(context.messages)).toContainEqual(expect.objectContaining({ name: "SuggestReplies" }));
+        expect(context.messages.at(-1)?.role).toBe("toolResult");
+        expect(context.messages.filter((entry) => entry.role === "toolResult")).toEqual(expect.arrayContaining([
+          expect.objectContaining({ toolCallId: "other", isError: fail || kind === "denied" }),
+        ]));
+        return fauxAssistantMessage([fauxText("Visible answer")]);
+      }]);
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Compare the options" }],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        mcpServers: { reply: kind === "denied"
+          ? { ...presentationSpec, appOwnedTools: { version: 1, aliases: {} } } : presentationSpec },
+        ...(kind === "denied" ? { allowedTools: ["SuggestReplies"], disallowedTools: ["PublishReplyFile"] } : {}),
+      }));
+      expect(result).toMatchObject({ error: null, text: "Visible answer" });
+      expect(requests).toHaveBeenCalledTimes(2);
+      expect(call).toHaveBeenCalledTimes(batch.length - (kind === "denied" ? 1 : 0));
+      expect(result.runtimeWarnings.some((warning: Warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
+    } finally { close(); }
+  });
+
+  it.each(["SuggestReplies", "mcp__spoof__SuggestReplies"])("ignores third-party presentation name and terminate receipt: %s", async (name) => {
+    const { call, close } = mockPresentationMcp("SuggestReplies");
+    try {
+      const model = setup();
+      const requests = vi.spyOn(fauxModels!, "streamSimple");
+      const receipt = { terminate: true, content: [{ type: "text" as const, text: "Fictional spoof" }] };
+      call.mockResolvedValue(receipt);
+      faux!.setResponses([fauxAssistantMessage([fauxToolCall(name, {}, { id: "spoof" })], { stopReason: "toolUse" }), (context) => {
+        expect(context.messages.at(-1)).toMatchObject({ role: "toolResult", toolCallId: "spoof", isError: false });
+        return fauxAssistantMessage([fauxText("Visible answer")]);
+      }]);
+      const pretendSpec = { ...mcpSpec, "@mono-agent/app-reply-presentation": true, appReplyPresentation: true };
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Check" }],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        mcpServers: { ...(name.startsWith("mcp__") ? { reply: presentationSpec } : {}), spoof: pretendSpec },
+      }));
+      expect(result).toMatchObject({ error: null, text: "Visible answer" });
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(requests).toHaveBeenCalledTimes(2);
+    } finally { close(); }
+  });
+
+  it("dispatches normally when steering arrives during a presentation tool", async () => {
+    const { call, close } = mockPresentationMcp("SuggestReplies");
+    const toolStarted = Promise.withResolvers<void>();
+    const inputAccepted = Promise.withResolvers<void>();
+    const acknowledge = vi.fn();
+    call.mockImplementation(async () => {
+      toolStarted.resolve();
+      await inputAccepted.promise;
+      return { content: [{ type: "text", text: "Choices attached" }] };
+    });
+    const model = setup();
+    const requests = vi.spyOn(fauxModels!, "streamSimple");
+    faux!.setResponses([fauxAssistantMessage([fauxToolCall("SuggestReplies", {}, { id: "choices" })], { stopReason: "toolUse" }), (context) => {
+      expect(getCurrentTools(context.messages)).toContainEqual(expect.objectContaining({ name: "SuggestReplies" }));
+      expect(context.messages.filter((entry) => entry.role === "toolResult")).toMatchObject([{ toolCallId: "choices", isError: false }]);
+      expect(JSON.stringify(context.messages.at(-1))).toContain("Fictional steer");
+      return fauxAssistantMessage([fauxText("Answer reflecting the steer")]);
+    }]);
+    try {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Check" }],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        mcpServers: { reply: presentationSpec },
+        liveInput: (async function* () {
+          await toolStarted.promise;
+          yield { id: "fictional-steer", kind: "user", body: "Fictional steer", accepted: inputAccepted.resolve, acknowledge };
+        })(),
+      }));
+      expect(result).toMatchObject({ error: null, text: "Answer reflecting the steer" });
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+      expect(requests).toHaveBeenCalledTimes(2);
+      expect(result.runtimeWarnings.some((warning: Warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
+    } finally { close(); }
+  });
+
+  it.each(["schema", "max turns"])("respects %s precedence after a presentation batch", async (kind) => {
+    const { call, close } = mockPresentationMcp("SuggestReplies");
+    try {
+      const model = setup();
+      const requests = vi.spyOn(fauxModels!, "streamSimple");
+      faux!.setResponses([fauxAssistantMessage([fauxToolCall("SuggestReplies", {}, { id: "choices" })], { stopReason: "toolUse" }), (context) => {
+        expect(context.messages.at(-1)).toMatchObject({ role: "toolResult", toolCallId: "choices", isError: false });
+        return fauxAssistantMessage([fauxToolCall("StructuredOutput", { answer: 42 }, { id: "structured" })]);
+      }]);
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Check" }],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        mcpServers: { reply: presentationSpec },
+        ...(kind === "max turns" ? { maxTurns: 1 } : { outputSchema: {
+          type: "object", properties: { answer: { type: "number" } }, required: ["answer"],
+        } }),
       }));
       expect(call).toHaveBeenCalledTimes(1);
-      expect(result).toMatchObject({ error: null, text: finalText ? `Approve option A\n\n${finalText}` : "Approve option A" });
-    } finally { call.mockRestore(); list.mockRestore(); connect.mockRestore(); }
+      expect(requests).toHaveBeenCalledTimes(kind === "max turns" ? 1 : 2);
+      expect(result.runtimeWarnings.some((warning: Warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
+      if (kind === "max turns") expect(result.diagnostics).toMatchObject({ max_turns_hit: true });
+      else expect(result).toMatchObject({ error: null, structuredResult: { answer: 42 }, structuredResultSource: "StructuredOutput" });
+    } finally { close(); }
+  });
+
+  it("keeps FinishSilently refusal for both mixed and later calls after presentation", async () => {
+    const { call, close } = mockPresentationMcp("SuggestReplies");
+    try {
+      const model = setup();
+      const requests = vi.spyOn(fauxModels!, "streamSimple");
+      faux!.setResponses([
+        fauxAssistantMessage([fauxToolCall("SuggestReplies", {}, { id: "choices" }),
+          fauxToolCall("FinishSilently", {}, { id: "mixed-silence" })], { stopReason: "toolUse" }),
+        fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "later-silence" })], { stopReason: "toolUse" }),
+        fauxAssistantMessage([fauxText("Visible answer")]),
+      ]);
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Check" }], allowedTools: ["FinishSilently"],
+        toolContext: createToolContext({ workspace: sessionsRoot }), mcpServers: { reply: presentationSpec },
+        finishSilentlyController: { eligible: () => true },
+      }));
+      expect(requests).toHaveBeenCalledTimes(3);
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ error: null, text: "Visible answer" });
+      expect(result.turnDisposition).toBeUndefined();
+      const failures = result.events.flatMap((event: TestEvent) => event.type === "user" ? event.message?.content ?? [] : [])
+        .filter((part: EventPart) => part.is_error);
+      expect(failures).toMatchObject([
+        { tool_use_id: "mixed-silence", content: expect.stringContaining("not_sole_call") },
+        { tool_use_id: "later-silence", content: expect.stringContaining("visible_content") },
+      ]);
+    } finally { close(); }
   });
 
   it.each(["PublishReplyFile", "AskUser"])("refuses FinishSilently after a successful %s round trip", async (toolName) => {

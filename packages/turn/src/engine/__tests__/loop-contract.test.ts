@@ -21,7 +21,7 @@ const yieldRound = () => new Promise((resolve: any) => setImmediate(resolve));
 async function journal(raw: any) {
   return (await readFile(raw.metadata.path, "utf8")).trim().split("\n").map((line: any) => JSON.parse(line));
 }
-async function fixture(tools: any, responses: any, beforeDispatch: (...args: any[]) => any = () => {}) {
+async function fixture(tools: any, responses: any, beforeDispatch: (...args: any[]) => any = () => {}, toolExecution = "parallel") {
   expect(require("@earendil-works/pi-agent-core/package.json").version).toBe("1.6.0");
   const root = await mkdtemp(join(tmpdir(), "loop-contract-"));
   const raw: any = await new JsonlSessionRepo({ sessionsRoot: root }).create();
@@ -34,8 +34,8 @@ async function fixture(tools: any, responses: any, beforeDispatch: (...args: any
     return stream(...args);
   };
   const driver: any = createRunDriver(raw, { models, model: faux.getModel(), tools,
-    systemPrompt: "Fictional contract test.", thinkingLevel: "off", toolExecution: "parallel", retry: { enabled: false } });
-  return { raw, driver, async close() { await driver.close(); await raw.close(); await rm(root, { recursive: true, force: true }); } };
+    systemPrompt: "Fictional contract test.", thinkingLevel: "off", toolExecution, retry: { enabled: false } });
+  return { raw, driver, get requests() { return requests; }, async close() { await driver.close(); await raw.close(); await rm(root, { recursive: true, force: true }); } };
 }
 
 describe("installed Pi 1.6.0 loop contract through the run driver", () => {
@@ -82,7 +82,28 @@ describe("installed Pi 1.6.0 loop contract through the run driver", () => {
     }
   });
 
-  it("places steering and each parallel tool result before dispatch, with per-call start → update → end", async () => {
+  it.each([
+    ["sequential", true, 1], ["parallel", true, 1], ["sequential", false, 2], ["parallel", false, 2],
+  ] as const)("in %s mode with all calls terminating=%s makes %i dispatch(es) and persists both results", async (mode, allTerminate, requests) => {
+    const ids = ["one", "two"];
+    const effects: string[] = [];
+    const run = await fixture(ids.map((id) => tool(id, async () => {
+      effects.push(id);
+      return result(id);
+    })), [fauxAssistantMessage(ids.map((id) => fauxToolCall(id, {}, { id }))), fauxAssistantMessage([fauxText("done")])], undefined, mode);
+    run.driver.hooks.on("after_tool", ({ toolCallId }: { toolCallId: string }) =>
+      allTerminate || toolCallId === "two" ? { terminate: true } : undefined);
+    try {
+      expect((await run.driver.prompt("Fictional tool request.")).status).toBe("completed");
+      expect(run.requests).toBe(requests);
+      expect(effects.sort()).toEqual(ids);
+      const persisted = await journal(run.raw);
+      expect(persisted.filter((record: any) => record.kind === "tool_result" && record.payload.messageId)
+        .map((record: any) => record.payload.callId).sort()).toEqual(ids);
+    } finally { await run.close(); }
+  });
+
+  it("continues with queued steering after a terminating parallel batch, with per-call start → update → end", async () => {
     const gates = [gate(), gate()];
     const events: any = [];
     const ids = ["one", "two"];
@@ -115,6 +136,7 @@ describe("installed Pi 1.6.0 loop contract through the run driver", () => {
       const persisted = await journal(raw);
       for (const id of ids) expect(persisted.some((record: any) => record.kind === "tool_result" && record.payload.callId === id && record.payload.messageId)).toBe(true);
     });
+    driver.hooks.on("after_tool", () => ({ terminate: true }));
     driver.subscribe((event: any) => events.push(event));
     let pending: any;
     try {

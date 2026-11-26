@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { finalReplyText, isReplyPresentationTool } from "../../execution/pi/reply-text.js";
+import { APP_REPLY_PRESENTATION } from "../../tools/mcp/reply-presentation.js";
+import { finalReplyText, hasTerminalReplyPresentationBatch, isReplyPresentationTool } from "../../execution/pi/reply-text.js";
 
 const assistant = (text: string, ...names: string[]) => ({
   role: "assistant",
@@ -112,4 +113,26 @@ describe("final reply text", () => {
       expect(isReplyPresentationTool(name)).toBe(false);
     },
   );
+});
+
+
+describe("settled reply-presentation batch", () => {
+  const name = "mcp__trusted__PublishReplyFile";
+  const call = { type: "toolCall", name, id: "file" };
+  const tool = { name, description: "Publish a fictional file", parameters: {}, execute: async () => {} };
+  const tools = [{ ...tool, [APP_REPLY_PRESENTATION]: true as const }];
+  const batch = { role: "assistant", stopReason: "toolUse", content: [call] };
+  const result = { role: "toolResult", toolName: name, toolCallId: call.id, isError: false };
+
+  it("matches qualified names only on the trusted loadout and with matching settled results", () => {
+    expect(hasTerminalReplyPresentationBatch([batch, result], tools)).toBe(true);
+    expect(hasTerminalReplyPresentationBatch([batch, result], [tool])).toBe(false);
+    expect(hasTerminalReplyPresentationBatch([batch], tools)).toBe(false);
+    expect(hasTerminalReplyPresentationBatch([batch, { ...result, toolCallId: "another" }], tools)).toBe(false);
+    expect(hasTerminalReplyPresentationBatch([batch, { ...result, isError: true }], tools)).toBe(false);
+  });
+
+  it.each([{ role: "user" }, { role: "assistant" }])("does not count a prior batch after a $role message", (later) => {
+    expect(hasTerminalReplyPresentationBatch([batch, result, later], tools)).toBe(false);
+  });
 });
