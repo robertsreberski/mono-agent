@@ -1,11 +1,13 @@
+import { performance } from "node:perf_hooks";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ToolHistoryReader, toolHistoryLogicalConversationId, type HistoryToolAvailability, type ToolPolicyInput } from "@mono-agent/conversation";
 import * as z from "zod/v4";
 import type { RuntimeOptionsExtension } from "../composition/runtime-option-extensions.js";
 import { createRequestScopedMcpRuntimeExtension } from "../mcp/request-scoped-mcp.js";
-import { INPUT as SAID_INPUT, handleSaidHistoryRequest } from "./history-said.js";
-import { TOOLS_INPUT_SCHEMA, handleToolsHistoryRequest } from "./history-tools.js";
+import { INPUT as SAID_INPUT, readSaidHistoryRequest, saidHistoryUnavailable } from "./history-said.js";
+import { TOOLS_INPUT_SCHEMA, readToolsHistoryRequest, toolsHistoryUnavailable } from "./history-tools.js";
 import { RUNS_INPUT_SCHEMA, handleRunsHistoryRequest } from "./history-runs.js";
 import { presentHistoryResult } from "./history-presentation.js";
 import { HISTORY_MCP_SERVER_NAME, HISTORY_TOOL_NAME, resolveHistoryScopes, type HistoryScope } from "./history-policy.js";
@@ -23,6 +25,7 @@ interface Binding {
   readonly runId: string;
   readonly rollover?: "none" | "daily";
   readonly scopes: readonly HistoryScope[];
+  readonly turnSignal?: AbortSignal;
   /** @internal Offline harness selection; omitted keeps the shipping default. */
   readonly descriptionVariant?: HistoryDescriptionVariant;
 }
@@ -59,17 +62,20 @@ export function createHistoryServer(binding: Binding): McpServer {
     inputSchema: { ...z.toJSONSchema(HISTORY_INPUT_SCHEMA, { target: "draft-7", io: "input" }), type: "object" as const },
     execution: { taskSupport: "forbidden" as const },
   }] }));
-  server.server.setRequestHandler(CallToolRequestSchema, async request => {
+  server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     try {
-      return request.params.name === HISTORY_TOOL_NAME ? await handleHistoryRequest(owned, request.params.arguments)
-        : failure("invalid_request", "Unknown history tool.");
+      if (request.params.name !== HISTORY_TOOL_NAME) return failure("invalid_request", "Unknown history tool.");
+      // The stateless loopback makes a fresh MCP server per HTTP request, so
+      // the turn signal also stops work when cancellation arrives out of band.
+      const signal = owned.turnSignal === undefined ? extra.signal : AbortSignal.any([extra.signal, owned.turnSignal]);
+      return await handleHistoryRequest(owned, request.params.arguments, signal);
     } catch {
       return failure("history_unavailable", "Retained history is unavailable.");
     }
   });
   return server;
 }
-export async function handleHistoryRequest(binding: Binding, raw: unknown) {
+export async function handleHistoryRequest(binding: Binding, raw: unknown, signal?: AbortSignal) {
   const requested = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>).scope : undefined;
   if (!binding.scopes.includes(requested as HistoryScope)) return failure("invalid_scope", "Choose one of the permitted scopes.", binding.scopes);
   const scope = requested as HistoryScope;
@@ -79,17 +85,55 @@ export async function handleHistoryRequest(binding: Binding, raw: unknown) {
   const presentation = { scope, scopes: binding.scopes };
   if (scope === "said") {
     const valid = SAID_INPUT.safeParse(input);
-    return valid.success ? handleSaidHistoryRequest({ ...binding, presentation }, valid.data) : failure("invalid_request", "Unsupported said arguments.");
+    if (!valid.success) return failure("invalid_request", "Unsupported said arguments.");
+    // Said search sizes its page against the presented response, so the
+    // attempt needs the presentation even though it is applied afterwards.
+    const result = await retryHistoryRead(() => readSaidHistoryRequest({ ...binding, presentation }, valid.data), saidHistoryUnavailable, signal);
+    return presentHistoryResult(result, presentation);
   }
   if (scope === "tools") {
     const valid = TOOLS_INPUT_SCHEMA.safeParse(input);
-    return valid.success ? presentHistoryResult(handleToolsHistoryRequest({ ...binding, logicalConversationId: binding.toolsLogicalConversationId ?? binding.logicalConversationId }, valid.data), presentation) : failure("invalid_request", "Unsupported tools arguments.");
+    if (!valid.success) return failure("invalid_request", "Unsupported tools arguments.");
+    const toolsBinding = { ...binding, logicalConversationId: binding.toolsLogicalConversationId ?? binding.logicalConversationId };
+    const result = await retryHistoryRead(() => readToolsHistoryRequest(toolsBinding, valid.data), () => toolsHistoryUnavailable(valid.data), signal);
+    return presentHistoryResult(result, presentation);
   }
   const { action, ...rest } = input;
   if (Object.keys(rest).some(key => !["query", "limit", "cursor", "runId"].includes(key))) return failure("invalid_request", "Unsupported runs arguments.");
   const valid = RUNS_INPUT_SCHEMA.safeParse({ ...rest, action: action === "get" ? "inspect" : action === "search" ? input.query === undefined ? "list" : "search" : undefined });
   return valid.success ? presentHistoryResult(await handleRunsHistoryRequest({ ...binding }, valid.data), presentation) : failure("invalid_request", "Unsupported runs arguments.");
 }
+
+// Allow a brief writer lock to clear, well below the default MCP call timeout
+// (120 s). This bounds admission of retries; SQLite reads are synchronous and
+// neither the deadline nor cancellation can interrupt an attempt in progress.
+const HISTORY_READ_RETRY_MS = 5_000;
+
+async function retryHistoryRead<T, F>(read: () => T, unavailable: () => F, signal?: AbortSignal): Promise<T | F> {
+  const deadline = performance.now() + HISTORY_READ_RETRY_MS;
+  // The first attempt always runs, as it did before retries existed; only
+  // further attempts are gated by cancellation and the deadline.
+  for (;;) {
+    try { return read(); }
+    catch (error) {
+      if (!isHistorySqliteBusy(error) || signal?.aborted || performance.now() >= deadline) return unavailable();
+    }
+    // Retry the whole action, including any on-disk cursor validation. Each
+    // reader call opens its own connection, with no partial page reused.
+    await yieldToEventLoop();
+    if (signal?.aborted || performance.now() >= deadline) return unavailable();
+  }
+}
+
+// Match conversation's internal isToolHistorySqliteBusy without adding a
+// package export for this implementation detail.
+function isHistorySqliteBusy(error: unknown): boolean {
+  const code = (error as { code?: unknown })?.code;
+  if (code !== "ERR_SQLITE_ERROR") return false;
+  const reason = error instanceof Error ? error.message : String(error);
+  return /busy|locked/u.test(reason.toLocaleLowerCase());
+}
+
 export function createHistoryRuntimeExtension(options: Options): RuntimeOptionsExtension | undefined {
   const scopes = resolveHistoryScopes(options.policy, options.capabilities);
   if (scopes.length === 0) return undefined;
@@ -99,7 +143,7 @@ export function createHistoryRuntimeExtension(options: Options): RuntimeOptionsE
     historyScopes: Object.freeze(Object.fromEntries(["said", "tools", "runs"].map(scope => [scope, scopes.includes(scope as HistoryScope)]))) as unknown as HistoryToolAvailability,
     createServer: ({ request, runId }) => createHistoryServer({ reader, artifactDir: options.artifactDir, scopes,
       conversationId: request.conversationId, logicalConversationId: toolHistoryLogicalConversationId(request.conversationId, scopeRollovers.said),
-      toolsLogicalConversationId: toolHistoryLogicalConversationId(request.conversationId, scopeRollovers.tools), runId,
+      toolsLogicalConversationId: toolHistoryLogicalConversationId(request.conversationId, scopeRollovers.tools), runId, turnSignal: request.abortSignal,
       ...(scopeRollovers.runs === undefined ? {} : { rollover: scopeRollovers.runs }),
       ...(options.descriptionVariant === undefined ? {} : { descriptionVariant: options.descriptionVariant }) }),
     ...(options.onUnavailable === undefined ? {} : { onUnavailable: options.onUnavailable }),

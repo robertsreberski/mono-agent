@@ -6,13 +6,16 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
+import { DatabaseSync } from "node:sqlite";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ToolHistoryReader, ToolHistoryWriter, continuityGenerationId, continuityRecordId } from "@mono-agent/conversation";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHistoryServer, createHistoryRuntimeExtension, handleHistoryRequest, historyDescription, HISTORY_INPUT_SCHEMA } from "../request-tools/history.js";
 import { HISTORY_SCOPES, HISTORY_MCP_SERVER_NAME, resolveHistoryScopes } from "../request-tools/history-policy.js";
 import { handleSaidHistoryRequest } from "./fixtures/history-scopes.js";
@@ -217,6 +220,164 @@ it.each([
   expect(isAppOwnedHistoryResult(tool, appOwned)).toBe(nested);
 });
 
+
+async function sqliteFixture() {
+  const f = await fixture();
+  const writer = await ToolHistoryWriter.open({ root: join(f.root, "history"), continuityEnabled: true });
+  const old = { conversationId, logicalConversationId: conversationId, runId: "fictional-past", isolated: false };
+  const generationId = continuityGenerationId(), digest = "a".repeat(64);
+  try {
+    await writer.prepareContinuity({ conversationId, logicalConversationId: conversationId, generationId, beforeDigest: null, afterDigest: digest,
+      records: ["Fictional amber canvas.", "Fictional cobalt pencil."].map((text, sequence) => ({
+        text, sequence, recordId: continuityRecordId(conversationId, `busy-${sequence}`), runId: old.runId,
+        kind: "assistant" as const, provenance: "assistant" as const,
+      })),
+    });
+    await writer.commitContinuity({ generationId, conversationId, canonicalDigest: digest });
+    for (const toolCallId of ["amber", "cobalt"]) {
+      await writer.persist(old, { phase: "invocation", toolCallId, toolName: "Read", arguments: { file_path: "fiction.txt" } });
+      await writer.persist(old, { phase: "result", toolCallId, state: "success", content: "Fictional tool result." });
+    }
+    await writer.finishRun(old, "completed");
+  } finally { await writer.close(); }
+  const blocker = new DatabaseSync(f.reader.databasePath);
+  cleanup.push(() => blocker.close());
+  return { ...f, blocker };
+}
+
+const sqliteScopes = [
+  { scope: "said", search: "searchContinuity", anchor: "getContinuity", unavailable: "Retained conversation evidence is unavailable." },
+  { scope: "tools", search: "search", anchor: "get", unavailable: "The requested session history is unavailable." },
+] as const;
+
+describe.each(sqliteScopes)("$scope SQLite reads", ({ scope, search, anchor, unavailable }) => {
+  it("recovers a cursor page after a real SQLite lock releases", async () => {
+    const f = await sqliteFixture();
+    const first = body(await handleHistoryRequest(f.binding, { scope, limit: 1 }));
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const args = { scope, limit: 1, cursor: first.nextCursor };
+    const expected = await handleHistoryRequest(f.binding, args);
+    expect(body(expected).items).toHaveLength(1);
+    expect(body(expected).items[0].recordId).not.toBe(first.items[0].recordId);
+
+    const anchorRead = vi.spyOn(f.reader, anchor);
+    cleanup.push(() => anchorRead.mockRestore());
+    let busy: unknown;
+    let release: Promise<void> | undefined;
+    const pageRead = vi.spyOn(f.reader, search).mockImplementationOnce((...args) => {
+      // The anchor was valid before the lock. Hold the exclusive transaction
+      // through the shipping reader's 250 ms busy timeout, not a guessed delay.
+      f.blocker.exec("BEGIN EXCLUSIVE");
+      try { return Reflect.apply(ToolHistoryReader.prototype[search], f.reader, args); }
+      catch (error) { busy = error; throw error; }
+      finally { release = yieldToEventLoop().then(() => f.blocker.exec("ROLLBACK")); }
+    });
+    cleanup.push(() => pageRead.mockRestore());
+    const actual = await handleHistoryRequest(f.binding, args);
+    await release;
+    expect(busy).toMatchObject({ code: "ERR_SQLITE_ERROR", errcode: 5, message: "database is locked" });
+    expect(actual).toEqual(expected);
+    expect(anchorRead).toHaveBeenCalledTimes(2);
+    expect(pageRead).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses one retry deadline across reads while the lock persists", async () => {
+    const f = await sqliteFixture();
+    f.blocker.exec("BEGIN EXCLUSIVE");
+    let now = performance.now();
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    cleanup.push(() => clock.mockRestore());
+    let tick: Promise<void> | undefined;
+    const busyRead = (...args: Parameters<ToolHistoryReader[typeof search]>) => {
+      try { return Reflect.apply(ToolHistoryReader.prototype[search], f.reader, args); }
+      finally { tick = yieldToEventLoop().then(() => { now += 3_000; }); }
+    };
+    const read = vi.spyOn(f.reader, search).mockImplementationOnce(busyRead).mockImplementationOnce(busyRead)
+      .mockImplementation(() => { throw new Error("Fictional unexpected read after deadline."); });
+    cleanup.push(() => read.mockRestore());
+    const result = await handleHistoryRequest(f.binding, { scope });
+    await tick;
+    expect(result.isError).toBe(true);
+    expect(body(result)).toMatchObject({ scope, error: { code: "history_unavailable", message: unavailable } });
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("still runs the first read when the signal is already aborted, as before retries existed", async () => {
+    const f = await sqliteFixture();
+    const expected = await handleHistoryRequest(f.binding, { scope });
+    const read = vi.spyOn(f.reader, search);
+    cleanup.push(() => read.mockRestore());
+    const actual = await handleHistoryRequest(f.binding, { scope }, AbortSignal.abort());
+    expect(actual).toEqual(expected);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a non-SQLite error even if its message mentions a lock", async () => {
+    const f = await fixture();
+    const read = vi.spyOn(f.reader, search).mockImplementationOnce(() => { throw new Error("Fictional file is locked."); });
+    cleanup.push(() => read.mockRestore());
+    const result = await handleHistoryRequest(f.binding, { scope });
+    expect(result.isError).toBe(true);
+    expect(body(result)).toMatchObject({ scope, error: { code: "history_unavailable", message: unavailable } });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start another read after MCP cancellation during the retry yield", async () => {
+    const f = await sqliteFixture();
+    const server = createHistoryServer(f.binding);
+    const client = new Client({ name: "fictional-cancelled-read", version: "1" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a); await client.connect(b);
+    cleanup.push(() => server.close()); cleanup.push(() => client.close());
+    const controller = new AbortController();
+    f.blocker.exec("BEGIN EXCLUSIVE");
+    const read = vi.spyOn(f.reader, search).mockImplementationOnce((...args) => {
+      try { return Reflect.apply(ToolHistoryReader.prototype[search], f.reader, args); }
+      finally {
+        setImmediate(() => {
+          f.blocker.exec("ROLLBACK");
+          controller.abort(new Error("Fictional request cancelled."));
+        });
+      }
+    });
+    cleanup.push(() => read.mockRestore());
+    await expect(client.callTool({ name: "History", arguments: { scope } }, undefined, { signal: controller.signal }))
+      .rejects.toThrow("Fictional request cancelled.");
+    // The client's promise can reject before the server runs its next attempt.
+    await yieldToEventLoop();
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+});
+
+it("stops a retry on host-turn cancellation through the stateless HTTP boundary", async () => {
+  const f = await sqliteFixture();
+  const controller = new AbortController();
+  const call = input();
+  const extension = createHistoryRuntimeExtension({ historyRoot: join(f.root, "history"), artifactDir: f.binding.artifactDir,
+    policy: { allowedTools: ["History"] }, capabilities: { said: true, tools: false, runs: false } })!;
+  const result = await extension({ ...call, request: { ...call.request, abortSignal: controller.signal } });
+  cleanup.push(() => result.cleanup?.());
+  const client = new Client({ name: "fictional-http-turn-abort", version: "1" });
+  await client.connect(new StreamableHTTPClientTransport(new URL((result.runtimeOptions!.mcpServers as any)[HISTORY_MCP_SERVER_NAME].url)) as never);
+  cleanup.push(() => client.close());
+
+  f.blocker.exec("BEGIN EXCLUSIVE");
+  const original = ToolHistoryReader.prototype.searchContinuity;
+  const read = vi.spyOn(ToolHistoryReader.prototype, "searchContinuity").mockImplementationOnce(function (this: ToolHistoryReader, args) {
+    try { return original.call(this, args); }
+    finally {
+      setImmediate(() => {
+        f.blocker.exec("ROLLBACK");
+        controller.abort();
+      });
+    }
+  });
+  cleanup.push(() => read.mockRestore());
+  const response = await client.callTool({ name: "History", arguments: { scope: "said" } });
+  expect(response.isError).toBe(true);
+  expect(body(response)).toMatchObject({ scope: "said", error: { code: "history_unavailable" } });
+  expect(read).toHaveBeenCalledTimes(1);
+});
 
 it("returns an isError tool result, not a JSON-RPC error, if a handler throws", async () => {
   const f = await fixture();

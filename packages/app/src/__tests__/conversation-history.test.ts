@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSaidHistoryExtension, handleSaidHistoryRequest, isHistoryAllowed, HISTORY_MCP_SERVER_NAME, HISTORY_TOOL_NAME } from "./fixtures/history-scopes.js";
 import { decodeRequestScopedCursor, encodeRequestScopedCursor, requestScopedCursorDigest, splitRequestScopedModelText } from "../mcp/request-scoped-mcp.js";
 import { handleToolsHistoryRequest } from "./fixtures/history-scopes.js";
+import { handleHistoryRequest } from "../request-tools/history.js";
 
 const roots: string[] = [], writers = new Set<ToolHistoryWriter>(), clients: Array<() => Promise<void>> = [];
 const logicalId = "web:fiction", conversationId = `${logicalId}#2026-05-17`, runId = "fiction-current";
@@ -263,6 +264,25 @@ describe("History said scope evidence", () => {
     expect(clipped.previewRange).toMatchObject({ complete: false, responseClipped: true });
     expect(clipped.preview).not.toContain("�");
     expect(Buffer.from(page.items[0]!.preview).subarray(0, clipped.previewRange.end - clipped.previewRange.start).toString()).toBe(clipped.preview);
+  });
+
+  it("sizes a unified History said search after scope presentation, not before it", async () => {
+    const f = await fixture(); await publish(f.writer, preparation(["cobalt " + '"\\🔷'.repeat(100)]));
+    const page = f.reader.searchContinuity({ logicalConversationId: logicalId, currentConversationId: conversationId, currentRunId: runId, query: "cobalt", mode: "relevance", limit: 1 });
+    let padding = "";
+    const reader = { searchContinuity: () => ({ ...page, items: page.items.map(item => ({ ...item, source: { operationId: padding } })) }),
+      getContinuity: f.reader.getContinuity.bind(f.reader), continuityGaps: f.reader.continuityGaps.bind(f.reader), latestContinuitySummary: f.reader.latestContinuitySummary.bind(f.reader) };
+    const bytes = (result: { content: unknown }) => Buffer.byteLength(JSON.stringify(result.content), "utf8");
+    const raw = () => handleSaidHistoryRequest({ ...f.binding, reader }, { query: "cobalt", limit: 1 });
+    // Fill the unpresented response to just under the cap; the History scope
+    // framing (scope arguments and header) then pushes it over unless measured.
+    padding = "x".repeat(65_536 - bytes(raw()) - 1024); padding += "x".repeat(65_536 - bytes(raw()) - 8);
+    expect(bytes(raw())).toBeGreaterThan(65_536 - 16);
+    const presented = await handleHistoryRequest({ ...f.binding, reader: reader as never, artifactDir: join(f.root, "artifacts"), scopes: ["said"] }, { scope: "said", query: "cobalt", limit: 1 });
+    expect(presented.isError).toBeUndefined();
+    expect(body(presented)).toMatchObject({ scope: "said", status: "available", count: 1 });
+    expect(body(presented).error).toBeUndefined();
+    expect(bytes(presented)).toBeLessThanOrEqual(65_536);
   });
 
   it("returns explicit capacity without skipping an unrepresentable first record", async () => {

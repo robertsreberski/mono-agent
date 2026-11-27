@@ -15,6 +15,9 @@
   the Bash tool and background process jobs, so the docs no longer present
   `npm i -g create-mono-agent` as the Windows route.
 
+- Fix transient database locks making `History` report that retained
+  conversation text or tool history is unavailable.
+
 - Redesign the mono-agent.dev homepage as "The coworker in a folder": a real,
   validated example agent folder shown file by file, mixed model routes, the
   phone console, memory, and a two-command setup, in light and dark. The blog
