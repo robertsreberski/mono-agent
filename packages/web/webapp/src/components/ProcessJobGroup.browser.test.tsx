@@ -157,12 +157,21 @@ describe("agent groups in Chromium", () => {
     const transparent = "rgba(0, 0, 0, 0)";
     for (const scheme of ["light", "dark"] as const) {
       await commands.emulateColorScheme(scheme);
-      render(shelf([brief, compare, command, windows]));
+      const view = render(<>
+        <div data-testid="pointer-rest" style={{ position: "fixed", left: 0, bottom: 0, width: 16, height: 16 }} />
+        {shelf([brief, compare, command, windows])}
+      </>);
+      // The real pointer carries over between files in the same browser page.
+      // Park outside the shelf, not at the body's potentially overlapping centre.
+      const parkPointer = async () => {
+        await userEvent.hover(view.getByTestId("pointer-rest"));
+        await frames();
+      };
       fireEvent.click(shelfToggle());
       const researcher = group("researcher-1");
       const summary = researcher.querySelector<HTMLElement>(":scope > summary")!;
       fireEvent.click(summary);
-      await frames();
+      await parkPointer();
       const heads = [...researcher.querySelectorAll<HTMLElement>(".process-job-call-head")];
       // The brief, a foreground message, two messages and a steer: no block behind any of them.
       expect(heads).toHaveLength(5);
@@ -180,7 +189,7 @@ describe("agent groups in Chromium", () => {
       expect(head.querySelector(".process-job-call-icon")!.getBoundingClientRect().toJSON()).toEqual(icon);
       for (const other of heads.slice(1)) expect(getComputedStyle(other).backgroundColor).toBe(transparent);
       await capture(`job-group-calls-hover-${scheme}`, researcher);
-      await userEvent.unhover(head);
+      await parkPointer();
       expect(getComputedStyle(head).backgroundColor).toBe(transparent);
 
       // Keyboard focus highlights the same way.
@@ -193,7 +202,7 @@ describe("agent groups in Chromium", () => {
       // Open, the call keeps a softer tint so it reads with its full text below.
       fireEvent.click(head);
       head.blur();
-      await userEvent.unhover(head);
+      await parkPointer();
       expect(head).toHaveAttribute("aria-expanded", "true");
       const open = getComputedStyle(head).backgroundColor;
       expect(open).not.toBe(transparent);
