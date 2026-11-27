@@ -5,7 +5,7 @@ import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { ROOT, fail } from "./continuity-observation-input.mjs";
+import { ROOT, fail, object } from "./continuity-observation-input.mjs";
 import { privateOutput } from "./continuity-recorded-import.mjs";
 import { openHarness, productionModules } from "./continuity-runner.mjs";
 import { createE2Models, loadE2Estimators, shippingSoul, sizeContext, estimatedReply } from "./continuity-e2-models.mjs";
@@ -17,7 +17,8 @@ import { proofEnvironment, installProofIsolation } from "./continuity-e2-isolati
 import { startProofTools, PROOF_SERVER, SENTINEL, FACT, NEXT_ACTION, CANARY, FOREIGN } from "./continuity-e2-tools.mjs";
 import { assertE2PhaseAdapter } from "./continuity-e2-runtime.mjs";
 import { e2PaidRole } from "./continuity-e2-roles.mjs";
-import { PROOF_CODES, requireProof, assertProofEvidence, assertSetupCompactions } from "./continuity-e2-checks.mjs";
+import { proofRefusalCode, requireProof, assertProofEvidence, assertSetupCompactions } from "./continuity-e2-checks.mjs";
+import { diagnosticRecord, errorDiagnostic } from "./continuity-e2-diagnostics.mjs";
 
 export const PROOF_ARMS = Object.freeze(["switch", "cancel", "idle", "pressure"]);
 export const PROOF_CHILD = fileURLToPath(new URL("./continuity-e2-fixture.mjs", import.meta.url));
@@ -34,21 +35,41 @@ const textOf = message => typeof message?.content === "string" ? message.content
 const offered = (context, pi) => context.tools ?? pi.getCurrentTools(context.messages);
 const visible = context => JSON.stringify(context);
 
-async function fixtureChild(base, phase) {
+async function fixtureChild(base, phase, arm) {
   const env = await proofEnvironment(join(base, "hermetic"));
   // One exact executable/entry/argv shape, shared by cancellation and pressure restart.
-  const status = await new Promise((resolve, reject) => {
+  const outcome = new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [PROOF_CHILD, phase, base], { cwd: ROOT, env: { ...env, PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", NODE_NO_WARNINGS: "1" }, stdio: "ignore", shell: false });
-    const timer = setTimeout(() => { child.kill("SIGKILL"); }, 180_000);
+    let timeoutKill = false;
+    const timer = setTimeout(() => { timeoutKill = child.kill("SIGKILL"); }, 180_000);
     child.once("error", error => { clearTimeout(timer); reject(error); });
-    child.once("exit", (code, signal) => { clearTimeout(timer); resolve(code === 0 && !signal); });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      resolve(code === 0 && !signal ? null : { termination: signal === "SIGKILL" && timeoutKill ? "TIMEOUT_KILL" : signal ? "SIGNAL" : "NONZERO_EXIT" });
+    });
   });
-  if (!status) {
-    let code = "E2_PROOF_FIXTURE_FAILED";
-    try { const refusal = JSON.parse(await readFile(join(base, `${phase}-refusal.json`), "utf8")); if (PROOF_CODES.includes(refusal.code)) code = refusal.code; } catch { /* missing receipt is a failed fixture */ }
-    fail(code);
+  const failure = await outcome.catch(error => ({ termination: "SPAWN_ERROR", diagnostic: errorDiagnostic(error) }));
+  if (!failure) return JSON.parse(await readFile(join(base, `${phase}.json`), "utf8"));
+
+  const { termination } = failure;
+  let refusal;
+  if (termination !== "SPAWN_ERROR") {
+    try { refusal = JSON.parse(await readFile(join(base, `${phase}-refusal.json`), "utf8")); } catch { /* No usable receipt. */ }
   }
-  return JSON.parse(await readFile(join(base, `${phase}.json`), "utf8"));
+  const fallback = "E2_PROOF_FIXTURE_FAILED", code = proofRefusalCode(refusal?.code) ?? fallback;
+  const raw = failure.diagnostic ?? refusal?.diagnostic;
+  let diagnostic = null;
+  if (object(raw)) {
+    const { errorName, errorCode, site } = diagnosticRecord(raw);
+    diagnostic = { errorName, errorCode, site };
+  }
+  // Only fixed classes and a revalidated repository frame can reach the CI log.
+  const hasReceipt = object(refusal);
+  const causeCode = diagnostic?.errorCode ?? (code !== fallback ? code : hasReceipt ? "UNCODED" : termination);
+  const details = [`${arm}/${phase}`, termination, hasReceipt ? null : "NO_RECEIPT", diagnostic?.errorName, diagnostic?.site].filter(Boolean);
+  throw Object.assign(new Error(`${code} (cause: ${causeCode}) [${details.join("; ")}]`), {
+    code, causeCode, fixtureFailure: { arm, phase, termination, hasReceipt, diagnostic },
+  });
 }
 
 // Match only fixed product warning classes; never retain arbitrary warning text.
@@ -306,7 +327,7 @@ export async function runE2Proofs({ historySurface, output, arm = "all", real = 
           let result;
           if (name === "cancel" || name === "pressure" && variant === "restart") {
             await writeFile(join(base, "fixture.json"), JSON.stringify({ ...historySurfaceBinding(historySurface), arm: name, variant, ...(fault ? { fault } : {}), ...(summary === undefined ? {} : { summary }) }), { flag: "wx", mode: 0o600 });
-            const seed = await fixtureChild(base, "seed"), resume = await fixtureChild(base, "resume");
+            const seed = await fixtureChild(base, "seed", name), resume = await fixtureChild(base, "resume", name);
             requireProof(seed.pid !== resume.pid && seed.sentinel.completed && !seed.sentinel.repeated, "E2_PROOF_RESTART_MISSING");
             if (name === "cancel") requireProof(seed.forwarded && resume.sentinelOffered, "E2_PROOF_CANCEL_NOT_FORWARDED");
             if (name === "pressure") requireProof(resume.boundary && resume.pack, "E2_PROOF_PACK_MISSING");

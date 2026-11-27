@@ -1,4 +1,6 @@
 import { it, expect, afterEach, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import { writeFileSync } from "node:fs";
 import { mkdtemp, chmod, rm, readFile, readdir, lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -137,8 +139,71 @@ it("still requires the recovered value on the first probe", async () => {
 
 it("refuses a genuinely repeated sentinel after a new-process resume", async () => {
   const dir = await scratch(); processGuard();
-  await expect(runE2Proofs({ output: join(dir, "run"), arm: "cancel", fault: "repeat" })).rejects.toThrow("E2_PROOF_SENTINEL_REPEATED");
+  await expect(runE2Proofs({ output: join(dir, "run"), arm: "cancel", fault: "repeat" })).rejects.toMatchObject({
+    code: "E2_PROOF_SENTINEL_REPEATED", causeCode: "E2_PROOF_SENTINEL_REPEATED",
+    fixtureFailure: { arm: "cancel", phase: "resume", termination: "NONZERO_EXIT", hasReceipt: true, diagnostic: { errorName: "Error" } },
+  });
 }, 90_000);
+
+function stubFixtureChild(finish) {
+  vi.spyOn(subprocess, "spawn").mockImplementation((executable, [entry, phase, base]) => {
+    expect(executable).toBe(process.execPath); expect(entry).toBe(PROOF_CHILD); expect(phase).toBe("seed");
+    const child = new EventEmitter();
+    queueMicrotask(() => finish(child, join(base, `${phase}-refusal.json`)));
+    return child;
+  });
+  syncBuiltinESMExports();
+}
+
+it.each([
+  { errorCode: "E2_HISTORY_DEGRADED", errorName: "TypeError", site: "scripts/lib/continuity-e2-fixture.mjs:23",
+    causeCode: "E2_HISTORY_DEGRADED", errorType: "TypeError", frame: "scripts/lib/continuity-e2-fixture.mjs:23" },
+  { errorCode: "PRIVATE_CODE", errorName: "PrivateError", site: "/home/example/private-state:23",
+    causeCode: "UNCODED", errorType: "other", frame: null },
+])("reports receipt cause $causeCode without retaining arbitrary fields", async ({ errorCode, errorName, site, causeCode, errorType, frame }) => {
+  const dir = await scratch();
+  stubFixtureChild((child, receipt) => {
+    writeFileSync(receipt, JSON.stringify({ code: "PRIVATE_CODE", diagnostic: { errorCode, errorName, site, message: CANARY } }), { flag: "wx", mode: 0o600 });
+    child.emit("exit", 1, null);
+  });
+  await expect(runE2Proofs({ output: join(dir, "run"), arm: "cancel" })).rejects.toMatchObject({
+    code: "E2_PROOF_FIXTURE_FAILED", causeCode,
+    message: `E2_PROOF_FIXTURE_FAILED (cause: ${causeCode}) [cancel/seed; NONZERO_EXIT; ${errorType}${frame ? `; ${frame}` : ""}]`,
+    fixtureFailure: { arm: "cancel", phase: "seed", termination: "NONZERO_EXIT", hasReceipt: true,
+      diagnostic: { errorCode: causeCode === "UNCODED" ? null : causeCode, errorName: errorType, site: frame } },
+  });
+});
+
+it.each([["NONZERO_EXIT", 1, null], ["SIGNAL", null, "SIGKILL"], ["TIMEOUT_KILL", null, "SIGKILL"]])(
+  "reports %s without a fixture refusal receipt", async (termination, exitCode, signal) => {
+    const dir = await scratch();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      stubFixtureChild(child => {
+        const exit = () => child.emit("exit", exitCode, signal);
+        if (termination === "TIMEOUT_KILL") {
+          child.kill = vi.fn(killSignal => { expect(killSignal).toBe("SIGKILL"); queueMicrotask(exit); return true; });
+          vi.advanceTimersByTime(180_000);
+        } else exit();
+      });
+      await expect(runE2Proofs({ output: join(dir, "run"), arm: "cancel" })).rejects.toMatchObject({
+        code: "E2_PROOF_FIXTURE_FAILED", causeCode: termination,
+        message: `E2_PROOF_FIXTURE_FAILED (cause: ${termination}) [cancel/seed; ${termination}; NO_RECEIPT]`,
+        fixtureFailure: { arm: "cancel", phase: "seed", termination, hasReceipt: false, diagnostic: null },
+      });
+    } finally { vi.useRealTimers(); }
+  },
+);
+it("reports a fixture spawn error without forwarding the original exception", async () => {
+  const dir = await scratch();
+  stubFixtureChild(child => child.emit("error", Object.assign(new Error(CANARY), { code: "PRIVATE_CODE", stack: CANARY })));
+  await expect(runE2Proofs({ output: join(dir, "run"), arm: "cancel" })).rejects.toMatchObject({
+    code: "E2_PROOF_FIXTURE_FAILED", causeCode: "SPAWN_ERROR",
+    message: "E2_PROOF_FIXTURE_FAILED (cause: SPAWN_ERROR) [cancel/seed; SPAWN_ERROR; NO_RECEIPT; Error]",
+    fixtureFailure: { termination: "SPAWN_ERROR", hasReceipt: false, diagnostic: { errorCode: null, errorName: "Error", site: null } },
+  });
+});
+
 it("refuses a same-process resume before the wall-clock eviction", async () => {
   const dir = await scratch(); processGuard();
   await expect(runE2Proofs({ output: join(dir, "run"), arm: "idle", fault: "early-idle" })).rejects.toThrow("E2_PROOF_IDLE_NOT_EVICTED");
