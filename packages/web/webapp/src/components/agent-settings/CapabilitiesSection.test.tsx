@@ -7,6 +7,13 @@ import { agent } from "../../test/fixtures";
 import { CapabilityCard, CapabilitiesSection } from "./CapabilitiesSection";
 
 afterEach(() => vi.restoreAllMocks());
+
+async function settleCapabilityActions(expectedCalls: number) {
+  await waitFor(() => expect(api.capabilityActions).toHaveBeenCalledTimes(expectedCalls));
+  await act(async () => {
+    await vi.mocked(api.capabilityActions).mock.results[expectedCalls - 1]?.value;
+  });
+}
 describe("Capabilities section", () => {
   it("shows all readiness states and read-only memory choices without an apply action", async () => {
     vi.spyOn(api, "capabilitySetup").mockResolvedValue(capabilitySnapshot);
@@ -120,9 +127,11 @@ it("does not mistake a delayed pre-save restart baseline for a new restart", asy
   const view = render(<CapabilitiesSection agent={selected} restart={{ readState: "loading" } as CapabilityRestartState} />);
   fireEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
   fireEvent.click(await screen.findByRole("button", { name: "Confirm Save" }));
+  await settleCapabilityActions(2);
   await screen.findByText("Saved; applies on next start");
   expect(screen.getByRole("button", { name: "Restart to apply…" })).toBeDisabled();
   view.rerender(<CapabilitiesSection agent={selected} restart={{ readState: "ready", operationId: "older-operation", outcome: "success" } as CapabilityRestartState} />);
+  expect(screen.getByRole("button", { name: "Restart to apply…" })).toBeEnabled();
   expect(screen.queryByText(/Back online\. Refresh capability status/)).toBeNull();
   expect(screen.getByText("Saved; applies on next start")).toBeVisible();
 });
@@ -175,11 +184,12 @@ it.each(["env-shadowed", "no-valid-jobs", "eligible"] as const)("reconciles a co
   render(<CapabilitiesSection agent={agent("garden", { supportsCapabilitySetup: true, supportsCapabilityActions: true, restart: { supported: true } })} restart={{ readState: "ready" } as CapabilityRestartState} />);
   fireEvent.click(await screen.findByRole("button", { name: "Enable cron controls…" }));
   fireEvent.click(await screen.findByRole("button", { name: "Confirm Save" }));
+  await settleCapabilityActions(2);
   await screen.findByRole("button", { name: "Restart to apply…" });
   vi.mocked(api.capabilityActions).mockResolvedValue({ ...eligibleCronActions, actions: eligibleCronActions.actions.map((action) => action.id === "cron-controls" ? { ...action, reason, available: reason === "eligible" } : action) });
   fireEvent.click(screen.getByRole("button", { name: "Refresh capability status" }));
-  await waitFor(() => expect(screen.queryByText("Saved; applies on next start")).toBeNull());
-  await waitFor(() => expect(api.capabilityActions).toHaveBeenCalledTimes(3));
+  await settleCapabilityActions(3);
+  expect(screen.queryByText("Saved; applies on next start")).toBeNull();
   expect(screen.queryByRole("button", { name: "Restart to apply…" })).toBeNull();
   if (reason === "eligible") await screen.findByRole("button", { name: "Enable cron controls…" });
   else await screen.findByText(reason === "env-shadowed" ? /Resolve it in the owner terminal/ : /Prepare valid cron jobs first/);
